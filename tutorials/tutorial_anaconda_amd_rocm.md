@@ -1,5 +1,7 @@
 # Voice Changer for AMD GPUs under Linux
 
+[日本語](/tutorials/tutorial_anaconda_amd_rocm_ja.md)
+
 ## Introduction
 
 At the moment, there are significant challenges in using machine learning solutions with an AMD GPU under Windows due to the lack of driver support. While AMD has released ROCm for newer GPUs, there is still no MIOpen release for Windows. Without MIOpen, there won't be a PyTorch release. DirectML is currently the only hardware-independent solution, but it offers poor performance and requires ONNX models that cannot load an index.
