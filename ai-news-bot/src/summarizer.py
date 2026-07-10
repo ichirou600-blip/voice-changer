@@ -99,10 +99,12 @@ def generate_thread(
     """記事一覧を Claude に渡し、医療AIニュースのスレッド内容を生成する。"""
     prompt = _build_prompt(articles, target_day)
 
+    # 決まった形式（JSON）で確実に返させたいので思考（thinking）は無効化する。
+    # adaptive thinking は思考でトークン枠を使い切り、本文（JSON）が空になることがある。
     message = client.messages.create(
         model=CLAUDE_MODEL,
-        max_tokens=3000,
-        thinking={"type": "adaptive"},
+        max_tokens=4000,
+        thinking={"type": "disabled"},
         messages=[{"role": "user", "content": prompt}],
     )
 
