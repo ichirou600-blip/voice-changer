@@ -16,18 +16,23 @@ JST = ZoneInfo("Asia/Tokyo")
 CLAUDE_MODEL = "claude-sonnet-4-6"
 
 # 収集対象の RSS フィード
+# 医療×AI に関する記事を確実に集めるため、医療系クエリを中心に構成する。
 RSS_FEEDS = [
-    # Google News RSS（AI・人工知能 / 日本語）
+    # Google News RSS（AI × 医療 / 日本語）
+    "https://news.google.com/rss/search?q=AI+医療&hl=ja&gl=JP&ceid=JP:ja",
+    # Google News RSS（AI × 創薬・医薬・薬局・ヘルスケア / 日本語）
+    "https://news.google.com/rss/search?q=AI+創薬+OR+医薬+OR+薬局+OR+ヘルスケア&hl=ja&gl=JP&ceid=JP:ja",
+    # Google News RSS（AI・人工知能 全般 / 日本語）— 医療に関わる話題の取りこぼしを補う
     "https://news.google.com/rss/search?q=AI+人工知能&hl=ja&gl=JP&ceid=JP:ja",
-    # ITmedia AI+
+    # ITmedia AI+（AI全般。医療関連の話題を含む場合に選定対象とする）
     "https://rss.itmedia.co.jp/rss/2.0/aiplus.xml",
 ]
 
-# 選定する記事数
+# 選定する記事数（スレッドの返信ツイート数）
 TOP_N = 3
 
-# X（ツイート）の最大文字数
-TWEET_MAX_LENGTH = 280
+# 1ツイートあたりの目安最大文字数（リンク分を除いた本文の安全上限）
+TWEET_BODY_MAX_LENGTH = 230
 
 
 class ConfigError(RuntimeError):
