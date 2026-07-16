@@ -31,8 +31,10 @@ RSS_FEEDS = [
 # 選定する記事数（スレッドの返信ツイート数）
 TOP_N = 3
 
-# 1ツイートあたりの目安最大文字数（リンク分を除いた本文の安全上限）
-TWEET_BODY_MAX_LENGTH = 230
+# X のツイート上限（重み付き文字数）。日本語=2、URL=23 でカウントされる。
+TWEET_MAX_WEIGHT = 280
+# URL は t.co により一律この重みで数えられる。
+URL_WEIGHT = 23
 
 
 class ConfigError(RuntimeError):

@@ -14,9 +14,16 @@ from datetime import datetime, timedelta
 import anthropic
 
 from src.collector import collect_articles
-from src.config import JST, TWEET_BODY_MAX_LENGTH, ConfigError, load_credentials
+from src.config import (
+    JST,
+    TWEET_MAX_WEIGHT,
+    URL_WEIGHT,
+    ConfigError,
+    load_credentials,
+)
 from src.publisher import build_client, post_thread
 from src.summarizer import ThreadItem, generate_thread
+from src.textutil import truncate_to_weight, weighted_len
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,12 +36,16 @@ CIRCLED = ["①", "②", "③", "④", "⑤"]
 
 
 def _build_reply(index: int, item: ThreadItem) -> str:
-    """1件分の返信ツイート本文を組み立てる（本文＋コメント＋リンク）。"""
+    """1件分の返信ツイート本文を組み立てる（本文＋コメント＋リンク）。
+
+    X の重み付き文字数（日本語=2, URL=23, 上限280）に収まるよう、
+    リンクと改行分を差し引いた予算内に本文を切り詰める。
+    """
     mark = CIRCLED[index] if index < len(CIRCLED) else f"{index + 1}."
     body = f"【医療AIニュース{mark}】{item.summary}\n💊薬剤師・経営者の視点：{item.comment}"
-    # リンク分の余白を確保するため、本文が長すぎる場合は安全側に切り詰める
-    if len(body) > TWEET_BODY_MAX_LENGTH:
-        body = body[:TWEET_BODY_MAX_LENGTH]
+    # 上限280 から「本文とリンクの間の改行(1)」「URL(23)」と安全マージン(10)を差し引く
+    body_budget = TWEET_MAX_WEIGHT - URL_WEIGHT - 1 - 10
+    body = truncate_to_weight(body, body_budget)
     return f"{body}\n{item.link}"
 
 
@@ -62,12 +73,20 @@ def main() -> int:
     logger.info("選定した医療AIニュース: %d件", len(content.items))
 
     # 3. スレッド本文を組み立てる（導入 + 各ニュース）
-    tweets = [content.intro]
+    #    導入ツイートも念のため上限内に収める（安全マージン10）。
+    intro = truncate_to_weight(content.intro, TWEET_MAX_WEIGHT - 10)
+    tweets = [intro]
     for i, item in enumerate(content.items):
         tweets.append(_build_reply(i, item))
 
     for i, text in enumerate(tweets):
-        logger.info("ツイート%d（%d文字）:\n%s", i + 1, len(text), text)
+        logger.info(
+            "ツイート%d（%d文字 / 重み%d）:\n%s",
+            i + 1,
+            len(text),
+            weighted_len(text),
+            text,
+        )
 
     # 4. X へスレッド投稿
     x_client = build_client(creds)
