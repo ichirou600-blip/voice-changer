@@ -559,15 +559,13 @@ function glovedHand(material, plate, { curl = 1.0, mirror = false, wrap = 0, tri
   cuff.position.set(0, -0.068, 0.042);
   hand.add(cuff);
 
-  // Short stub, not a full forearm. poseHand aims the arm axis back toward the
-  // eye, so a 20 cm sleeve runs straight at the near plane and renders as a
-  // beige cylinder across the bottom of the frame — it was the largest object
-  // on screen. Real viewmodels let the arm leave through the frame edge instead
-  // of modelling it toward the lens; this only has to close off the cuff.
-  const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.030, 0.034, 0.075, 12), material);
-  sleeve.rotation.x = Math.PI / 2;
-  sleeve.position.set(0, -0.082, 0.088);
-  hand.add(sleeve);
+  // No forearm geometry at all. Every version of this was wrong: a full 20 cm
+  // sleeve ran at the near plane, and shortening it to a stub only traded a
+  // beige cylinder for a beige cylinder with its cut end facing the lens —
+  // poseHand aims the arm axis back toward the eye, so a capped primitive
+  // always presents its cross-section to the camera. Shipped viewmodels let the
+  // arm leave through the bottom of the frame; the cuff plate below closes the
+  // wrist off so nothing is open, and the arm simply is not modelled past it.
 
   return hand;
 }

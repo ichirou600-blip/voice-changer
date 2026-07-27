@@ -2214,13 +2214,14 @@ function buildFilmLut(size = 16) {
           c[i] *= 1 + (SHADOW[i] - 1) * sw * 0.85 + (HIGH[i] - 1) * hw * 0.7;
         }
 
-        // Filmic S-curve about middle grey, applied in log2 exposure space so
-        // it compresses shoulder and toe symmetrically.
-        for (let i = 0; i < 3; i++) {
-          const ev = Math.log2(Math.max(c[i], 1e-5) / 0.18);
-          const shaped = ev / (1 + Math.abs(ev) * 0.16) * 1.14;
-          c[i] = 0.18 * Math.pow(2, shaped);
-        }
+        // NO SECOND TONEMAP HERE. A filmic S-curve used to sit at this point,
+        // applied in log2 space on top of the AgX tonemap the pipeline already
+        // runs. Two stacked shoulders capped display white at code 224 and the
+        // toe lift below raised black by 21, so the shipped frame was sealed
+        // into 25-194 of 0-255 — 66% of the range — and no pose could produce a
+        // single pixel above 200 or one specular highlight, whatever the
+        // exposure was set to. This LUT is a look, not a transfer function: it
+        // must preserve 1.0 -> 1.0 so the frame can still reach white.
 
         // Pull greens toward olive and take a little life out of pure blues:
         // the palette should read as dust and concrete, not primaries.
@@ -2241,7 +2242,9 @@ function buildFilmLut(size = 16) {
         const l4 = lum(c[0], c[1], c[2]);
         for (let i = 0; i < 3; i++) {
           c[i] = l4 + (c[i] - l4) * 1.06;
-          c[i] = Math.max(0, c[i]) + 0.0035;
+          // No toe lift: adding a constant here is what stopped anything in the
+          // frame ever reaching true black.
+          c[i] = Math.max(0, c[i]);
         }
 
         // Atlas is (tileB * 16 + r, g) — matches lutTexel() in the grade shader.

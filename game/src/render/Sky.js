@@ -1092,7 +1092,11 @@ export class Sky {
     // Normalised so the key stays a full-strength white lamp when the sun is
     // high, then dims and reddens as the slant path grows.
     const dim = (0.25 + 0.75 * smoothstepJS(0.02, 0.42, elevation)) * above;
-    this.sunColor.setRGB((tr[0] / peak) * dim, (tr[1] / peak) * dim, (tr[2] / peak) * dim);
+    // Unit-peak chromaticity only. `dim` belongs to the magnitude, and it is
+    // applied to sunIntensity below — multiplying it in here as well scaled the
+    // key by dim squared, which at golden hour is about 0.16x and is why that
+    // pose contained no cast shadows at all.
+    this.sunColor.setRGB(tr[0] / peak, tr[1] / peak, tr[2] / peak);
 
 
     // --- sky probes ----------------------------------------------------------
@@ -1127,7 +1131,11 @@ export class Sky {
     );
     // Published for a rig that wants magnitude and hue separated; the colour
     // above already carries the magnitude for one that does not.
-    this.ambientIntensity = Math.min(1.8, ambRadiance[1] * Math.PI * 1.1 + 0.15);
+    // The clamp used to sit at 1.8 and the term was pinned against it in every
+    // daylight pose, so SUN_TO_SKY below was never the ratio the frame actually
+    // received — the fill simply stopped tracking the sky. Raised well clear so
+    // the ratio is the thing that governs.
+    this.ambientIntensity = Math.min(4.5, ambRadiance[1] * Math.PI * 1.1 + 0.15);
 
     // Publish the key's magnitude from the same integral that drives the fill,
     // so the sun and the sky are derived the same way instead of one being
