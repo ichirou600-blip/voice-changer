@@ -369,6 +369,9 @@ const GTAOShader = {
     uResolution: { value: new THREE.Vector2(1, 1) },
     uProjScale: { value: 500 },
     uRadius: { value: 0.9 },
+    // sin of the minimum elevation above the tangent plane a sample must clear
+    // to count as an occluder — about 5 degrees.
+    uBias: { value: 0.09 },
     uMaxRadiusPx: { value: 96 },
     uPower: { value: 1.35 },
     uFrame: { value: 0 },
@@ -379,7 +382,7 @@ const GTAOShader = {
     ${GLSL_GBUFFER}
     ${GLSL_IGN}
     uniform vec2 uResolution;
-    uniform float uProjScale, uRadius, uMaxRadiusPx, uPower, uFrame;
+    uniform float uProjScale, uRadius, uMaxRadiusPx, uPower, uFrame, uBias;
     varying vec2 vUv;
 
     const float PI = 3.14159265;
@@ -433,14 +436,26 @@ const GTAOShader = {
           // Attenuating the horizon cosine toward -1 (fully open) with distance
           // is what keeps a distant background from carving a dark halo around
           // whatever is in front of it.
+          // Tangent-plane bias. Without it a surface seen at a grazing angle
+          // occludes itself: successive samples along a flat road sit at very
+          // different depths, so dot(S, V) reads them as occluders even though
+          // they are coplanar. Measuring each sample's elevation above the
+          // tangent plane — sin of its angle, so the test is scale invariant —
+          // and rejecting anything hugging that plane fixes it. Measured on the
+          // open road here, the missing bias was removing 56% of the ground's
+          // brightness, which read as a dark band rather than as occlusion.
           vec3 Sp = viewPos(vUv + off, gbufDepth(vUv + off)) - P;
           float lp = length(Sp);
-          float wp = sat01((effRadius * 1.5 - lp) * falloffScale);
+          float elevP = dot(Sp, N) / max(lp, 1e-4);
+          float wp = sat01((effRadius * 1.5 - lp) * falloffScale)
+                   * smoothstep(uBias * 0.5, uBias, elevP);
           cosPos = max(cosPos, mix(-1.0, dot(Sp, V) / max(lp, 1e-4), wp));
 
           vec3 Sn = viewPos(vUv - off, gbufDepth(vUv - off)) - P;
           float ln = length(Sn);
-          float wn = sat01((effRadius * 1.5 - ln) * falloffScale);
+          float elevN = dot(Sn, N) / max(ln, 1e-4);
+          float wn = sat01((effRadius * 1.5 - ln) * falloffScale)
+                   * smoothstep(uBias * 0.5, uBias, elevN);
           cosNeg = max(cosNeg, mix(-1.0, dot(Sn, V) / max(ln, 1e-4), wn));
         }
 
@@ -1241,6 +1256,7 @@ export class RenderPipeline {
       aoRadius: 0.85,
       aoIntensity: 1.0,
       aoPower: 1.5,
+      aoBias: 0.09,
 
       taa: this.tier.aa === 'taa',
       taaFeedback: 0.93,
@@ -1638,6 +1654,7 @@ export class RenderPipeline {
     // Pixels per metre at one metre: half the buffer height over tan(fov/2).
     u.uProjScale.value = (aoH * 0.5) / projInfo.y;
     u.uRadius.value = p.aoRadius;
+    u.uBias.value = p.aoBias;
     u.uMaxRadiusPx.value = aoH * 0.12;
     u.uPower.value = p.aoPower;
     u.uFrame.value = this._frame;
