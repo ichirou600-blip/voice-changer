@@ -1302,6 +1302,9 @@ export class RenderPipeline {
     }
 
     this._targets = [];
+    /** Set true to fill `timings` with per-stage milliseconds (costs a flush). */
+    this.profile = false;
+    this.timings = {};
     this._t = 0;
     this._frame = 0;
     this._historyIndex = 0;
@@ -1424,8 +1427,10 @@ export class RenderPipeline {
     this._pushJitter();
 
     // 1 — world colour, 2 — g-buffer, both with the same jittered projection.
-    this.worldPass.render(r, null, this.rtScene);
-    if (this.gbufferPass) this.gbufferPass.render(r, this.rtGBuffer, this._matrices);
+    this._time('world', () => this.worldPass.render(r, null, this.rtScene));
+    if (this.gbufferPass) {
+      this._time('gbuffer', () => this.gbufferPass.render(r, this.rtGBuffer, this._matrices));
+    }
 
     this._popJitter();
 
@@ -1436,12 +1441,12 @@ export class RenderPipeline {
     // 3 — ambient occlusion.
     let lit = this.rtScene.texture;
     if (p.ao && this.mrt) {
-      this._renderAO(r, gbuf, vel, projInfo);
+      this._time('ao', () => this._renderAO(r, gbuf, vel, projInfo));
       const u = this._quads.aoApply.material.uniforms;
       u.tDiffuse.value = this.rtScene.texture;
       u.tAO.value = this.rtAO[0].texture;
       u.uStrength.value = p.aoIntensity;
-      this._draw(r, this._quads.aoApply, this.rtLit);
+      this._time('aoApply', () => this._draw(r, this._quads.aoApply, this.rtLit));
       lit = this.rtLit.texture;
     }
 
@@ -1459,14 +1464,14 @@ export class RenderPipeline {
       u.uTexel.value.set(1 / this.width, 1 / this.height);
       u.uFeedback.value = p.taaFeedback;
       u.uValid.value = this._historyValid;
-      this._draw(r, this._quads.taa, this.rtHistory[cur]);
+      this._time('taa', () => this._draw(r, this._quads.taa, this.rtHistory[cur]));
       src = this.rtHistory[cur];
       this._historyIndex = prev;
       this._historyValid = 1;
     } else if (this.smaa) {
       // SMAAPass reads readBuffer.texture, so hand it whichever target holds
       // the lit image and let it resolve into the first post ping-pong slot.
-      this.smaa.render(r, this.rtPost[0], lit === this.rtScene.texture ? this.rtScene : this.rtLit);
+      this._time('smaa', () => this.smaa.render(r, this.rtPost[0], lit === this.rtScene.texture ? this.rtScene : this.rtLit));
       src = this.rtPost[0];
     } else {
       src = lit === this.rtScene.texture ? this.rtScene : this.rtLit;
@@ -1486,18 +1491,18 @@ export class RenderPipeline {
       u.uStrength.value = p.motionBlurStrength;
       u.uFrame.value = this._frame;
       const dst = next();
-      this._draw(r, this._quads.motion, dst);
+      this._time('motionBlur', () => this._draw(r, this._quads.motion, dst));
       src = dst;
     }
 
     // 6 — depth of field.
     if (p.dof && this.mrt) {
-      src = this._renderDOF(r, src, gbuf, vel, projInfo);
+      this._time('dof', () => { src = this._renderDOF(r, src, gbuf, vel, projInfo); });
       ping = src === this.rtPost[0] ? 1 : 0;
     }
 
     // 7 — bloom.
-    if (p.bloom) this._renderBloom(r, src);
+    if (p.bloom) this._time('bloom', () => this._renderBloom(r, src));
 
     // 8 — grade to screen.
     const g = this._quads.grade.material.uniforms;
@@ -1516,7 +1521,7 @@ export class RenderPipeline {
     g.uSaturation.value = p.saturation;
     g.uContrast.value = p.contrast;
     g.uLift.value.setScalar(p.lift);
-    this._draw(r, this._quads.grade, null);
+    this._time('grade', () => this._draw(r, this._quads.grade, null));
 
     r.setRenderTarget(prevTarget);
     r.autoClear = prevAutoClear;
@@ -1537,6 +1542,20 @@ export class RenderPipeline {
     renderer.setRenderTarget(target);
     renderer.autoClear = clear;
     quad.render(renderer);
+  }
+
+  /**
+   * Wall-clock cost of one stage. Off by default; flipping `profile` on makes
+   * every stage flush the driver so the numbers attribute to the right pass
+   * instead of piling up on whichever call happens to block.
+   */
+  _time(label, fn) {
+    if (!this.profile) { fn(); return; }
+    const gl = this.engine.renderer.getContext();
+    const t0 = performance.now();
+    fn();
+    gl.finish();
+    this.timings[label] = (this.timings[label] || 0) * 0.7 + (performance.now() - t0) * 0.3;
   }
 
   /** tan(fov/2) for the world camera, used to rebuild view rays from depth. */

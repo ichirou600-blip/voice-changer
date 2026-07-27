@@ -1161,20 +1161,21 @@ export class TextureLibrary {
     this.renderer.setRenderTarget(prev);
   }
 
-  _target(size, { count = 1, type = THREE.UnsignedByteType, mips = true } = {}) {
-    const rt = new THREE.WebGLRenderTarget(size, size, {
+  // Every target here is an intermediate that is either sampled 1:1 by the next
+  // pass or read straight back, so none of them need mipmaps. RepeatWrapping is
+  // what keeps the Sobel and the horizon sweep continuous across the tile seam.
+  _target(size, { count = 1, type = THREE.UnsignedByteType } = {}) {
+    return new THREE.WebGLRenderTarget(size, size, {
       count,
       type,
       wrapS: THREE.RepeatWrapping,
       wrapT: THREE.RepeatWrapping,
       magFilter: THREE.LinearFilter,
-      minFilter: mips ? THREE.LinearMipmapLinearFilter : THREE.LinearFilter,
-      generateMipmaps: mips,
+      minFilter: THREE.LinearFilter,
+      generateMipmaps: false,
       depthBuffer: false,
       stencilBuffer: false,
     });
-    for (const t of rt.textures) t.anisotropy = mips ? this.maxAniso : 1;
-    return rt;
   }
 
   /**
@@ -1206,8 +1207,8 @@ export class TextureLibrary {
     let s = this._scratch.get(size);
     if (!s) {
       s = {
-        field: this._target(size, { count: 2, type: this._scratchType, mips: false }),
-        curv: this._target(size >> 1, { mips: false }),
+        field: this._target(size, { count: 2, type: this._scratchType }),
+        curv: this._target(size >> 1),
       };
       this._scratch.set(size, s);
     }
@@ -1235,7 +1236,7 @@ export class TextureLibrary {
 
   _buildDetailNormal() {
     const N = SIZE.medium;
-    const field = this._target(N, { count: 2, type: this._scratchType, mips: false });
+    const field = this._target(N, { count: 2, type: this._scratchType });
     const out = this._target(N);
     const seed = { value: this._seedFor('detail') };
 
@@ -1258,9 +1259,8 @@ export class TextureLibrary {
     const scratch = this._scratchFor(N);
     const seed = { value: this._seedFor(name) };
 
-    // Intermediates never get sampled with mips, so skip generating them.
-    const normalRT = this._target(N, { mips: false });
-    const finalRT = this._target(N, { count: 2, mips: false });
+    const normalRT = this._target(N);
+    const finalRT = this._target(N, { count: 2 });
 
     // 1 — the expensive one: the layered material itself.
     this._render(NOISE + def.glsl + SURFACE_MAIN, { uSeed: seed }, scratch.field, true);
