@@ -179,7 +179,10 @@ const ATMO_GLSL = /* glsl */`
     vec3 L = BETA_R * phaseR * sumR + vec3(BETA_M_S) * phaseM * sumM;
     vec3 sunAtGround = texture2D(tTransmittance, transmittanceUv(R_GROUND + VIEW_ALT, sd.y)).rgb;
     sunAtGround *= sunAtGround;
-    L += (BETA_R * msR + vec3(BETA_M_S) * msM) * uMultiScatter * sunAtGround
+    // Higher scattering orders arrive from every direction, so they carry the
+    // isotropic phase 1/4pi. Leaving that factor out inflates the whole sky by
+    // more than an order of magnitude relative to the single-scattering term.
+    L += (BETA_R * msR + vec3(BETA_M_S) * msM) * (uMultiScatter / (4.0 * PI)) * sunAtGround
        * max(0.0, sd.y + 0.12);
 
     // Rays that terminate on the planet pick up a dim lambertian bounce, which
@@ -216,6 +219,29 @@ function raySphereJS(ro, rd, R) {
 function smoothstepJS(a, b, x) {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
+}
+
+/**
+ * Narkowicz ACES approximation, matching what THREE.ACESFilmicToneMapping does
+ * to the dome at the end of the frame.
+ *
+ * The dome is HDR and gets tonemapped on the way to the screen, so its raw
+ * radiance is fine. But the fog colour, the hemisphere fill and the aerial
+ * perspective basis colours are consumed as *material* colours: fog and aerial
+ * perspective mix toward them in linear space, before any tonemap, and a
+ * hemisphere light multiplies its colour by a separate intensity. Handing those
+ * consumers raw radiance — which measures 12 to 17 here against sunlit surfaces
+ * around 1.5 — mixes every distant surface toward roughly ten times white and
+ * flattens all shading, which is what turns the whole frame into milk.
+ *
+ * These consumers want the sky's *appearance*, not its radiance, so they get
+ * the same curve the dome will get.
+ */
+function tonemapACES(c) {
+  return c.map((x) => {
+    const v = Math.max(0, x);
+    return Math.min(1, (v * (2.51 * v + 0.03)) / (v * (2.43 * v + 0.59) + 0.14));
+  });
 }
 
 function normalize3(v) {
@@ -288,7 +314,8 @@ function skyRadianceJS(rd, sd, opts) {
   const out = [0, 0, 0];
   for (let c = 0; c < 3; c++) {
     out[c] = ATMO.betaR[c] * phaseR * sumR[c] + ATMO.betaMs * phaseM * sumM[c];
-    out[c] += (ATMO.betaR[c] * msR[c] + ATMO.betaMs * msM[c]) * multiScatter * sunGround[c] * msGate;
+    out[c] += (ATMO.betaR[c] * msR[c] + ATMO.betaMs * msM[c])
+      * (multiScatter / (4 * Math.PI)) * sunGround[c] * msGate;
     if (hitsGround) out[c] += groundTint[c] * Math.exp(-od[c]) * Math.max(0, sd[1]);
     out[c] *= irradiance;
   }
@@ -506,10 +533,13 @@ export class Sky {
       heightFalloff: 0.022,
     };
 
-    // Radiance scaling. `irradiance` maps the physical integral into render
-    // units (a clear midday zenith lands near 0.2 linear); the sun disc is
-    // deliberately far above 1.0 so the bloom pass has real range to work with.
-    this.exposure = { irradiance: 16.0, multiScatter: 2.6, sunDisc: 30.0 };
+    // Radiance scaling. The scattering integral is dimensionless; `irradiance`
+    // is the single factor that maps it into render units, calibrated so a
+    // clear midday zenith lands near 0.25 linear and the horizon near 0.5 —
+    // comfortably inside the ACES shoulder. Everything the class publishes
+    // (dome, fog, ambient, cloud light) is derived from that same solution, so
+    // one number controls the exposure of the whole atmosphere.
+    this.exposure = { irradiance: 9.0, multiScatter: 1.4, sunDisc: 22.0 };
     this._groundTint = new THREE.Color(0.09, 0.085, 0.075);
 
     installAerialPerspective();
@@ -1077,9 +1107,12 @@ export class Sky {
     // Weighted average of the probes. The sky is the dominant fill light in any
     // exterior, and getting its colour right is what stops shadowed surfaces
     // reading as flat grey.
-    const amb = [0, 1, 2].map((c) =>
-      (zenith[c] * 0.42 + upSun[c] * 0.26 + hSun[c] * 0.18 + hAway[c] * 0.14) * 2.4);
+    const ambRadiance = [0, 1, 2].map((c) =>
+      zenith[c] * 0.42 + upSun[c] * 0.26 + hSun[c] * 0.18 + hAway[c] * 0.14);
+    const amb = tonemapACES(ambRadiance);
     this.ambientColor.setRGB(amb[0], amb[1], amb[2]);
+    // Magnitude lives on the light's intensity, not smuggled into its colour.
+    this.ambientIntensity = Math.min(2.4, 0.35 + ambRadiance[1] * 0.10);
 
     // --- dome uniforms -------------------------------------------------------
     const u = this.material.uniforms;
@@ -1096,18 +1129,22 @@ export class Sky {
     u.uSkyLight.value.setRGB(zenith[0] * 2.6, zenith[1] * 2.6, zenith[2] * 2.6);
 
     // --- aerial perspective --------------------------------------------------
-    this.fogParams.color.setRGB(hAway[0], hAway[1], hAway[2]);
+    const fogRGB = tonemapACES(hAway);
+    this.fogParams.color.setRGB(fogRGB[0], fogRGB[1], fogRGB[2]);
     if (this.engine.scene.fog) {
       this.engine.scene.fog.color.copy(this.fogParams.color);
       this.engine.scene.fog.density = this.fogParams.density;
     }
     // The forward lobe is the one thing three basis colours cannot express: the
     // bright bloom of haze immediately around the sun.
-    const inscatter = [0, 1, 2].map((c) => Math.max(0, hSun[c] - hAway[c]) * 1.6);
+    const zenithLDR = tonemapACES(zenith);
+    const hAwayLDR = tonemapACES(hAway);
+    const hSunLDR = tonemapACES(hSun);
+    const inscatter = [0, 1, 2].map((c) => Math.max(0, hSunLDR[c] - hAwayLDR[c]) * 1.6);
     this._aerial = {
-      uAerialZenith: zenith,
-      uAerialHorizon: hAway,
-      uAerialSunHorizon: hSun,
+      uAerialZenith: zenithLDR,
+      uAerialHorizon: hAwayLDR,
+      uAerialSunHorizon: hSunLDR,
       uAerialInscatter: inscatter,
       uAerialSunDir: sd,
       uAerialHeightFalloff: this.fogParams.heightFalloff,
