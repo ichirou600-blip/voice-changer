@@ -815,8 +815,8 @@ export class Level {
       // ---- south row, west of the plaza
       S({ x0: -84, x1: -56.2, z0: 11, z1: 36, floors: 4, mat: 'plasterC', face: { N: 'street', E: 'alley', W: 'plain', S: 'plain' } }),
       S({ x0: -52.2, x1: -32, z0: 11, z1: 32, floors: 3, mat: 'plasterA', hollow: true, interiorLight: true,
-          face: { N: 'street', W: 'alley', E: 'none', S: 'plain' } }),
-      S({ x0: -32, x1: -21, z0: 11, z1: 27, floors: 2, mat: 'brick', face: { N: 'street', E: 'street', W: 'none', S: 'plain' } }),
+          face: { N: 'street', W: 'alley', E: 'blank', S: 'plain' } }),
+      S({ x0: -32, x1: -21, z0: 11, z1: 27, floors: 2, mat: 'brick', face: { N: 'street', E: 'street', W: 'blank', S: 'plain' } }),
       // ---- plaza frontage, south
       S({ x0: -20, x1: -1, z0: 24, z1: 43, floors: 3, mat: 'plasterB', face: { N: 'street', E: 'street', W: 'plain', S: 'plain' } }),
       S({ x0: 3, x1: 20, z0: 24, z1: 46, floors: 4, mat: 'plasterD', balconies: true,
@@ -825,20 +825,20 @@ export class Level {
       S({ x0: 21, x1: 44.2, z0: 11, z1: 33, floors: 3, mat: 'plasterA', face: { N: 'street', W: 'street', E: 'alley', S: 'plain' } }),
       S({ x0: 48.2, x1: 72, z0: 11, z1: 38, floors: 5, mat: 'brick', face: { N: 'street', W: 'alley', E: 'plain', S: 'plain' } }),
       // ---- back rows: skyline filler, cheap elevations only
-      N({ x0: -74, x1: -42, z0: -66, z1: -46, floors: 5, mat: 'plasterC', simple: true, face: { S: 'plain', E: 'plain', W: 'plain', N: 'none' } }),
-      N({ x0: -30, x1: 4, z0: -70, z1: -50, floors: 4, mat: 'plasterE', simple: true, face: { S: 'plain', E: 'plain', W: 'plain', N: 'none' } }),
-      N({ x0: 12, x1: 48, z0: -68, z1: -48, floors: 6, mat: 'brick', simple: true, face: { S: 'plain', E: 'plain', W: 'plain', N: 'none' } }),
-      S({ x0: -66, x1: -30, z0: 48, z1: 68, floors: 4, mat: 'plasterA', simple: true, face: { N: 'plain', E: 'plain', W: 'plain', S: 'none' } }),
-      S({ x0: 16, x1: 52, z0: 50, z1: 72, floors: 5, mat: 'plasterC', simple: true, face: { N: 'plain', E: 'plain', W: 'plain', S: 'none' } }),
+      N({ x0: -74, x1: -42, z0: -66, z1: -46, floors: 5, mat: 'plasterC', simple: true, face: { S: 'plain', E: 'blank', W: 'blank', N: 'none' } }),
+      N({ x0: -30, x1: 4, z0: -70, z1: -50, floors: 4, mat: 'plasterE', simple: true, face: { S: 'plain', E: 'blank', W: 'blank', N: 'none' } }),
+      N({ x0: 12, x1: 48, z0: -68, z1: -48, floors: 6, mat: 'brick', simple: true, face: { S: 'plain', E: 'blank', W: 'blank', N: 'none' } }),
+      S({ x0: -66, x1: -30, z0: 48, z1: 68, floors: 4, mat: 'plasterA', simple: true, face: { N: 'plain', E: 'blank', W: 'blank', S: 'none' } }),
+      S({ x0: 16, x1: 52, z0: 50, z1: 72, floors: 5, mat: 'plasterC', simple: true, face: { N: 'plain', E: 'blank', W: 'blank', S: 'none' } }),
       // ---- far blocks flanking the vista, off the boulevard axis
-      N({ x0: 78, x1: 104, z0: -44, z1: -16, floors: 6, mat: 'plasterB', simple: true, face: { S: 'plain', W: 'plain', E: 'none', N: 'none' } }),
-      S({ x0: 82, x1: 106, z0: 16, z1: 46, floors: 5, mat: 'plasterD', simple: true, face: { N: 'plain', W: 'plain', E: 'none', S: 'none' } }),
-      N({ x0: -104, x1: -88, z0: -46, z1: -18, floors: 5, mat: 'plasterE', simple: true, face: { S: 'plain', E: 'plain', W: 'none', N: 'none' } }),
-      S({ x0: -102, x1: -86, z0: 16, z1: 44, floors: 4, mat: 'brick', simple: true, face: { N: 'plain', E: 'plain', W: 'none', S: 'none' } }),
+      N({ x0: 78, x1: 104, z0: -44, z1: -16, floors: 6, mat: 'plasterB', simple: true, face: { S: 'plain', W: 'plain', E: 'blank', N: 'blank' } }),
+      S({ x0: 82, x1: 106, z0: 16, z1: 46, floors: 5, mat: 'plasterD', simple: true, face: { N: 'plain', W: 'plain', E: 'blank', S: 'blank' } }),
+      N({ x0: -104, x1: -88, z0: -46, z1: -18, floors: 5, mat: 'plasterE', simple: true, face: { S: 'plain', E: 'plain', W: 'blank', N: 'blank' } }),
+      S({ x0: -102, x1: -86, z0: 16, z1: 44, floors: 4, mat: 'brick', simple: true, face: { N: 'plain', E: 'plain', W: 'blank', S: 'blank' } }),
       // ---- the boulevard is terminated at both ends by a collapsed block, so
       //      the vista dies in rubble and haze rather than at the map edge.
-      N({ x0: 96, x1: 112, z0: -12, z1: 10, floors: 2, mat: 'concrete', simple: true, ruin: true, face: { W: 'plain', S: 'none', E: 'none', N: 'none' } }),
-      S({ x0: -112, x1: -98, z0: -10, z1: 12, floors: 2, mat: 'concrete', simple: true, ruin: true, face: { E: 'plain', N: 'none', W: 'none', S: 'none' } }),
+      N({ x0: 96, x1: 112, z0: -12, z1: 10, floors: 2, mat: 'concrete', simple: true, ruin: true, face: { W: 'plain', S: 'blank', E: 'blank', N: 'blank' } }),
+      S({ x0: -112, x1: -98, z0: -10, z1: 12, floors: 2, mat: 'concrete', simple: true, ruin: true, face: { E: 'plain', N: 'blank', W: 'blank', S: 'blank' } }),
     ];
   }
 
