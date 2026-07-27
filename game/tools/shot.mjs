@@ -66,7 +66,10 @@ async function capture(page, { base, pose, hud, tod, out, wait, quality }) {
   // Let the frame settle (post stack, particles, shadow warm-up).
   await page.waitForTimeout(Number(wait));
   await mkdir(path.dirname(out), { recursive: true });
-  await page.screenshot({ path: out });
+  // Playwright's screenshot default is 30s. A single frame on a software
+  // rasteriser under contention routinely exceeds that, and the resulting
+  // TimeoutError reads as a game hang rather than as slowness.
+  await page.screenshot({ path: out, timeout: 600000 });
 
   const stats = await page.evaluate(() => {
     const e = window.__engine;

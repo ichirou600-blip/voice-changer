@@ -553,15 +553,15 @@ void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out f
                                                  // common reds; pale outliers
                                                  // that repeat every tile are
                                                  // the loudest tiling tell
-  vec3 clay = mix( vec3( 0.115, 0.080, 0.068 ), vec3( 0.340, 0.246, 0.210 ), smoothstep( 0.0, 0.60, t ) );
-  clay = mix( clay, vec3( 0.430, 0.330, 0.282 ), smoothstep( 0.60, 0.94, t ) );
-  clay *= 0.82 + coarse * 0.38;
+  vec3 clay = mix( vec3( 0.092, 0.062, 0.052 ), vec3( 0.310, 0.222, 0.188 ), smoothstep( 0.0, 0.60, t ) );
+  clay = mix( clay, vec3( 0.400, 0.304, 0.258 ), smoothstep( 0.60, 0.94, t ) );
+  clay *= 0.74 + coarse * 0.54;
   clay *= 0.94 + grain * 0.12;
   clay = mix( clay, clay * 1.35 + vec3( 0.05, 0.045, 0.040 ), spall * 0.8 );
 
   // Mortar is markedly lighter than the brick it beds — that value step is what
   // makes a wall read as courses instead of as a noisy sheet.
-  vec3 mortar = vec3( 0.620, 0.610, 0.582 ) * ( 0.80 + fbm( uv + 3.7, vec2( 60.0 ), 3 ) * 0.42 );
+  vec3 mortar = vec3( 0.545, 0.536, 0.512 ) * ( 0.78 + fbm( uv + 3.7, vec2( 60.0 ), 3 ) * 0.46 );
 
   vec3 colr = mix( mortar, clay, brickFace );
   rough = mix( 0.96, 0.78 + coarse * 0.14, brickFace );
@@ -585,7 +585,7 @@ void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out f
 
   // Soot goes into the joints first and follows the streaks down the face.
   dirt = sat( ( 1.0 - brickFace ) * 0.9 + streak * 0.8
-            + smoothstep( 0.35, 0.85, fbm( uv + 29.0, vec2( 3.0 ), 3 ) ) * 0.55 );
+            + smoothstep( 0.30, 0.88, fbm( uv + 29.0, vec2( 2.0 ), 3 ) ) * 0.80 );
 
   albedo = colr;
   metal = 0.0;
@@ -640,6 +640,7 @@ void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out f
   vec3 colr = mix( paint * ( 0.78 + dish * 0.45 ), steel * ( 0.88 + brushed * 0.26 ), bare * 0.85 );
   colr *= 0.88 + tooth * 0.24;
   colr *= 0.86 + fbm( uv + 41.0, vec2( 5.0 ), 3 ) * 0.34;   // panel-to-panel fade
+  colr *= 0.84 + fbm( uv + 63.0, vec2( 11.0 ), 3 ) * 0.36;  // weathering within a bay
   colr = mix( colr, steel * 1.05, rivet * 0.5 );
   metal = bare * 0.95;
 

@@ -607,16 +607,20 @@ const TAAShader = {
     void main() {
       vec3 cur = tonemap(texture2D(tCurrent, vUv).rgb);
 
-      // Neighbourhood statistics for the clip box.
-      vec3 m1 = vec3(0.0), m2 = vec3(0.0), lo = vec3(1e9), hi = vec3(-1e9);
-      for (int y = -1; y <= 1; y++) {
-        for (int x = -1; x <= 1; x++) {
-          vec3 s = rgbToYCoCg(tonemap(texture2D(tCurrent, vUv + vec2(float(x), float(y)) * uTexel).rgb));
-          m1 += s; m2 += s * s; lo = min(lo, s); hi = max(hi, s);
-        }
+      // Neighbourhood statistics for the clip box. A 5-tap cross rather than the
+      // full 3x3: the diagonals barely move the variance estimate and this is a
+      // full-resolution pass, so the four saved fetches are worth more than the
+      // marginal tightening they would buy.
+      vec3 c0 = rgbToYCoCg(cur);
+      vec3 m1 = c0, m2 = c0 * c0, lo = c0, hi = c0;
+      for (int i = 0; i < 4; i++) {
+        vec2 o = i == 0 ? vec2(1.0, 0.0) : i == 1 ? vec2(-1.0, 0.0)
+               : i == 2 ? vec2(0.0, 1.0) : vec2(0.0, -1.0);
+        vec3 s = rgbToYCoCg(tonemap(texture2D(tCurrent, vUv + o * uTexel).rgb));
+        m1 += s; m2 += s * s; lo = min(lo, s); hi = max(hi, s);
       }
-      vec3 mean = m1 / 9.0;
-      vec3 sigma = sqrt(max(m2 / 9.0 - mean * mean, 0.0));
+      vec3 mean = m1 / 5.0;
+      vec3 sigma = sqrt(max(m2 / 5.0 - mean * mean, 0.0));
       vec3 boxMin = max(mean - uClipGamma * sigma, lo);
       vec3 boxMax = min(mean + uClipGamma * sigma, hi);
 

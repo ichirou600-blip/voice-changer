@@ -23,6 +23,9 @@ for(let i=0;i<180;i++){
 }
 await p.waitForTimeout(4000);
 await mkdir('shots/final',{recursive:true});
-await p.screenshot({path:out});
+// A single frame can take far longer than Playwright's 30s screenshot default
+// when a software rasteriser is contending for cores, and the failure looks
+// like a hang rather than slowness.
+await p.screenshot({path:out,timeout:600000});
 console.log(JSON.stringify({out,ready,errors:[...new Set(errs)].slice(0,5)}));
 await b.close();

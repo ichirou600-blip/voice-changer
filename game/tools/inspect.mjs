@@ -72,6 +72,6 @@ const posed = await page.evaluate((o) => {
 
 await page.waitForTimeout(+opts.wait);
 await mkdir(path.dirname(opts.out), { recursive: true });
-await page.screenshot({ path: opts.out });
+await page.screenshot({ path: opts.out, timeout: 600000 });
 console.log(JSON.stringify({ out: opts.out, posed, errors: [...new Set(errors)].slice(0, 6) }));
 await browser.close();
