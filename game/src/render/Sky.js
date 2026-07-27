@@ -182,7 +182,14 @@ const ATMO_GLSL = /* glsl */`
     // Higher scattering orders arrive from every direction, so they carry the
     // isotropic phase 1/4pi. Leaving that factor out inflates the whole sky by
     // more than an order of magnitude relative to the single-scattering term.
-    L += (BETA_R * msR + vec3(BETA_M_S) * msM) * (uMultiScatter / (4.0 * PI)) * sunAtGround
+    // Achromatic drive for the multiple-scattering term — see the CPU mirror.
+    // Multiply-scattered light has lost the direct beam's directional
+    // character, and its spectrum comes from the scattering coefficient rather
+    // than one path's transmittance. Modulating per channel by the reddened
+    // beam cancels exactly the blue Rayleigh produces and peaks the result in
+    // green, which tints the horizon and the fog colour.
+    float sunAtGroundMean = (sunAtGround.r + sunAtGround.g + sunAtGround.b) / 3.0;
+    L += (BETA_R * msR + vec3(BETA_M_S) * msM) * (uMultiScatter / (4.0 * PI)) * sunAtGroundMean
        * max(0.0, sd.y + 0.12);
 
     // Rays that terminate on the planet pick up a dim lambertian bounce, which
