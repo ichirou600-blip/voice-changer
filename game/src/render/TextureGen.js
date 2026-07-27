@@ -12,6 +12,9 @@ import * as THREE from 'three';
  *   lib.setRepeat(material, u, v)        — retile a material
  *   lib.sprite(name)                     — a single THREE.Texture for billboards
  *   lib.list()                           — available material names
+ *   lib.decorate(material, name)         — opt a hand-built MeshStandardMaterial
+ *                                          into the detail normal + world-space
+ *                                          weathering that `material()` applies
  *
  * PIPELINE — four passes per material, all on the GPU:
  *
@@ -677,9 +680,9 @@ void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out f
   //     than a soft blob, which is what real corrosion looks like.
   vec2 wu = warp( uv, vec2( 3.0 ), 0.08, 3 );
   float front = ridged( wu, vec2( 4.0 ), 4 );
-  // Biased hard toward "corroded": a drum that has stood outside for years is
-  //     rust with slivers of steel, not steel with patches of rust. Left even,
-  //     the clean islands blow out to near-white under a bright sky.
+  //     Biased hard toward "corroded": a drum that has stood outside for years
+  //     is rust with slivers of steel, not steel with patches of rust. Left
+  //     even, the clean islands blow out to near-white under a bright sky.
   float rust = smoothstep( 0.16, 0.56, front * 0.65 + fbm( wu, vec2( 7.0 ), 3 ) * 0.55 );
 
   // 3 — three stages of corrosion, each with its own colour and relief: thin

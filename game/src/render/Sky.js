@@ -46,7 +46,7 @@ const ATMO = {
   mieG: 0.76,                              // Henyey-Greenstein asymmetry
   viewAltitude: 0.04,                      // observer height above sea level
   viewSteps: 16,
-  sunSteps: 5,
+  sunSteps: 8,
 };
 
 /** GLSL needs an explicit decimal point or exponent on every float literal. */
@@ -55,6 +55,8 @@ const glslFloat = (x) => Number(x).toExponential(6).replace('e+', 'e');
 const SKY_LUT_RANGE = 6.0;
 const SKY_LUT_W = 256;
 const SKY_LUT_H = 160;
+const TRANS_LUT_W = 128;
+const TRANS_LUT_H = 48;
 const CLOUD_TILE_KM = 9.0;
 const CLOUD_BASE_KM = 1.75;
 const CIRRUS_BASE_KM = 7.2;
@@ -108,22 +110,22 @@ const ATMO_GLSL = /* glsl */`
       max(0.0, 1.0 - abs(h - OZ_C) / OZ_W));
   }
 
-  vec3 opticalDepthToSun(vec3 p, vec3 sd) {
-    float tTop = raySphere(p, sd, R_TOP).y;
-    vec3 od = vec3(0.0);
-    float prev = 0.0;
-    // Quadratic spacing: a grazing sun ray is hundreds of km long but all of
-    // its mass sits in the first few, and uniform steps miss it badly.
-    for (int i = 0; i < ${ATMO.sunSteps}; i++) {
-      float k = (float(i) + 1.0) / float(${ATMO.sunSteps});
-      float t = tTop * k * k;
-      float dt = t - prev;
-      vec3 q = p + sd * (prev + dt * 0.5);
-      prev = t;
-      vec3 d = mediumDensity(max(0.0, length(q) - R_GROUND));
-      od += (BETA_R * d.x + vec3(BETA_M_E) * d.y + BETA_O * d.z) * dt;
-    }
-    return od;
+  // Transmittance is tabulated rather than marched inline. GLSL ES 1.00 forces
+  // constant loop bounds, so the translator fully unrolls them: a 16-step view
+  // march with a 5-step sun march nested inside expands to a single basic block
+  // of ~10k instructions, and the software rasteriser's JIT spends minutes
+  // optimising it. Factoring the inner march into a LUT keeps both shaders
+  // small, and buys a finer sun march for free.
+  uniform sampler2D tTransmittance;
+
+  // (altitude, cos of sun zenith) -> exp(-opticalDepth) to space. The mu_s axis
+  // is warped so texels bunch up around the horizon, where the slant path — and
+  // therefore the reddening — changes fastest.
+  vec2 transmittanceUv(float r, float mus) {
+    float h = clamp(r - R_GROUND, 0.0, R_TOP - R_GROUND);
+    return vec2(
+      clamp((1.0 - exp(-3.0 * mus - 0.6)) / ${glslFloat(1 - Math.exp(-3.6))}, 0.0, 1.0),
+      sqrt(h / (R_TOP - R_GROUND)));
   }
 
   vec3 sunTransmittance(vec3 p, vec3 sd) {
@@ -131,10 +133,12 @@ const ATMO_GLSL = /* glsl */`
     // the sky at sunset; widening it by a degree or so stands in for the
     // penumbra plus the multiple scattering that keeps twilight lit.
     float r = length(p);
+    float mus = dot(p / r, sd);
     float cosHorizon = -sqrt(max(0.0, 1.0 - (R_GROUND * R_GROUND) / (r * r)));
-    float shadow = smoothstep(cosHorizon - 0.03, cosHorizon + 0.02, dot(p / r, sd));
+    float shadow = smoothstep(cosHorizon - 0.03, cosHorizon + 0.02, mus);
     if (shadow <= 0.0) return vec3(0.0);
-    return exp(-opticalDepthToSun(p, sd)) * shadow;
+    vec3 t = texture2D(tTransmittance, transmittanceUv(r, mus)).rgb;
+    return t * t * shadow; // LUT is gamma-2 encoded to survive 8 bits
   }
 
   // Single-scattering integral along a view ray, plus an isotropic term that
@@ -173,7 +177,8 @@ const ATMO_GLSL = /* glsl */`
     }
 
     vec3 L = BETA_R * phaseR * sumR + vec3(BETA_M_S) * phaseM * sumM;
-    vec3 sunAtGround = exp(-opticalDepthToSun(vec3(0.0, R_GROUND + VIEW_ALT, 0.0), sd));
+    vec3 sunAtGround = texture2D(tTransmittance, transmittanceUv(R_GROUND + VIEW_ALT, sd.y)).rgb;
+    sunAtGround *= sunAtGround;
     L += (BETA_R * msR + vec3(BETA_M_S) * msM) * uMultiScatter * sunAtGround
        * max(0.0, sd.y + 0.12);
 
@@ -313,9 +318,11 @@ const NOISE_GLSL = /* glsl */`
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y) * 0.7071 + 0.5;
   }
 
+  // The loop bound is what the translator unrolls against, not the octave
+  // count, so it is kept as tight as the deepest caller actually needs.
   float fbm(vec2 x, vec2 period, int octaves, float seed) {
     float amp = 0.5, sum = 0.0, norm = 0.0;
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 5; i++) {
       if (i >= octaves) break;
       sum += amp * pnoise(x, period, seed + float(i) * 7.13);
       norm += amp;
@@ -514,6 +521,7 @@ export class Sky {
     this._quadMesh.frustumCulled = false;
     this._quadScene.add(this._quadMesh);
 
+    this._buildTransmittanceLut();
     this._buildSkyLut();
     this._buildCloudBakers();
     this._buildDome();
@@ -530,6 +538,8 @@ export class Sky {
     this._cloudDrift = new THREE.Vector2();
     this._cirrusDrift = new THREE.Vector2();
 
+    // Both of these are independent of the sun, so they are baked exactly once.
+    this._renderInto(this._transLutMaterial, this._transLutRT);
     this._bakeCloudShape();
     this.setTimeOfDay(timeOfDay);
   }
@@ -537,6 +547,57 @@ export class Sky {
   // -------------------------------------------------------------------------
   // Resource construction
   // -------------------------------------------------------------------------
+
+  _buildTransmittanceLut() {
+    this._transLutRT = new THREE.WebGLRenderTarget(TRANS_LUT_W, TRANS_LUT_H, {
+      type: THREE.UnsignedByteType,
+      format: THREE.RGBAFormat,
+      colorSpace: THREE.NoColorSpace,
+      depthBuffer: false,
+      stencilBuffer: false,
+      generateMipmaps: false,
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      wrapS: THREE.ClampToEdgeWrapping,
+      wrapT: THREE.ClampToEdgeWrapping,
+    });
+
+    this._transLutMaterial = new THREE.ShaderMaterial({
+      depthTest: false,
+      depthWrite: false,
+      uniforms: { uTurbidity: { value: this.turbidity } },
+      vertexShader: FULLSCREEN_VS,
+      fragmentShader: /* glsl */`
+        precision highp float;
+        varying vec2 vUv;
+        ${ATMO_GLSL}
+
+        void main() {
+          // Invert transmittanceUv: recover altitude and sun zenith cosine.
+          float h = vUv.y * vUv.y * (R_TOP - R_GROUND);
+          float mus = -(log(max(1e-6, 1.0 - vUv.x * ${glslFloat(1 - Math.exp(-3.6))})) + 0.6) / 3.0;
+
+          vec3 p = vec3(0.0, R_GROUND + h, 0.0);
+          vec3 sd = vec3(sqrt(max(0.0, 1.0 - mus * mus)), mus, 0.0);
+
+          // Quadratic spacing: a grazing ray is hundreds of km long but all of
+          // its mass sits in the first few, and uniform steps miss it badly.
+          float tTop = raySphere(p, sd, R_TOP).y;
+          vec3 od = vec3(0.0);
+          float prev = 0.0;
+          for (int i = 0; i < ${ATMO.sunSteps}; i++) {
+            float k = (float(i) + 1.0) / float(${ATMO.sunSteps});
+            float t = tTop * k * k;
+            float dt = t - prev;
+            vec3 q = p + sd * (prev + dt * 0.5);
+            prev = t;
+            vec3 d = mediumDensity(max(0.0, length(q) - R_GROUND));
+            od += (BETA_R * d.x + vec3(BETA_M_E) * d.y + BETA_O * d.z) * dt;
+          }
+          gl_FragColor = vec4(sqrt(exp(-od)), 1.0);
+        }`,
+    });
+  }
 
   _buildSkyLut() {
     // Sky-view LUT. u runs from "toward the sun" to "away from the sun" — the
@@ -565,6 +626,7 @@ export class Sky {
       depthWrite: false,
       uniforms: {
         uSunDir: { value: new THREE.Vector3(0, 1, 0) },
+        tTransmittance: { value: this._transLutRT.texture },
         uTurbidity: { value: this.turbidity },
         uSunIrradiance: { value: this.exposure.irradiance },
         uMultiScatter: { value: this.exposure.multiScatter },
@@ -646,11 +708,11 @@ export class Sky {
           // the lookup by lower-frequency FBM shears the masses into the curled
           // shapes convection actually produces.
           vec2 w1 = vec2(
-            fbm(vUv * 2.0, vec2(2.0), 3, 11.0),
-            fbm(vUv * 2.0, vec2(2.0), 3, 23.0)) - 0.5;
+            fbm(vUv * 2.0, vec2(2.0), 2, 11.0),
+            fbm(vUv * 2.0, vec2(2.0), 2, 23.0)) - 0.5;
           vec2 w2 = vec2(
-            fbm((vUv + w1 * 0.5) * 5.0, vec2(5.0), 3, 37.0),
-            fbm((vUv + w1 * 0.5) * 5.0, vec2(5.0), 3, 53.0)) - 0.5;
+            fbm((vUv + w1 * 0.5) * 5.0, vec2(5.0), 2, 37.0),
+            fbm((vUv + w1 * 0.5) * 5.0, vec2(5.0), 2, 53.0)) - 0.5;
           vec2 q = vUv + (w1 * 0.7 + w2 * 0.3) * uWarp;
 
           float weather = fbm(q * 2.0, vec2(2.0), 3, 3.0);
@@ -671,7 +733,7 @@ export class Sky {
           // high deck streaks across the wind instead of repeating the cumulus
           // silhouette one octave smaller.
           float cir = fbm(vec2(q.x * 3.0, q.y * 24.0), vec2(3.0, 24.0), 4, 97.0);
-          cir = remap(cir, 0.52, 0.84) * smoothstep(0.34, 0.72, fbm(q * 3.0, vec2(3.0), 2, 131.0));
+          cir = remap(cir, 0.52, 0.84) * smoothstep(0.30, 0.70, 1.0 - weather);
 
           gl_FragColor = vec4(d, thickness, cir, 1.0) + dither255(vUv);
         }`,
@@ -1116,9 +1178,11 @@ export class Sky {
     this.mesh.geometry.dispose();
     this.material.dispose();
     this._quadGeometry.dispose();
+    this._transLutMaterial.dispose();
     this._skyLutMaterial.dispose();
     this._cloudShapeMaterial.dispose();
     this._cloudLightMaterial.dispose();
+    this._transLutRT.dispose();
     this._skyLutRT.dispose();
     this._cloudShapeRT.dispose();
     this._cloudLitRT.dispose();
