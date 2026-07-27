@@ -579,13 +579,19 @@ export class Sky {
         ${NOISE_GLSL}
 
         void main() {
+          // Inverse of the dome-side parameterisation. Both warps are chosen so
+          // the lookup costs a sqrt instead of an asin/acos: elevation is warped
+          // on sin(elev) and azimuth on sin(phi/2), which still concentrates
+          // texels at the horizon and around the sun where the gradients are.
           float s = vUv.y * 2.0 - 1.0;
-          float elev = sign(s) * s * s * (PI * 0.5);
-          float phi = vUv.x * PI;
+          float sinElev = sign(s) * s * s;
+          float cosElev = sqrt(max(0.0, 1.0 - sinElev * sinElev));
+          float cosPhi = 1.0 - 2.0 * vUv.x * vUv.x;
+          float sinPhi = sqrt(max(0.0, 1.0 - cosPhi * cosPhi));
 
           vec3 sunH = normalize(vec3(uSunDir.x, 0.0, uSunDir.z) + vec3(1e-5, 0.0, 0.0));
           vec3 side = cross(vec3(0.0, 1.0, 0.0), sunH);
-          vec3 rd = cos(elev) * (cos(phi) * sunH + sin(phi) * side) + sin(elev) * vec3(0.0, 1.0, 0.0);
+          vec3 rd = cosElev * (cosPhi * sunH + sinPhi * side) + sinElev * vec3(0.0, 1.0, 0.0);
 
           vec3 L = skyRadiance(normalize(rd), normalize(uSunDir));
           vec3 enc = sqrt(clamp(L / ${glslFloat(SKY_LUT_RANGE)}, 0.0, 1.0));
@@ -614,11 +620,12 @@ export class Sky {
       generateMipmaps: true,
       minFilter: THREE.LinearMipmapLinearFilter,
     });
-    // The cloud plane compresses hard toward the horizon; without mips and some
-    // anisotropy it shimmers into noise exactly where it should read as a soft
-    // distant band.
-    this._cloudLitRT.texture.anisotropy =
-      Math.min(4, this.engine.renderer.capabilities.getMaxAnisotropy());
+    // The cloud plane compresses hard toward the horizon; without mips it
+    // shimmers into noise exactly where it should read as a soft distant band.
+    // Trilinear only — anisotropic filtering multiplies the tap count of the
+    // single most-sampled texture in the frame, which the software rasteriser
+    // cannot afford, and the horizon haze fade hides the extra blur anyway.
+    this._cloudLitRT.texture.anisotropy = 1;
 
     this._cloudShapeMaterial = new THREE.ShaderMaterial({
       depthTest: false,
@@ -737,12 +744,13 @@ export class Sky {
     this.material = new THREE.ShaderMaterial({
       side: THREE.BackSide,
       depthWrite: false,
-      depthTest: false,
+      depthTest: true,
       fog: false,
       uniforms: {
         tSkyLut: { value: this._skyLutRT.texture },
         tClouds: { value: this._cloudLitRT.texture },
         uSunDir: { value: this.sunDirection },
+        uSunAzimuth: { value: new THREE.Vector2(0, 1) },
         uSunDisc: { value: new THREE.Color(1, 1, 1) },
         uSunLight: { value: new THREE.Color(1, 1, 1) },
         uSkyLight: { value: new THREE.Color(0.4, 0.5, 0.7) },
@@ -763,7 +771,7 @@ export class Sky {
         uniform sampler2D tSkyLut;
         uniform sampler2D tClouds;
         uniform vec3 uSunDir, uSunDisc, uSunLight, uSkyLight;
-        uniform vec2 uCloudOffset, uCirrusOffset;
+        uniform vec2 uSunAzimuth, uCloudOffset, uCirrusOffset;
         uniform float uCloudStrength, uCirrusStrength;
 
         #define PI 3.141592653589793
@@ -780,14 +788,15 @@ export class Sky {
           return (1.0 - g2) / (4.0 * PI * d * sqrt(max(d, 1e-4)));
         }
 
-        vec3 sampleSkyLut(vec3 rd, vec3 sd) {
-          vec2 sh = normalize(vec2(sd.x, sd.z) + vec2(1e-5, 0.0));
+        vec3 sampleSkyLut(vec3 rd) {
           vec2 rh = vec2(rd.x, rd.z);
           float rl = length(rh);
-          float cosPhi = rl > 1e-5 ? clamp(dot(rh / rl, sh), -1.0, 1.0) : 1.0;
-          float elev = asin(clamp(rd.y, -1.0, 1.0));
-          float s = sign(elev) * sqrt(abs(elev) / (PI * 0.5));
-          vec3 enc = texture2D(tSkyLut, vec2(acos(cosPhi) / PI, s * 0.5 + 0.5)).rgb;
+          float cosPhi = rl > 1e-5 ? clamp(dot(rh / rl, uSunAzimuth), -1.0, 1.0) : 1.0;
+          // Matches the bake: u = sin(phi/2), v warped on sin(elevation). Two
+          // square roots instead of an acos and an asin, on every sky pixel.
+          float u = sqrt(max(0.0, 0.5 - 0.5 * cosPhi));
+          float s = sign(rd.y) * sqrt(abs(rd.y));
+          vec3 enc = texture2D(tSkyLut, vec2(u, s * 0.5 + 0.5)).rgb;
           return enc * enc * LUT_RANGE;
         }
 
@@ -803,25 +812,25 @@ export class Sky {
 
         void main() {
           vec3 rd = normalize(vDir);
-          vec3 sd = normalize(uSunDir);
-          float mu = dot(rd, sd);
+          float mu = dot(rd, uSunDir);
 
-          vec3 col = sampleSkyLut(rd, sd);
+          vec3 col = sampleSkyLut(rd);
 
           // Sun disc with limb darkening. The LUT is far too coarse to resolve
-          // a quarter-degree disc, so it is drawn analytically on top.
-          float ang = acos(clamp(mu, -1.0, 1.0));
-          if (ang < SUN_ANGULAR_RADIUS) {
-            float x = ang / SUN_ANGULAR_RADIUS;
-            float cosPsi = sqrt(max(0.0, 1.0 - x * x));
+          // a quarter-degree disc, so it is drawn analytically on top. Small
+          // angles let us work from (1 - mu) and skip the acos: for the disc,
+          // (angle / radius)^2 == 2*(1 - mu) / radius^2 to well within a texel.
+          float d2 = 2.0 * (1.0 - mu) / (SUN_ANGULAR_RADIUS * SUN_ANGULAR_RADIUS);
+          if (d2 < 1.0) {
             // Linear limb-darkening law; u = 0.6 is about right for the
             // photosphere across the visible band.
-            col += uSunDisc * (1.0 - 0.6 * (1.0 - cosPsi));
+            col += uSunDisc * (1.0 - 0.6 * (1.0 - sqrt(1.0 - d2)));
           }
           // The forward Mie peak within a couple of degrees of the disc, which
-          // the LUT cannot resolve either.
-          col += uSunDisc * 0.0032 * pow(max(mu, 0.0), 3000.0);
-          col += uSunDisc * 0.00045 * pow(max(mu, 0.0), 260.0);
+          // the LUT cannot resolve either. exp(-k*(1-mu)) is the same curve as
+          // pow(mu, n) near mu = 1 and costs one exp instead of a log+exp pair.
+          float dm = 1.0 - mu;
+          col += uSunDisc * (0.0032 * exp(-3000.0 * dm) + 0.00045 * exp(-260.0 * dm));
 
           // ---- cumulus deck -------------------------------------------------
           // Near the horizon we are looking at the sides and tops of clouds
@@ -874,7 +883,11 @@ export class Sky {
 
     this.mesh = new THREE.Mesh(geo, this.material);
     this.mesh.frustumCulled = false;
-    this.mesh.renderOrder = -1000;
+    // Drawn last in the opaque pass rather than first: the depth buffer is
+    // already populated by then, so the dome only shades pixels the world does
+    // not cover. On a software rasteriser that halves the cost of the most
+    // expensive shader in the frame.
+    this.mesh.renderOrder = 999;
     this.mesh.userData.noCollide = true;
     this.engine.scene.add(this.mesh);
   }
@@ -1009,6 +1022,7 @@ export class Sky {
     // --- dome uniforms -------------------------------------------------------
     const u = this.material.uniforms;
     u.uSunDir.value.copy(this.sunDirection);
+    u.uSunAzimuth.value.set(sd[0] / horiz, sd[2] / horiz);
     // Disc radiance is the extincted solar beam. Physically it is ~1e5x the
     // sky; clamped here to something bloom can turn into a believable flare
     // rather than a white hole across a third of the frame.

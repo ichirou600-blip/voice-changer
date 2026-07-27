@@ -8,7 +8,8 @@ const p=await b.newPage({viewport:{width:1280,height:720}});
 const errs=[];
 p.on('pageerror',e=>errs.push(String(e).slice(0,200)));
 p.on('console',m=>{if(m.type()==='error')errs.push(m.text().slice(0,200));});
-await p.goto(`http://127.0.0.1:5330/?capture=1&pose=${pose}&q=low`,{waitUntil:'load',timeout:120000});
+const PORT = process.env.PORT || 5340;
+await p.goto(`http://127.0.0.1:${PORT}/?capture=1&pose=${pose}&q=low`,{waitUntil:'load',timeout:120000});
 // Poll for readiness with a generous ceiling: under heavy CPU contention the
 // procedural bake legitimately takes many minutes on a software rasteriser.
 let ready=false;

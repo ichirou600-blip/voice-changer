@@ -60,6 +60,13 @@ const NOISE = /* glsl */ `
 precision highp float;
 varying vec2 vUv;
 uniform float uSeed;
+uniform float uRes;
+
+// An octave finer than about a third of the sampling rate cannot be resolved;
+// all it can contribute is aliasing, which then shows up as the salt-and-pepper
+// crunch that makes a surface sparkle at distance. Octave zero is always kept
+// (it is the authored frequency), the rest stop at the limit.
+bool tooFine( vec2 f ) { return max( f.x, f.y ) > uRes * 0.34; }
 
 float sat( float x ) { return clamp( x, 0.0, 1.0 ); }
 
@@ -106,7 +113,7 @@ float fbm( vec2 uv, vec2 freq, int oct ) {
   float s = 0.0, amp = 0.5, norm = 0.0;
   vec2 f = freq;
   for ( int i = 0; i < 7; i ++ ) {
-    if ( i >= oct ) break;
+    if ( i >= oct || ( i > 0 && tooFine( f ) ) ) break;
     s += amp * pnoise( uv * f, f );
     norm += amp;
     f *= 2.0;
@@ -120,7 +127,7 @@ float ridged( vec2 uv, vec2 freq, int oct ) {
   float s = 0.0, amp = 0.5, norm = 0.0;
   vec2 f = freq;
   for ( int i = 0; i < 7; i ++ ) {
-    if ( i >= oct ) break;
+    if ( i >= oct || ( i > 0 && tooFine( f ) ) ) break;
     float v = 1.0 - abs( pnoise( uv * f, f ) );
     s += amp * v * v;
     norm += amp;
@@ -1240,7 +1247,8 @@ export class TextureLibrary {
     const out = this._target(N);
     const seed = { value: this._seedFor('detail') };
 
-    this._render(NOISE + DETAIL_SURFACE + SURFACE_MAIN, { uSeed: seed }, field, true);
+    this._render(NOISE + DETAIL_SURFACE + SURFACE_MAIN,
+      { uSeed: seed, uRes: { value: N } }, field, true);
     this._render(NORMAL_FS, {
       uField: { value: field.textures[0] },
       uTexel: { value: new THREE.Vector2(1 / N, 1 / N) },
@@ -1263,7 +1271,8 @@ export class TextureLibrary {
     const finalRT = this._target(N, { count: 2 });
 
     // 1 — the expensive one: the layered material itself.
-    this._render(NOISE + def.glsl + SURFACE_MAIN, { uSeed: seed }, scratch.field, true);
+    this._render(NOISE + def.glsl + SURFACE_MAIN,
+      { uSeed: seed, uRes: { value: N } }, scratch.field, true);
 
     // 2 — normal from the height field, height kept in alpha.
     this._render(NORMAL_FS, {
