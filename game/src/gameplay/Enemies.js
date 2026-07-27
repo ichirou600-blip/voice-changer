@@ -257,10 +257,15 @@ export class EnemyManager {
       const wy = tileFbm(nz, u, v, 3.4, 2, 94.0, 76.0) * 0.16;
       const n1 = tileFbm(nz, u, v, 1.5, 2, wx * 12, wy * 12);
       const n2 = tileFbm(nz, u, v, 2.1, 2, 31.0 + wy * 12, 77.0 + wx * 12);
+      // With the tiling helper fixed, n1 covers its full range again, so the
+      // thresholds have to be pushed back out: at +/-0.1 on a properly scaled
+      // field the mid tone all but disappears and the print goes to a
+      // high-contrast dark-and-light stipple. Real four-colour camo is mostly
+      // one mid value with the other three cut into it.
       let c = MID;
-      if (n1 > 0.06) c = LIGHT;
-      if (n1 < -0.10) c = DARK;
-      if (n2 > 0.22) c = BROWN;
+      if (n1 > 0.20) c = LIGHT;
+      if (n1 < -0.24) c = DARK;
+      if (n2 > 0.34) c = BROWN;
       // Fleck: the small hard-edged specks a modern print carries inside the
       // large shapes. Value only, so it never reads as a fifth colour.
       const fleck = tileFbm(nz, u, v, 9, 1, 117.0, 39.0) > 0.30 ? 0.90 : 1;
@@ -468,11 +473,14 @@ export class EnemyManager {
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
           const x = (c - (cols - 1) / 2) * w;
-          torso.add(m.webbing, P.box, [x, top - r * pitch, z + face * 0.006],
+          // The loop bar is the *lighter* of the two: the webbing colour is a
+          // step below the plate it sits on, so a ladder built out of it is
+          // invisible on the panel it is meant to break up.
+          torso.add(m.pouch, P.box, [x, top - r * pitch, z + face * 0.006],
             null, [w * 0.86, 0.020, 0.012]);
           // The vertical stitch that divides each row into loops.
-          torso.add(m.plate, P.box, [x, top - r * pitch, z + face * 0.009],
-            null, [0.006, 0.022, 0.008]);
+          torso.add(m.webbing, P.box, [x, top - r * pitch, z + face * 0.009],
+            null, [0.006, 0.024, 0.008]);
         }
       }
     };

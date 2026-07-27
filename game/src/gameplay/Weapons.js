@@ -585,7 +585,7 @@ function glovedHand(material, plate, sleeveMat, {
     const t = i / 3;
     const fs = FINGER[i];
     const lens = [0.038 * fs, 0.029 * fs, 0.026 * fs];
-    const radii = [0.0095 * fs, 0.0086 * fs, 0.0076 * fs];
+    const radii = [0.0105 * fs, 0.0095 * fs, 0.0083 * fs];
 
     const root = new THREE.Group();
     const rootY = 0.037;
@@ -669,9 +669,14 @@ function glovedHand(material, plate, sleeveMat, {
   sleeve(0.0300, 0.0345, 0.030, -0.086, plate);        // glove cuff
   // Past the cuff it is a uniform sleeve, not more glove. Running the same
   // coyote nomex all the way down turned the forearm into a bare arm.
-  sleeve(0.0330, 0.0362, 0.075, -0.138, sleeveMat);
-  const armEnd = new THREE.Mesh(new THREE.CapsuleGeometry(0.0372, 0.070, 4, 12), sleeveMat);
-  armEnd.position.y = -0.210;
+  sleeve(0.0316, 0.0340, 0.070, -0.134, sleeveMat);
+  // Rolled cuff band: one hard line across an otherwise featureless column.
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.0348, 0.0344, 0.016, 14), plate);
+  band.position.y = -0.168;
+  band.scale.z = 0.84;
+  arm.add(band);
+  const armEnd = new THREE.Mesh(new THREE.CapsuleGeometry(0.0352, 0.070, 4, 12), sleeveMat);
+  armEnd.position.y = -0.212;
   armEnd.scale.z = 0.86;
   arm.add(armEnd);
   hand.add(arm);
@@ -680,10 +685,6 @@ function glovedHand(material, plate, sleeveMat, {
   // stays correct when the hand is scaled.
   hand.userData.hold = new THREE.Vector3(0, holdY, holdZ).multiplyScalar(scale);
   hand.userData.arm = arm;
-  const fore = new THREE.Vector3(0, -0.90, 0.436).normalize();
-  hand.userData.basis = new THREE.Matrix4()
-    .makeBasis(new THREE.Vector3(1, 0, 0), fore, new THREE.Vector3(1, 0, 0).cross(fore))
-    .transpose();
   return hand;
 }
 
@@ -692,18 +693,25 @@ function glovedHand(material, plate, sleeveMat, {
  *
  * @param hold   Point the held object's axis passes through, in model space.
  * @param axis   Direction that object runs in — the knuckles spread along it.
- * @param fore   Direction the wrist rolls toward, squared against `axis`. This
- *               sets which way round the tube the palm and the fingers sit.
- * @param armDir Where the sleeve runs, in model space. Independent of `fore`
- *               because `fore` is forced perpendicular to the held axis while a
- *               real forearm mostly runs *along* the weapon, back to the body.
+ * @param palm   Direction the palm faces: from the palm's surface toward the
+ *               held object's axis. Squared against `axis`.
+ * @param armDir Where the sleeve runs, in model space.
+ *
+ * The roll is driven off the palm normal rather than off a forearm vector,
+ * because the two are not independent: fixing where the wrist points fixes
+ * which quadrant of the handguard the hand can sit in, and the quadrant is the
+ * thing that decides whether the camera sees the back of the hand or nothing
+ * but a wrist. The sleeve is aimed separately, which is legitimate — the wrist
+ * of a C-clamp grip really is dorsiflexed by most of a right angle.
  */
-function poseHand(hand, hold, axis, fore, armDir) {
+function poseHand(hand, hold, axis, palm, armDir) {
   const x = _hx.copy(axis).normalize();
-  const f = _hf.copy(fore);
-  f.addScaledVector(x, -f.dot(x)).normalize();   // squared to the axis
-  const b = _hb.crossVectors(x, f);
-  _hm.makeBasis(x, f, b).multiply(hand.userData.basis);
+  const n = _hf.copy(palm);
+  n.addScaledVector(x, -n.dot(x)).normalize();   // squared to the axis
+  // Local +Y (wrist -> fingertips) is X cross N in the hand's own frame, so the
+  // same cross product in model space is where the knuckles have to point.
+  const y = _hb.crossVectors(x, n);
+  _hm.makeBasis(x, y, _hs.copy(n).negate());
   hand.quaternion.setFromRotationMatrix(_hm);
   hand.position.copy(hold).sub(
     _ho.copy(hand.userData.hold).applyQuaternion(hand.quaternion),
@@ -1399,31 +1407,44 @@ function buildViewmodel(id, textures) {
   // as though gripping a bar running left-to-right across the screen, which is
   // why neither one made contact with anything.
   const HAND_SCALE = 0.90;
+  // `mirror` builds the hand whose thumb sits on local +X. Chirality follows
+  // from palmOut = fingers x thumb for a right hand and thumb x fingers for a
+  // left one, and with the fingers at local +Y and the palm facing local -Z
+  // that puts a right hand's thumb at +X — so the firing hand is the mirrored
+  // one. The two flags used to be the wrong way round, which is why the support
+  // hand's fingers swept round the barrel in the wrong direction no matter what
+  // it was rolled to.
   const rightHand = glovedHand(glove, gloveShell, sleeveCloth, {
-    trigger: true, gripRadius: 0.022, holdY: 0.004, scale: HAND_SCALE,
+    mirror: true, trigger: true, gripRadius: 0.022, holdY: 0.004, scale: HAND_SCALE,
   });
   poseHand(
     rightHand,
     new THREE.Vector3(0, -0.062, 0.058),        // where the grip passes through the fist
-    new THREE.Vector3(0, -0.955, 0.296),        // down the grip: index at the top
-    new THREE.Vector3(-0.28, 0.10, 0.955),      // palm on the front strap of the grip
-    new THREE.Vector3(0.30, -0.62, 0.72),       // sleeve leaves down, back and right
+    new THREE.Vector3(0, 0.955, -0.296),        // up the grip: index at the top
+    new THREE.Vector3(0, -0.296, -0.955),       // palm on the grip's backstrap
+    new THREE.Vector3(0.42, -0.80, 0.43),       // sleeve leaves down, back and right
   );
   g.add(rightHand);
 
-  // Support hand. `fore` is chosen so the palm lands on the far-lower quadrant
-  // of the handguard — where the tube itself occludes it — with the knuckles
-  // just off the near-lower flank, so the four fingers climb the far side, cross
-  // the top and close past it onto the near side.
+  // Support hand, C-clamped on the handguard. The camera looks at the weapon
+  // from roughly 150 degrees round the barrel, and the roll is chosen against
+  // that: the palm sits at about 325 degrees, on the far-lower quadrant, where
+  // its own silhouette falls entirely inside the tube's — so the slab is behind
+  // the geometry it grips, with no sky or ground behind it — while the four
+  // fingers sweep from the far-lower flank, under the tube, and close on the
+  // near side at 155 degrees, right where the lens is. Rolled onto the near
+  // side instead, the palm hangs off the flank in open air, which is the
+  // cutting-board read; rolled with the old (inverted) chirality the fingers
+  // swept the wrong way and only their tips ever crested the tube.
   const leftHand = glovedHand(glove, gloveShell, sleeveCloth, {
-    mirror: true, thumbForward: true, gripRadius: 0.0248, holdY: 0.010, scale: HAND_SCALE,
+    thumbForward: true, gripRadius: 0.0248, holdY: 0.010, scale: HAND_SCALE,
   });
   poseHand(
     leftHand,
     new THREE.Vector3(0, 0.013, hgZ - 0.026),   // the handguard's own axis
-    new THREE.Vector3(0, 0, -1),                // knuckles spread along the barrel
-    new THREE.Vector3(-0.26, -0.78, 0.57),      // rolls the palm under the tube
-    new THREE.Vector3(-0.30, -0.78, 0.55),      // sleeve leaves down, back and left
+    new THREE.Vector3(0, 0, 1),                 // knuckles spread along the barrel
+    new THREE.Vector3(-0.819, 0.574, 0),        // palm on the tube's far-lower flank
+    new THREE.Vector3(-0.30, -0.80, 0.52),      // sleeve leaves down, back and left
   );
   g.add(leftHand);
 
