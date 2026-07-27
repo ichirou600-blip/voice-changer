@@ -296,12 +296,20 @@ function skyRadianceJS(rd, sd, opts) {
   }
 
   const sunGround = sunTransmittanceJS(ro, sd, mieScale);
+  // Multiply-scattered light has already lost the direct beam's directional
+  // character, and its spectrum comes from the scattering coefficient rather
+  // than from one path's transmittance. Modulating it per channel by the
+  // reddened beam cancels exactly the blue that Rayleigh produces, peaking the
+  // result in green — measured fog came out (0.62, 0.84, 0.77), green above
+  // blue, which no physical sky does. Drive the magnitude achromatically and
+  // let betaR carry the hue. Must match the GPU dome.
+  const sunGroundMean = (sunGround[0] + sunGround[1] + sunGround[2]) / 3;
   const msGate = Math.max(0, sd[1] + 0.12);
   const out = [0, 0, 0];
   for (let c = 0; c < 3; c++) {
     out[c] = ATMO.betaR[c] * phaseR * sumR[c] + ATMO.betaMs * phaseM * sumM[c];
     out[c] += (ATMO.betaR[c] * msR[c] + ATMO.betaMs * msM[c])
-      * (multiScatter / (4 * Math.PI)) * sunGround[c] * msGate;
+      * (multiScatter / (4 * Math.PI)) * sunGroundMean * msGate;
     if (hitsGround) out[c] += groundTint[c] * Math.exp(-od[c]) * Math.max(0, sd[1]);
     out[c] *= irradiance;
   }
@@ -1100,8 +1108,16 @@ export class Sky {
     // instead of staying at full strength in a different hue.
     const ambRadiance = [0, 1, 2].map((c) =>
       zenith[c] * 0.42 + upSun[c] * 0.26 + hSun[c] * 0.18 + hAway[c] * 0.14);
-    const amb = clampRGB(ambRadiance.map((x) => x * 3.0), 1.0);
-    this.ambientColor.setRGB(amb[0], amb[1], amb[2]);
+    // Clamping pinned green and blue at 1.0 and threw the hue away — measured
+    // (0.881, 1, 1), a flat cyan-white that flattens every shadowed surface.
+    // A light's colour is chromaticity and its intensity is magnitude, so
+    // normalise to unit maximum and let ambientIntensity below carry the
+    // strength. The fill still dims into the evening, because that dimming
+    // lives in the intensity rather than in a desaturating colour.
+    const ambMax = Math.max(ambRadiance[0], ambRadiance[1], ambRadiance[2], 1e-6);
+    this.ambientColor.setRGB(
+      ambRadiance[0] / ambMax, ambRadiance[1] / ambMax, ambRadiance[2] / ambMax,
+    );
     // Published for a rig that wants magnitude and hue separated; the colour
     // above already carries the magnitude for one that does not.
     this.ambientIntensity = Math.min(1.8, ambRadiance[1] * Math.PI * 1.1 + 0.15);
