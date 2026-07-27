@@ -1242,8 +1242,12 @@ export class RenderPipeline {
       motionBlurStrength: 0.5,
 
       dof: this.tier.dof,
-      dofNear: 0.9,
-      dofFar: 0.30,
+      // Scales are calibrated against a real lens: with focus at 30 m, a 35 mm
+      // f/2.8 puts ~20 full-res pixels of blur on a viewmodel 30 cm from the
+      // eye and well under one pixel on ground 5 m out. Anything larger softens
+      // the play space, which is exactly what you must never do in a shooter.
+      dofNear: 0.11,
+      dofFar: 0.12,
       dofMaxCoc: 9.0,
 
       bloom: true,

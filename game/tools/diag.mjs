@@ -66,6 +66,15 @@ const report = await page.evaluate(() => {
     sunIntensity: g.lighting.sun.intensity,
     ambient: g.sky.ambientColor.getHexString(),
     fogParams: { density: g.sky.fogParams.density, heightFalloff: g.sky.fogParams.heightFalloff, color: g.sky.fogParams.color.getHexString() },
+    // getHexString() clamps, which hides an out-of-range colour. These are the
+    // raw components — anything above 1.0 here will blow out whatever it is
+    // mixed into, however modest the fog opacity is.
+    rawColors: {
+      fog: [g.sky.fogParams.color.r, g.sky.fogParams.color.g, g.sky.fogParams.color.b].map((v) => +v.toFixed(3)),
+      ambient: [g.sky.ambientColor.r, g.sky.ambientColor.g, g.sky.ambientColor.b].map((v) => +v.toFixed(3)),
+      sun: [g.sky.sunColor.r, g.sky.sunColor.g, g.sky.sunColor.b].map((v) => +v.toFixed(3)),
+      sceneFog: e.scene.fog ? [e.scene.fog.color.r, e.scene.fog.color.g, e.scene.fog.color.b].map((v) => +v.toFixed(3)) : null,
+    },
     luma: { mean: +(sum / (64 * 36)).toFixed(1), min, max, sky: +(skySum / skyN).toFixed(1), ground: +(groundSum / groundN).toFixed(1) },
     stats: { fps: +e.stats.fps.toFixed(1), drawCalls: e.stats.drawCalls, triangles: e.stats.triangles },
   };
