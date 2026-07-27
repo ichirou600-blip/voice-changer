@@ -289,21 +289,41 @@ export class PhysicsWorld {
    * Resolve a capsule against the static world by iterative depenetration.
    * The capsule is defined by its base position, radius and total height.
    * Returns { position, grounded, groundNormal, hitWall, wallNormal }.
+   *
+   * Two details here are load-bearing:
+   *
+   * 1. Contacts are detected out to radius + SKIN but only pushed when they are
+   *    genuinely interpenetrating. Without that margin a capsule that settles
+   *    exactly on the floor sits at distance == radius, fails a strict test, and
+   *    reports airborne — so the player flickers between grounded and falling on
+   *    perfectly flat ground.
+   *
+   * 2. When the capsule axis ends up *behind* a triangle's plane it is inside
+   *    the solid, and the vector from surface to axis points the wrong way —
+   *    pushing deeper in. Those contacts are collected separately and resolved
+   *    along the face normal, taking only the shallowest exit. Resolving all of
+   *    them would have opposite faces of a thin wall fight each other, which is
+   *    exactly how a character tunnels through it.
    */
   resolveCapsule(position, radius, height, result = {}) {
+    const SKIN = 0.02;
     const half = Math.max(0.001, height * 0.5 - radius);
     let px = position.x, py = position.y + height * 0.5, pz = position.z;
     let grounded = false, hitWall = false;
     const gn = result.groundNormal || new THREE.Vector3(0, 1, 0);
     const wn = result.wallNormal || new THREE.Vector3();
     gn.set(0, 1, 0); wn.set(0, 0, 0);
-    let bestGroundY = -1;
+    let bestGroundY = -Infinity;
 
     for (let iter = 0; iter < 4; iter++) {
       let moved = false;
+      // Shallowest exit for the "axis is inside the solid" case, resolved after
+      // every triangle has been considered.
+      let exitDepth = Infinity, exitX = 0, exitY = 0, exitZ = 0;
+
       const list = this.queryAABB(
-        px - radius - 0.1, py - half - radius - 0.1, pz - radius - 0.1,
-        px + radius + 0.1, py + half + radius + 0.1, pz + radius + 0.1,
+        px - radius - SKIN - 0.1, py - half - radius - SKIN - 0.1, pz - radius - SKIN - 0.1,
+        px + radius + SKIN + 0.1, py + half + radius + SKIN + 0.1, pz + radius + SKIN + 0.1,
       );
       for (let li = 0; li < list.length; li++) {
         const tri = list[li];
@@ -319,24 +339,48 @@ export class PhysicsWorld {
         const segBot = _q.set(px, py - half, pz);
         const cp = closestPointSegmentTriangle(segBot, segTop, _v0, _v1, _v2, _n, _cpOut);
         // Vector from the closest triangle point to the closest segment point:
-        // its length is the penetration test and its direction is the push-out.
+        // its length is the separation and its direction is the push-out.
         const sx = cp.sx - cp.px, sy = cp.sy - cp.py, sz = cp.sz - cp.pz;
         const dist = Math.hypot(sx, sy, sz);
-        if (dist >= radius || dist < 1e-7) continue;
+        if (dist >= radius + SKIN) continue;
 
-        const depth = radius - dist;
+        // Signed distance along the face normal tells us which side we are on.
+        const signed = sx * _n.x + sy * _n.y + sz * _n.z;
+
+        if (signed < 1e-6 || dist < 1e-7) {
+          // Behind the plane (or exactly on it): inside the solid. Record the
+          // cheapest way out along the face normal and move on.
+          const depth = radius - signed;
+          if (depth > 0 && depth < exitDepth) {
+            exitDepth = depth; exitX = _n.x; exitY = _n.y; exitZ = _n.z;
+          }
+          continue;
+        }
+
         const nx = sx / dist, ny = sy / dist, nz = sz / dist;
-        px += nx * depth; py += ny * depth; pz += nz * depth;
-        moved = true;
+        const depth = radius - dist;
+        if (depth > 0) {
+          px += nx * depth; py += ny * depth; pz += nz * depth;
+          moved = true;
+        }
 
+        // Contact classification uses the skin, so resting contacts still count.
         if (ny > 0.5) {
           grounded = true;
           if (cp.py > bestGroundY) { bestGroundY = cp.py; gn.set(nx, ny, nz); }
-        } else if (Math.abs(ny) <= 0.5) {
+        } else if (ny > -0.5) {
           hitWall = true;
           wn.set(nx, ny, nz);
         }
       }
+
+      if (exitDepth < Infinity) {
+        px += exitX * exitDepth; py += exitY * exitDepth; pz += exitZ * exitDepth;
+        moved = true;
+        if (exitY > 0.5) { grounded = true; gn.set(exitX, exitY, exitZ); }
+        else if (exitY > -0.5) { hitWall = true; wn.set(exitX, exitY, exitZ); }
+      }
+
       if (!moved) break;
     }
 
