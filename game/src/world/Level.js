@@ -64,8 +64,18 @@ const MATERIALS = {
   panel: { tex: 'metalPanel', metalness: 0.68, side: THREE.DoubleSide, surface: SURFACE.METAL },
   wood: { tex: 'wood', roughness: 0.86, surface: SURFACE.WOOD },
   fabric: { tex: 'cloth', side: THREE.DoubleSide, roughness: 0.97, surface: SURFACE.FABRIC },
+  // Hung washing is plain linen/cotton, not striped awning duck. It gets its
+  // own map because the awning stripes forced the sheet UVs into a 1/8th-wide
+  // band, and a band that narrow stretched the weave into a horizontal comb —
+  // which is exactly why the laundry read as corrugated sheet metal.
+  sheet: { tex: 'linen', side: THREE.DoubleSide, roughness: 0.96, surface: SURFACE.FABRIC },
   granular: { tex: 'sand', roughness: 1, surface: SURFACE.SAND },
+  // Sacking. A sandbag is woven jute with a folded seam and dirt driven into
+  // the weave; the dune texture it used to borrow has wind ripples on it.
+  hessian: { tex: 'hessian', roughness: 1, surface: SURFACE.SAND },
   roofdeck: { tex: 'tarFelt', roughness: 1, surface: SURFACE.CONCRETE },
+  // Standing water on felt: same map, but the read is gloss, not hue.
+  roofpond: { tex: 'tarFelt', roughness: 0.42, surface: SURFACE.CONCRETE },
   rubber: { tex: 'rubberTread', roughness: 0.88, surface: SURFACE.RUBBER },
   dark: { tex: 'concrete', roughness: 1, surface: SURFACE.CONCRETE },
   glass: { roughness: 0.12, metalness: 0.35, surface: SURFACE.GLASS },
@@ -100,14 +110,31 @@ const PALETTE = {
   metal: { batch: 'metal', color: 0x9aa0a6 },
   panel: { batch: 'panel', color: 0xb0b4b6 },
   wood: { batch: 'wood', color: 0xb59a72 },
+  // Window joinery is old, unpainted, sun-grey timber. Sharing the crate/stall
+  // wood tint made every jamb and mullion a saturated tan bar sitting inside a
+  // dark opening, which at facade range reads as an orange rectangle.
+  joinery: { batch: 'wood', color: 0x7e766a },
   fabric: { batch: 'fabric', color: 0xffffff },
-  sandbag: { batch: 'granular', color: 0x9c8f66 },
+  sheet: { batch: 'sheet', color: 0xffffff },
+  sandbag: { batch: 'hessian', color: 0xd8cba4 },
+  sandbagDark: { batch: 'hessian', color: 0x8b7d5c },
   sand: { batch: 'granular', color: 0xc9ad7d },
+  // Painted roller shutters. They used to borrow the rust palette, whose warm
+  // tan under a dust cast is the "random orange rectangle" seen in every
+  // shopfront; shutters in this part of the world are painted, and paint fades
+  // grey-green, not orange.
+  shutterA: { batch: 'ferrous', color: 0x8d9289 },
+  shutterB: { batch: 'ferrous', color: 0x707d80 },
+  shutterC: { batch: 'ferrous', color: 0x9a8f7e },
+  board: { batch: 'wood', color: 0x87795f },
   // Deliberately neutral: `_colorize` adds a warm dust cast to every up-facing
   // surface, and a warm base under it turns a bitumen roof into a sand dune.
   roof: { batch: 'roofdeck', color: 0x74746f },
   roofWet: { batch: 'roofdeck', color: 0x464640 },
   roofPatch: { batch: 'roofdeck', color: 0x62625b },
+  // Neutral, not navy. The pool reads wet because it is dark and glossy; if the
+  // hue does the work you get paint spatter.
+  roofPond: { batch: 'roofpond', color: 0x3c3a35 },
   rubber: { batch: 'rubber', color: 0x2a2a30 },
   dark: { batch: 'dark', color: 0x16130f },
   glass: { batch: 'glass', color: 0x1c2429 },
@@ -124,7 +151,7 @@ const NO_CAST = new Set(['dark', 'glass', 'sign', 'lamp']);
  * a dozen cells each buys culling on geometry that was never the cost and
  * spends a dozen draw calls doing it. One bucket in the core, one outside.
  */
-const SPARSE = new Set(['glass', 'sign', 'lamp', 'panel', 'rubber', 'fabric', 'metal', 'dark', 'granular']);
+const SPARSE = new Set(['glass', 'sign', 'lamp', 'panel', 'rubber', 'fabric', 'sheet', 'metal', 'dark', 'granular', 'hessian']);
 
 /** Plausible laundry: whites, work blues, faded ochres. Never a random hue. */
 const LAUNDRY_COLORS = [
@@ -709,6 +736,8 @@ export class Level {
 
     if (name === 'tarFelt') return this._tarFeltTexture(c, g, rnd, N, H, R);
     if (name === 'rubberTread') return this._rubberTexture(c, g, rnd, N, H, R);
+    if (name === 'hessian') return this._hessianTexture(c, g, rnd, N, H, R);
+    if (name === 'linen') return this._linenTexture(c, g, rnd, N, H, R);
 
     if (name === 'wood') {
       g.fillStyle = '#b08b5d';
@@ -825,23 +854,28 @@ export class Level {
   _tarFeltTexture(c, g, rnd, N, H, R) {
     const macro = fbmField(rnd, N, 3, 3);          // weathering and old repairs
     const patch = fbmField(rnd, N, 5, 2);          // silver-coat patches
-    const pond = fbmField(rnd, N, 4, 2);           // where water stands
+    const pond = fbmField(rnd, N, 2, 2);           // where water stands
     const chip = fbmField(rnd, N, 40, 3, 0.55);    // gravel dressing
     const micro = fbmField(rnd, N, 110, 2);        // felt tooth
     const img = g.createImageData(N, N);
     const px = img.data;
-    // Roll laps at two per tile. Kept faint on purpose — the strong seams are
-    // modelled, and a texture grid on top of a geometry grid is what turns a
-    // tar roof into a floor of paving slabs.
+    // Roll laps at two per tile, with a real profile: the overlapping sheet
+    // stands proud by its own thickness and throws a shadow off its leading
+    // edge. A one-texel dark hairline is an aliasing generator, not a seam.
     const lapY = (y) => {
-      const t = Math.abs(((y / N) * 2 % 1) - 0.02);
-      return Math.exp(-t * t * 320);
+      const t = ((y / N) * 2 % 1) - 0.03;
+      // 0 outside the lap, 1 on the raised sheet, with a hard leading edge.
+      return { on: smoothstep(-0.055, -0.030, t) * smoothstep(0.075, 0.045, t),
+               edge: Math.exp(-Math.pow((t + 0.040) / 0.011, 2)) };
     };
     for (let y = 0; y < N; y++) {
+      const lap = lapY(y);
       for (let x = 0; x < N; x++) {
         const i = y * N + x;
-        const seam = lapY(y);
-        const wet = smoothstep(0.50, 0.84, pond[i]);
+        // Ponding is a wide, soft-edged depression, not a paint blob: the
+        // read has to come off gloss and value, because a hue shift on a
+        // near-black surface is the one thing that cannot look like water.
+        const wet = smoothstep(0.36, 0.90, pond[i]);
         const sil = smoothstep(0.58, 0.71, patch[i]);
         const grit = smoothstep(0.30, 0.82, chip[i]);
         // Bitumen base, gravel lifting it, ponding sinking it, repair patches
@@ -850,16 +884,21 @@ export class Level {
         // of flattening into sensor grain at lag two.
         let v = 0.28 + macro[i] * 0.20 + grit * 0.34 + micro[i] * 0.12;
         v = lerp(v, 0.44, sil);
-        v *= 1 - wet * 0.42;
-        v *= 1 - seam * 0.12;
+        v *= 1 - wet * 0.52;                       // darker, and only darker
+        v *= 1 - lap.edge * 0.34;                  // shadow under the lap edge
+        v *= 1 + lap.on * 0.06;                    // the sheet on top is fresher
         const k = i * 4;
-        px[k] = clamp(v * 1.0, 0, 1) * 255;
-        px[k + 1] = clamp(v * 0.995, 0, 1) * 255;
-        px[k + 2] = clamp(v * 0.98, 0, 1) * 255;
+        // Deliberately neutral-warm. Any blue here compounds with the sky fill
+        // and the pools go navy.
+        px[k] = clamp(v * 1.015, 0, 1) * 255;
+        px[k + 1] = clamp(v * 1.0, 0, 1) * 255;
+        px[k + 2] = clamp(v * 0.965, 0, 1) * 255;
         px[k + 3] = 255;
-        H[i] = grit * 0.55 + micro[i] * 0.22 + macro[i] * 0.12 + seam * 0.22 - wet * 0.3;
-        // Dry chippings are matte; standing water and fresh bitumen are not.
-        R[i] = clamp(0.94 + grit * 0.06 - wet * 0.58 - sil * 0.10, 0.10, 1);
+        H[i] = grit * 0.55 * (1 - wet * 0.8) + micro[i] * 0.22 + macro[i] * 0.12
+             + lap.on * 0.42 - lap.edge * 0.18 - wet * 0.34;
+        // Dry chippings are matte; standing water is glossy but not a mirror —
+        // past about 0.3 the sky becomes the only thing you can see in it.
+        R[i] = clamp(0.94 + grit * 0.06 - wet * 0.44 - sil * 0.10, 0.36, 1);
       }
     }
     g.putImageData(img, 0, 0);
@@ -870,6 +909,111 @@ export class Level {
       g.fillRect(x, y, r, r);
     }
     return this._localSet('tarFelt', c, H, R, 1.9);
+  }
+
+  /**
+   * Hessian sacking — the material a sandbag is actually made of.
+   *
+   * A 2/2 twill, not a plain weave: the float pattern steps one cell per row,
+   * which is what gives jute its diagonal rib. Every yarn carries its own
+   * thickness so the weave is irregular rather than a screen door, the gaps
+   * between yarns are open enough to see the fill behind, and the grime is
+   * driven into the interstices rather than laid over the top — sacking that
+   * has stood in the sun is pale on the crowns and near-black in the weave.
+   */
+  _hessianTexture(c, g, rnd, N, H, R) {
+    const T = 6;                                   // texels per yarn
+    const nT = (N / T) | 0;
+    const yarnU = new Float32Array(nT), yarnV = new Float32Array(nT);
+    for (let i = 0; i < nT; i++) {
+      yarnU[i] = 0.70 + rnd() * 0.62;
+      yarnV[i] = 0.70 + rnd() * 0.62;
+    }
+    const soil = fbmField(rnd, N, 4, 3);           // where the bag sat in the mud
+    const bleach = fbmField(rnd, N, 7, 3);         // sun-rotted patches
+    const fibre = fbmField(rnd, N, 90, 2);         // loose fibre fuzz
+    const img = g.createImageData(N, N);
+    const px = img.data;
+    for (let y = 0; y < N; y++) {
+      const cy = (y / T) | 0, ly = ((y % T) + 0.5) / T;
+      const rv = Math.sin(ly * Math.PI);
+      for (let x = 0; x < N; x++) {
+        const i = y * N + x;
+        const cx = (x / T) | 0, lx = ((x % T) + 0.5) / T;
+        const ru = Math.sin(lx * Math.PI);
+        const tu = yarnU[cx % nT], tv = yarnV[cy % nT];
+        // 2/2 twill float pattern.
+        const over = ((((cx - cy) % 4) + 4) % 4) < 2;
+        const top = over ? ru * tu : rv * tv;
+        const under = over ? rv * tv : ru * tu;
+        const h = top * 0.80 + under * 0.18;
+        // Open sett: where both yarns are at their edges the weave has a hole.
+        const hole = Math.max(0, 1 - ru * 1.45) * Math.max(0, 1 - rv * 1.45);
+        const dirt = clamp(soil[i] * 0.62 + (1 - h) * 0.55 + hole * 0.5, 0, 1);
+        let v = 0.70 + h * 0.40 - hole * 0.26;
+        v *= 0.76 + bleach[i] * 0.42;
+        v *= 1 - dirt * 0.30;
+        v += (fibre[i] - 0.5) * 0.05;
+        v = clamp(v, 0.03, 1);
+        const k = i * 4;
+        // Near-neutral with a faint warm bias: the jute hue arrives as a tint.
+        px[k] = v * 255; px[k + 1] = v * 249; px[k + 2] = v * 232; px[k + 3] = 255;
+        H[i] = h * 0.86 - hole * 0.55 + (fibre[i] - 0.5) * 0.10 + soil[i] * 0.06;
+        // Heavy roughness break: crowns are rubbed smooth by handling, the weave
+        // itself is dead matte, and wet grime in the sett is matter still.
+        R[i] = clamp(0.98 - h * 0.22 + dirt * 0.14 - bleach[i] * 0.06, 0.55, 1);
+      }
+    }
+    g.putImageData(img, 0, 0);
+    // Stencil ink and a few torn fibres pulled out of the weave.
+    for (let i = 0; i < 90; i++) {
+      const x = rnd() * N, y = rnd() * N;
+      g.fillStyle = `rgba(48,42,30,${0.10 + rnd() * 0.16})`;
+      g.fillRect(x, y, 1 + rnd() * 9, 1);
+    }
+    return this._localSet('hessian', c, H, R, 3.2);
+  }
+
+  /**
+   * Plain woven cotton sheeting for hung washing.
+   *
+   * The awning canvas map carries eight colour bands, which forced every hung
+   * sheet to sit inside a 1/8th-wide strip of u; stretched over half a metre of
+   * cloth that made the weft into a regular horizontal rib six or seven pixels
+   * apart, and the laundry read as corrugated roofing. This map has no bands,
+   * so a sheet can take the whole tile at an isotropic density.
+   */
+  _linenTexture(c, g, rnd, N, H, R) {
+    const T = 4;
+    const wrinkle = fbmField(rnd, N, 5, 3);
+    const soil = fbmField(rnd, N, 9, 3);
+    const fuzz = fbmField(rnd, N, 120, 2);
+    const img = g.createImageData(N, N);
+    const px = img.data;
+    for (let y = 0; y < N; y++) {
+      const ly = ((y % T) + 0.5) / T, rv = Math.sin(ly * Math.PI);
+      for (let x = 0; x < N; x++) {
+        const i = y * N + x;
+        const lx = ((x % T) + 0.5) / T, ru = Math.sin(lx * Math.PI);
+        const over = (((x / T) | 0) + ((y / T) | 0)) % 2 === 0;
+        // Plain weave, but the two directions contribute equally so nothing in
+        // the map has a preferred axis for the eye to lock on to.
+        const h = over ? ru * 0.62 + rv * 0.30 : rv * 0.62 + ru * 0.30;
+        // Soft wrinkle shading: this is the crumple a washed sheet never loses.
+        const w = wrinkle[i];
+        let v = 0.80 + h * 0.16;
+        v *= 0.84 + w * 0.28;
+        v *= 1 - soil[i] * 0.16;
+        v += (fuzz[i] - 0.5) * 0.03;
+        v = clamp(v, 0.05, 1);
+        const k = i * 4;
+        px[k] = v * 255; px[k + 1] = v * 253; px[k + 2] = v * 246; px[k + 3] = 255;
+        H[i] = h * 0.42 + (w - 0.5) * 0.55 + (fuzz[i] - 0.5) * 0.08;
+        R[i] = clamp(0.93 + (1 - h) * 0.06 - w * 0.04, 0.80, 1);
+      }
+    }
+    g.putImageData(img, 0, 0);
+    return this._localSet('linen', c, H, R, 1.1);
   }
 
   /** Tyre rubber: circumferential ribs, sidewall lettering relief, matte. */
@@ -962,6 +1106,17 @@ export class Level {
    * Ground material. Three procedural sets blended by a per-vertex splat
    * attribute in world space at three different tiling rates, plus a very low
    * frequency modulation on top — between them there is no visible repeat.
+   *
+   * On top of the splat sits a layer of *road* structure authored directly in
+   * world metres. A carriageway is not a texture: it is a history of wear at
+   * scales the sampler cannot reach. The library's asphalt map is a Worley
+   * aggregate whose cells land at a couple of pixels once it is tiled hard
+   * enough to hide the repeat, and a cell network at that size is not a
+   * surface, it is grain — the eye reads it as sensor noise and the road
+   * flattens. So the fine tiles are pulled back and the readable structure —
+   * wheel-path polish, patch repairs with hard edges, cracks that run, silt
+   * banked against the kerb — is generated here with correlation lengths of
+   * metres rather than millimetres.
    */
   _groundMaterial() {
     const road = this._texSet('asphalt');
@@ -984,43 +1139,183 @@ export class Level {
           '#include <begin_vertex>\n'
           + 'vSplatW = splat / max(1e-4, splat.x + splat.y + splat.z);\n'
           + 'vSplatUV = (modelMatrix * vec4(transformed, 1.0)).xz;');
+      // Everything below is authored in world metres. `gRoad()` is evaluated
+      // once and its results shared by the albedo, roughness and normal
+      // patches, so the noise cost is paid a single time per fragment.
+      const ROAD_FNS = `
+varying vec3 vSplatW;
+varying vec2 vSplatUV;
+uniform sampler2D uSandMap; uniform sampler2D uSandNrm;
+uniform sampler2D uDirtMap; uniform sampler2D uDirtNrm;
+
+float gHash(vec2 p){ vec3 q = fract(vec3(p.xyx) * vec3(0.1031,0.1030,0.0973));
+  q += dot(q, q.yzx + 33.33); return fract((q.x + q.y) * q.z); }
+float gNoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
+  return mix(mix(gHash(i), gHash(i+vec2(1,0)), f.x),
+             mix(gHash(i+vec2(0,1)), gHash(i+vec2(1,1)), f.x), f.y); }
+float gFbm(vec2 p){ float s = 0.0, a = 0.5;
+  for (int i = 0; i < 3; i++) { s += a * gNoise(p); p = p * 2.07 + 3.1; a *= 0.5; }
+  return s * 1.1429; }
+
+// x wheel-path polish, y patch repair, z patch lip, w crack
+vec4 gRoad(vec2 P) {
+  // 1 — wheel paths. Two per direction, wandering slowly along the street, and
+  //     absent across the plaza where traffic has nowhere to queue. 1.6 m wide,
+  //     which is tens of pixels at any range the road is legible at all.
+  float za = abs(P.y + (gNoise(vec2(P.x * 0.045, 11.3)) - 0.5) * 1.9);
+  float wheel = exp(-pow((za - 2.10) * 1.25, 2.0)) + exp(-pow((za - 4.90) * 1.25, 2.0));
+  wheel *= smoothstep(9.0, 20.0, abs(P.x));
+  wheel *= 0.55 + 0.60 * gNoise(P * vec2(0.09, 0.6));
+
+  // 2 — patch repairs. A hashed cell grid at ~6 m, each cell holding at most
+  //     one rectangle of new binder with a genuinely hard, slightly ragged
+  //     edge. Hard edges are the whole point: a repair is cut with a saw.
+  vec2 pc = P * 0.168, ci = floor(pc), cf = fract(pc);
+  float pa = gHash(ci + 4.1);
+  vec2 rc = vec2(0.24 + 0.52 * gHash(ci + 1.7), 0.24 + 0.52 * gHash(ci + 9.3));
+  vec2 rh = vec2(0.08 + 0.24 * gHash(ci + 5.9), 0.08 + 0.24 * gHash(ci + 2.3));
+  vec2 pd = abs(cf - rc) - rh;
+  float pw = max(pd.x, pd.y) + (gFbm(P * 2.1) - 0.5) * 0.024;
+  float has = step(0.62, pa);
+  // "patch" is a reserved word in GLSL ES 3.0 (tessellation); this shader
+  // silently failed to compile under that name and took the whole road with it.
+  // The edge is sawn, but it is antialiased against its own screen-space
+  // footprint: a hard step on a world-space field shimmers at range.
+  float aa = max(fwidth(pw), 1e-4);
+  float repair = (1.0 - smoothstep(-aa, aa, pw)) * has;
+  float lip = (1.0 - smoothstep(aa, aa + 0.012, abs(pw))) * has;
+
+  // 3 — cracks. Taken as the contour of a smooth field rather than the crest of
+  //     a rough one, so each crack is one continuous curve; the field is
+  //     squashed along the street, so the network has a direction the way
+  //     thermal and load cracking actually does.
+  //
+  //     The band width has to be scaled to the field's own gradient. A fixed
+  //     threshold on a field that changes over twelve metres does not give a
+  //     crack, it gives a two-metre-wide amorphous stain — which is exactly
+  //     what the old dry-versus-damp term was, and exactly what a player reads
+  //     as a shadow that is not there. fwidth() then keeps the line at least a
+  //     pixel wide however far away it is, so it never breaks into dots.
+  //     The profile is a solid core with a one-step ramp, not a ramp all the
+  //     way across: a smoothstep from zero to the full half-width makes a soft
+  //     rope, and a soft rope lying on a road reads as a cable, not a crack.
+  float distress = smoothstep(0.36, 0.62, gNoise(P * 0.062 + 5.0));
+  float nl = gFbm(P * vec2(0.060, 0.22));
+  float wl = max(0.0105, fwidth(nl) * 0.9);
+  float crack = 1.0 - smoothstep(wl * 0.30, wl, abs(nl - 0.50));
+  float nt = gFbm(P * vec2(0.24, 0.052) + 21.7);
+  float wt = max(0.0125, fwidth(nt) * 0.9);
+  crack = max(crack, (1.0 - smoothstep(wt * 0.30, wt, abs(nt - 0.50))) * 0.78);
+  // Alligator crazing only where the road has already failed.
+  float nc = gFbm(P * 0.95 + 8.3);
+  float wc = max(0.020, fwidth(nc) * 0.9);
+  crack = max(crack, (1.0 - smoothstep(wc * 0.30, wc, abs(nc - 0.5))) * distress * 0.9);
+  crack *= 0.30 + 0.70 * distress;
+  crack *= 1.0 - repair * 0.92;                 // a repair covers the crack
+  return vec4(wheel, repair, lip, clamp(crack, 0.0, 1.0));
+}
+
+// Silt, grit and blown dust banked along the kerb line and the plaza edge.
+float gKerb(vec2 P) {
+  float a = smoothstep(1.55, 0.10, abs(abs(P.y) - 6.95));
+  float b = smoothstep(1.55, 0.10, abs(abs(P.x) - 21.9)) * step(abs(P.y), 22.6);
+  float c = smoothstep(1.55, 0.10, abs(abs(P.y) - 21.9)) * step(abs(P.x), 22.6);
+  return clamp(max(a, max(b, c)) * (0.45 + 0.85 * gFbm(P * 0.55)), 0.0, 1.0);
+}
+`;
+      // onBeforeCompile is handed the shader with its #include directives still
+      // unresolved, so a replacement aimed at a line *inside* a chunk silently
+      // matches nothing and the injection is lost without any error. Every one
+      // of the three replacements below used to miss for exactly that reason,
+      // which is why the road was still the library's raw asphalt map — a
+      // near-black Worley mosaic whose cell walls are the network the review
+      // measured, with none of the structure authored here ever reaching it.
+      // Splice the chunks in by hand first, then patch their bodies.
+      for (const chunk of ['map_fragment', 'roughnessmap_fragment', 'normal_fragment_maps']) {
+        sh.fragmentShader = sh.fragmentShader.replace(
+          `#include <${chunk}>`, THREE.ShaderChunk[chunk]);
+      }
       sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>',
-          '#include <common>\nvarying vec3 vSplatW;\nvarying vec2 vSplatUV;\n'
-          + 'uniform sampler2D uSandMap; uniform sampler2D uSandNrm;\n'
-          + 'uniform sampler2D uDirtMap; uniform sampler2D uDirtNrm;')
+        .replace('#include <common>', '#include <common>\n' + ROAD_FNS)
         .replace('vec4 sampledDiffuseColor = texture2D( map, vMapUv );',
           // The library's asphalt is almost black, so it has to be lifted. The
           // pedestal in that lift is pure dilution: everything above it is the
           // signal. Dropping it from 0.30 to 0.06 and paying for the lost mean
           // with gain widens the readable range instead of shifting it, which
           // is where the road's 3.6% RMS contrast was going.
-          'vec3 aTex = texture2D(map, vSplatUV*0.34).rgb;\n'
-          // Second scale on the same map: chip-seal aggregate at ~2 tiles/m, the
-          // frequency that makes autocorrelation keep climbing with pixel lag.
-          + 'float aggr = texture2D(map, vSplatUV*3.20).g;\n'
-          + 'vec3 cRoad = vec3(0.235,0.233,0.245) * (0.06 + 11.0 * aTex) * (0.74 + 0.55 * aggr);\n'
+          'vec4 rd = gRoad(vSplatUV);\n'
+          + 'float kerbSilt = gKerb(vSplatUV);\n'
+          + 'vec3 aTex = texture2D(map, vSplatUV*0.235).rgb;\n'
+          + 'float aggr = texture2D(map, vSplatUV*0.66 + 0.37).g;\n'
+          // The library's asphalt map is a Worley mosaic. Run through a gain of
+          // eighteen its cell WALLS become a mesh laid over the entire
+          // carriageway, and a visible cell network at any size is the loudest
+          // possible "this is noise, not a surface" tell — it is the thing the
+          // road was being marked down for. Compressed to a third of its
+          // contrast it goes back to being aggregate tooth, and the structure
+          // underneath can finally be seen past it.
+          + 'float aLum = clamp(0.10 + 18.0*dot(aTex, vec3(0.3333)), 0.0, 2.4);\n'
+          + 'float grit = mix(1.0, aLum, 0.26) * (0.93 + 0.16*aggr);\n'
+          // Multi-scale carriageway: 6 m of old seal and shade, 1.6 m of sweep,
+          // a longitudinal streak left by the paver, 18 cm of mottle.
+          + 'float rbase = 0.092;\n'
+          + 'rbase *= 0.62 + 0.80 * gFbm(vSplatUV * 0.17);\n'
+          + 'rbase *= 0.84 + 0.34 * gNoise(vSplatUV * 0.62);\n'
+          + 'rbase *= 0.90 + 0.20 * gNoise(vSplatUV * vec2(0.22, 2.4));\n'
+          + 'rbase *= 0.93 + 0.15 * gNoise(vSplatUV * 5.5);\n'
+          + 'vec3 cRoad = vec3(1.09,1.02,0.90) * rbase * grit;\n'
+          + 'cRoad *= 1.0 - rd.x * 0.20;\n'                      // polished paths sit darker
+          + 'cRoad = mix(cRoad, cRoad * 0.52 + vec3(0.020,0.019,0.017), rd.y);\n'
+          + 'cRoad = mix(cRoad, cRoad * 0.40, rd.z);\n'          // tar band round the cut
+          + 'cRoad = mix(cRoad, cRoad * 0.40, rd.w);\n'
+          + 'cRoad = mix(cRoad, vec3(0.235,0.205,0.152), kerbSilt * 0.60);\n'
           + 'vec3 cSand = vec3(1.05,0.94,0.72) * texture2D(uSandMap, vSplatUV*0.21).rgb;\n'
           + 'vec3 cDirt = vec3(0.86,0.74,0.55) * texture2D(uDirtMap, vSplatUV*0.13).rgb;\n'
           + 'vec3 splatC = cRoad*vSplatW.x + cSand*vSplatW.y + cDirt*vSplatW.z;\n'
-          + 'splatC *= 0.78 + 0.46 * texture2D(uDirtMap, vSplatUV*0.0125).r;\n'
+          + 'splatC *= 0.80 + 0.42 * texture2D(uDirtMap, vSplatUV*0.0125).r;\n'
           + 'vec4 sampledDiffuseColor = vec4(splatC, 1.0);')
         .replace('vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;',
-          'vec3 mapN = ( texture2D(normalMap, vSplatUV*0.34).xyz * vSplatW.x\n'
-          + '            + texture2D(uSandNrm, vSplatUV*0.21).xyz * vSplatW.y\n'
-          + '            + texture2D(uDirtNrm, vSplatUV*0.13).xyz * vSplatW.z ) * 2.0 - 1.0;\n'
-          // Aggregate-scale relief on the tarmac only; sand and dirt already
-          // carry their own at a readable size.
-          + 'mapN.xy += (texture2D(normalMap, vSplatUV*3.1).xy * 2.0 - 1.0) * 0.65 * vSplatW.x;');
+          // The aggregate is tooth, not walls: at full strength the asphalt
+          // normal map draws every Worley cell boundary as a raised ridge and
+          // the road becomes visible crazy paving.
+          'vec3 nRoad = texture2D(normalMap, vSplatUV*0.235).xyz * 2.0 - 1.0;\n'
+          + 'nRoad.xy *= 0.40;\n'
+          + 'vec3 mapN = nRoad * vSplatW.x\n'
+          + '  + (texture2D(uSandNrm, vSplatUV*0.21).xyz * 2.0 - 1.0) * vSplatW.y\n'
+          + '  + (texture2D(uDirtNrm, vSplatUV*0.13).xyz * 2.0 - 1.0) * vSplatW.z;\n'
+          // Real height steps: the sawn lip around a repair and the slot of a
+          // crack. Screen-space derivatives of the mask give the step its
+          // gradient for free and scale it with the pixel footprint, so the
+          // edge stays a line instead of aliasing into dots.
+          + '{ vec2 gp = vec2(dFdx(rd.z), dFdy(rd.z));\n'
+          + '  vec2 gc = vec2(dFdx(rd.w), dFdy(rd.w));\n'
+          + '  mapN.xy += clamp(gp * 22.0, -0.6, 0.6) * vSplatW.x;\n'
+          + '  mapN.xy -= clamp(gc * 26.0, -0.7, 0.7) * vSplatW.x; }')
       sh.fragmentShader = sh.fragmentShader.replace('float roughnessFactor = roughness;',
-        'float roughnessFactor = roughness * (0.66*vSplatW.x + 0.98*vSplatW.y + 0.93*vSplatW.z);\n'
-        // Asphalt is read almost entirely off its gloss: a high-frequency
-        // detail tile at ~8 tiles/m for the aggregate itself, and a very slow
-        // one for the dry-versus-damp patches that give tarmac its scale.
-        + 'float micro = texture2D(map, vSplatUV*8.0).r;\n'
-        + 'float damp = texture2D(uDirtMap, vSplatUV*0.045).r;\n'
-        + 'roughnessFactor *= mix(1.0, mix(0.48, 1.12, damp), vSplatW.x) * (0.84 + 0.34 * micro);\n'
-        + 'roughnessFactor = clamp(roughnessFactor, 0.06, 1.0);');
+        'float roughnessFactor = roughness * (0.93*vSplatW.x + 0.98*vSplatW.y + 0.93*vSplatW.z);\n'
+        // Asphalt is read almost entirely off its gloss — but off *structured*
+        // gloss. The old term was a 22 m dry/damp field, which produced one
+        // amorphous low-roughness continent across the whole foreground that a
+        // player reads as a shadow. Every term here is a thing with a shape.
+        + 'float micro = texture2D(map, vSplatUV*0.95).r;\n'
+        + 'float rq = 1.0;\n'
+        + 'rq *= 1.0 - rd.x * 0.40;\n'      // traffic polishes the wheel paths
+        + 'rq *= 1.0 - rd.y * 0.26;\n'      // fresh binder is smoother
+        + 'rq *= 1.0 + rd.w * 0.10;\n'      // a crack is raw and matte
+        + 'rq *= 1.0 + kerbSilt * 0.12;\n'  // silt is matte
+        + 'roughnessFactor *= mix(1.0, rq, vSplatW.x) * (0.88 + 0.26 * micro);\n'
+        // Floor lifted well clear of mirror: below about 0.2 a dark surface
+        // stops being asphalt and becomes a puddle of sky.
+        + 'roughnessFactor = clamp(roughnessFactor, 0.34, 1.0);');
+      // Dry asphalt is about the roughest dielectric there is, and the split-sum
+      // IBL still hands every dielectric a constant 4% of the sky. On a 0.25
+      // albedo that constant is a third of the pixel, it is the colour of the
+      // sky, and it is what turned the whole foreground into a slate-blue field
+      // that swallowed every albedo feature authored into it. Knock it back on
+      // the carriageway only; sand and dirt keep theirs.
+      sh.fragmentShader = sh.fragmentShader.replace('#include <lights_physical_fragment>',
+        '#include <lights_physical_fragment>\n'
+        + 'material.specularColor *= 1.0 - 0.45 * vSplatW.x;');
     };
     m.customProgramCacheKey = () => 'levelGroundSplat';
     return m;
@@ -1329,7 +1624,6 @@ export class Level {
   _facade({ spec, id, kind, pw, m, H, rnd, breach }) {
     const key = spec.mat;
     const nb = Math.max(1, Math.round(pw / 3.15));
-    const bw = pw / nb;
     const openings = [];
     const detail = [];        // deferred: sills/lintels/frames need the hole first
     const isFront = id === spec.front;
@@ -1338,11 +1632,34 @@ export class Level {
     const enterable = spec.hollow && isFront;
     const doorBay = street && !spec.simple ? (rnd() * nb) | 0 : -1;
 
+    // Bays are not a metronome. A terrace has a wide shopfront next to a narrow
+    // stair bay next to a blind party return, and each bay's opening keeps its
+    // own proportion all the way up the building because that is where the
+    // structure is. Jittering the bay pitch and giving every bay a persistent
+    // width character is the cheapest cure for an elevation that reads as graph
+    // paper with rectangles printed on it — which is exactly what a uniform
+    // pw/nb grid with one opening size produces.
+    const bayW = [], bayX = [], bayR = [], baySkip = [];
+    {
+      let tot = 0;
+      for (let b = 0; b < nb; b++) { const t = 0.72 + rnd() * 0.66; bayW.push(t); tot += t; }
+      let acc = 0;
+      for (let b = 0; b < nb; b++) {
+        bayW[b] *= pw / tot;
+        bayX.push(acc); acc += bayW[b];
+        bayR.push(rnd());
+        // A blind bay: chimney breast, party wall, or an opening long since
+        // bricked up. One in eight, and the elevation stops being a grid.
+        baySkip.push(rnd() < 0.12);
+      }
+    }
+
     for (let f = 0; f < spec.floors; f++) {
       const y0 = Level.floorBase(f);
       for (let b = 0; b < nb; b++) {
-        const bx = b * bw;
+        const bx = bayX[b], bw = bayW[b];
         const r = rnd();
+        if (f > 0 && baySkip[b]) continue;
         if (f === 0) {
           if (street && b === doorBay) {
             // An enterable building gets a wide opening, and records where it
@@ -1369,14 +1686,30 @@ export class Level {
           }
         } else {
           const balcony = street && spec.balconies && r < 0.42;
-          const ow = balcony ? 1.05 : alley ? 0.95 : 1.35;
-          const oh = balcony ? 2.15 : alley ? 1.15 : 1.62;
-          const oy = y0 + (balcony ? 0.12 : 1.02);
-          const chance = alley ? 0.62 : spec.simple ? 0.68 : 0.84;
+          // Every bay keeps its own proportion up the whole elevation, and the
+          // heads step by a few centimetres per floor the way a building put up
+          // over twenty years actually does.
+          const cw = 0.80 + bayR[b] * 0.46;
+          const ow = (balcony ? 1.05 : alley ? 0.95 : 1.34) * (balcony ? 1 : cw);
+          const oh = (balcony ? 2.15 : alley ? 1.15 : 1.58) * (balcony ? 1 : 0.90 + bayR[b] * 0.26);
+          const oy = y0 + (balcony ? 0.12 : 0.94 + bayR[b] * 0.14 + ((f * 7 + b * 3) % 5) * 0.012);
+          const chance = alley ? 0.62 : spec.simple ? 0.68 : 0.86;
+          // A minority of bays carry a coupled pair of narrow lights instead of
+          // one wide one — the single loudest break in a repeating grid.
+          const paired = !balcony && !alley && !spec.simple && bayR[b] > 0.82 && bw > 2.4;
           if (r < chance || balcony) {
-            const ox = bx + (bw - ow) / 2;
-            openings.push({ x: ox, y: oy, w: ow, h: oh });
-            detail.push({ t: balcony ? 'balcony' : 'window', x: ox, y: oy, w: ow, h: oh, bw });
+            if (paired) {
+              const pw2 = ow * 0.44, gapW = 0.16;
+              for (const s of [-1, 1]) {
+                const ox = bx + (bw - pw2) / 2 + s * (pw2 + gapW) / 2;
+                openings.push({ x: ox, y: oy, w: pw2, h: oh });
+                detail.push({ t: 'window', x: ox, y: oy, w: pw2, h: oh, bw, pair: s });
+              }
+            } else {
+              const ox = bx + (bw - ow) / 2;
+              openings.push({ x: ox, y: oy, w: ow, h: oh });
+              detail.push({ t: balcony ? 'balcony' : 'window', x: ox, y: oy, w: ow, h: oh, bw });
+            }
           }
         }
       }
@@ -1397,6 +1730,22 @@ export class Level {
     }
 
     for (const o of detail) this._opening(spec, key, o, m, rnd, { street, alley, isFront, pw, seeThrough: enterable });
+
+    // Damage. Small-arms strike and shell splash pit a facade all over, and the
+    // render comes off in sheets where the substrate got wet. A wall whose only
+    // surface event is a texture is what makes an elevation read as painted-on;
+    // these are 3 cm proud, so they carry their own shadow.
+    if ((street || alley) && !spec.simple) {
+      for (let i = 0, n = 7 + ((rnd() * 11) | 0); i < n; i++) {
+        const s = 0.06 + rnd() * 0.19;
+        this._box('concreteDark', s, s * (0.55 + rnd() * 0.8), 0.032,
+          (rnd() - 0.5) * (pw - 0.4), 0.5 + rnd() * rnd() * (H - 1.2), -0.014, m, null, 2.4);
+      }
+      for (let i = 0, n = 2 + ((rnd() * 3) | 0); i < n; i++) {
+        this._box('brick', 0.35 + rnd() * 0.95, 0.28 + rnd() * 0.85, 0.026,
+          (rnd() - 0.5) * (pw - 1.0), 0.7 + rnd() * (H - 1.6), -0.011, m, null, 1.2);
+      }
+    }
 
     // Rainwater / soil pipe hugging one edge; alleys get two.
     if (!spec.simple) {
@@ -1429,10 +1778,19 @@ export class Level {
       this._box('concrete', o.w + 0.26, 0.09, 0.2, cx, o.y - 0.045, 0.03, m, null, 0.9);
       this._box('concreteDark', o.w + 0.3, 0.15, 0.16, cx, o.y + o.h + 0.075, 0.0, m, null, 0.9);
       this._box('dark', o.w, o.h, 0.04, cx, o.y + o.h / 2, -WALL_T - 0.02, m, null, 0.4);
-      if (rnd() < 0.3) {
-        // Boarded or shuttered: breaks the regularity of the grid.
-        this._box('rust', o.w, o.h * (0.4 + rnd() * 0.5), 0.05,
-          cx, o.y + o.h * 0.75, -0.1, m, null, 1.2);
+      const st = rnd();
+      if (st < 0.22) {
+        // Shutter part-down. This used to be staged as `rust`, whose warm tan
+        // under the dust cast is the "random orange rectangle" that appeared
+        // inside openings all over the skyline; shutters here are painted, and
+        // paint fades to grey-green, never to orange.
+        this._box(st < 0.11 ? 'shutterA' : 'shutterB', o.w, o.h * (0.4 + rnd() * 0.5), 0.05,
+          cx, o.y + o.h * 0.75, -0.09, m, null, 1.2);
+      } else if (st < 0.36) {
+        // Boarded with scavenged timber, at whatever angle it went on.
+        for (let i = 0; i < 2; i++) {
+          this._box('board', o.w + 0.06, 0.16, 0.04, cx, o.y + 0.3 + i * (o.h - 0.6), -0.08, m, null, 1.6);
+        }
       }
       return;
     }
@@ -1440,7 +1798,7 @@ export class Level {
     if (!ctx.street && !ctx.alley) {
       this._box('concrete', o.w + 0.3, 0.1, 0.24, cx, o.y - 0.05, 0.02, m, null, 0.9);
       this._box('concrete', o.w + 0.36, 0.18, 0.2, cx, o.y + o.h + 0.09, 0.0, m, null, 0.9);
-      this._box('wood', 0.06, o.h - 0.1, 0.05, cx, o.y + o.h / 2, -0.16, m, null, 2.2);
+      this._box('joinery', 0.06, o.h - 0.1, 0.05, cx, o.y + o.h / 2, -0.16, m, null, 2.2);
       return;
     }
 
@@ -1448,27 +1806,62 @@ export class Level {
       // Sill projects 16 cm and returns 10 cm into the reveal; lintel caps the head.
       this._box('concrete', o.w + 0.34, 0.1, 0.26, cx, o.y - 0.05, 0.03, m, null, 0.9);
       this._box('concrete', o.w + 0.4, 0.2, 0.22, cx, o.y + o.h + 0.1, 0.0, m, null, 0.9);
+      // Architrave: a 6 cm proud strip down each jamb, and a dark soffit inside
+      // the head of the recess. Two boxes and one band, and the opening finally
+      // throws a shadow onto the wall beside it and shows its own depth,
+      // instead of reading as a rectangle printed on a flat plane.
+      for (const s of [-1, 1]) {
+        this._box('concrete', 0.085, o.h + 0.16, 0.065,
+          cx + s * (o.w / 2 + 0.042), o.y + o.h / 2 + 0.02, 0.032, m, null, 1.6);
+      }
+      this._box('dark', o.w, 0.045, 0.22, cx, o.y + o.h - 0.023, -0.14, m, null, 1.0);
       // Frame set back inside the reveal so the recess is visible from an angle.
       // Only the jambs are modelled: the sill and lintel already read as the
       // horizontal members, so two boxes buy what four would.
       const fz = -0.16;
-      this._box('wood', 0.07, o.h, 0.07, cx - o.w / 2 + 0.04, o.y + o.h / 2, fz, m, null, 2.2);
-      this._box('wood', 0.07, o.h, 0.07, cx + o.w / 2 - 0.04, o.y + o.h / 2, fz, m, null, 2.2);
+      this._box('joinery', 0.07, o.h, 0.07, cx - o.w / 2 + 0.04, o.y + o.h / 2, fz, m, null, 2.2);
+      this._box('joinery', 0.07, o.h, 0.07, cx + o.w / 2 - 0.04, o.y + o.h / 2, fz, m, null, 2.2);
       const state = rnd();
-      if (state < 0.34) {
+      if (state < 0.26) {
         // Intact glazing: a smooth dark pane picks up the sky and gives the
         // facade the specular sparkle that dead matte boxes never have.
         this._box('glass', o.w - 0.12, o.h - 0.12, 0.03, cx, o.y + o.h / 2, fz - 0.05, m, null, 0.5);
-        this._box('wood', 0.06, o.h - 0.1, 0.05, cx, o.y + o.h / 2, fz, m, null, 2.2);
-      } else if (state < 0.6) {
-        // Boarded up with scavenged timber.
+        this._box('joinery', 0.06, o.h - 0.1, 0.05, cx, o.y + o.h / 2, fz, m, null, 2.2);
+        this._box('joinery', o.w - 0.12, 0.05, 0.05, cx, o.y + o.h * 0.60, fz, m, null, 2.2);
+      } else if (state < 0.40) {
+        // One leaf swung open. The tilted pane is the only thing on the whole
+        // elevation that can throw a hard specular back at the camera, and a
+        // facade with no glint anywhere in it never reads as glazed.
+        const half = (o.w - 0.16) / 2;
+        const leaf = boxGeo(half, o.h - 0.16, 0.028, 0.5);
+        leaf.translate(half / 2, 0, 0);
+        leaf.applyMatrix4(mat(cx - half / 2 - 0.05, o.y + o.h / 2, fz + 0.03, -0.8 - rnd() * 0.6));
+        this._stage('glass', leaf, m);
+        this._box('glass', half, o.h - 0.16, 0.028, cx + half / 2 + 0.05, o.y + o.h / 2, fz - 0.04, m, null, 0.5);
+        this._box('dark', o.w, o.h, 0.03, cx, o.y + o.h / 2, fz - 0.15, m, null, 0.4);
+      } else if (state < 0.55) {
+        // Boarded up with scavenged timber, at whatever angle it went on.
         for (let i = 0; i < 2; i++) {
-          this._box('wood', o.w + 0.1, 0.22, 0.05, cx, o.y + 0.4 + i * (o.h - 0.8),
-            fz + 0.04, m, null, 1.6);
+          const g = boxGeo(o.w + 0.1, 0.20 + rnd() * 0.06, 0.045, 1.6);
+          g.applyMatrix4(mat(cx, o.y + 0.36 + i * (o.h - 0.72), fz + 0.05, 0, 0, (rnd() - 0.5) * 0.14));
+          this._stage('board', g, m);
         }
-      } else if (state < 0.76) {
-        this._box('wood', 0.06, o.h - 0.1, 0.05, cx, o.y + o.h / 2, fz, m, null, 2.2);
+      } else if (state < 0.68) {
+        // Blown out: a fringe of shards still in the head of the frame.
+        for (let i = 0; i < 4; i++) {
+          const g = boxGeo(o.w * (0.12 + rnd() * 0.2), 0.09 + rnd() * 0.22, 0.02, 0.6);
+          g.applyMatrix4(mat(cx - o.w / 2 + 0.08 + rnd() * (o.w - 0.16),
+            o.y + o.h - 0.09 - rnd() * 0.10, fz - 0.03, 0, 0, (rnd() - 0.5) * 0.5));
+          this._stage('glass', g, m);
+        }
+      } else if (state < 0.80) {
+        // A curtain or a hung blanket: every occupied flat has one.
+        this._box('sheet', o.w - 0.07, o.h - 0.09, 0.02, cx, o.y + o.h / 2, fz - 0.03, m,
+          _col.setHex(LAUNDRY_COLORS[(rnd() * LAUNDRY_COLORS.length) | 0]).clone(), 1.7);
+      } else if (state < 0.90) {
+        this._box('joinery', 0.06, o.h - 0.1, 0.05, cx, o.y + o.h / 2, fz, m, null, 2.2);
       }
+      // The remainder are left as open voids, which some of them should be.
       if (o.t === 'balcony') this._balcony(spec, o, m, rnd, cx);
       else if (ctx.street && rnd() < 0.24) this._acUnit(o, m, rnd, cx);
       else if (ctx.alley && rnd() < 0.35) this._acUnit(o, m, rnd, cx);
@@ -1480,15 +1873,22 @@ export class Level {
       this._box('concrete', o.w + 0.5, 0.26, 0.34, cx, o.y + o.h + 0.13, 0.05, m, null, 0.8);
       const st = rnd();
       if (st < 0.4) {
-        // Roller shutter, part-down: one panel plus a handful of proud slats,
-        // which corrugates the silhouette without modelling every rib.
+        // Roller shutter, part-down: one panel plus a run of proud slats, which
+        // corrugates the silhouette without modelling every rib. Painted, not
+        // rusted — the rust palette read as an orange rectangle in the opening.
+        const shut = ['shutterA', 'shutterB', 'shutterC'][(rnd() * 3) | 0];
         const drop = 0.35 + rnd() * 0.6;
         const hh = o.h * drop;
-        this._box('rust', o.w, hh, 0.06, cx, o.y + o.h - hh / 2, 0.02, m, null, 1.4);
-        for (let y = 0.2; y < hh - 0.1; y += 0.42) {
-          this._box('rust', o.w, 0.07, 0.04, cx, o.y + o.h - y, 0.06, m, null, 1.4);
+        this._box(shut, o.w, hh, 0.06, cx, o.y + o.h - hh / 2, 0.02, m, null, 1.4);
+        for (let y = 0.14; y < hh - 0.08; y += 0.19) {
+          this._box(shut, o.w, 0.055, 0.035, cx, o.y + o.h - y, 0.055, m, null, 1.4);
         }
-        this._box('rust', o.w + 0.08, 0.12, 0.1, cx, o.y + o.h - hh, 0.04, m, null, 1.4);
+        this._box(shut, o.w + 0.08, 0.12, 0.1, cx, o.y + o.h - hh, 0.045, m, null, 1.4);
+        // Guide channels down both jambs, and the box the curtain rolls into.
+        for (const s of [-1, 1]) {
+          this._box('rust', 0.05, o.h, 0.09, cx + s * (o.w / 2 + 0.02), o.y + o.h / 2, 0.04, m, null, 2.0);
+        }
+        this._box('rust', o.w + 0.16, 0.16, 0.16, cx, o.y + o.h + 0.06, 0.05, m, null, 1.4);
       } else {
         if (!ctx.seeThrough) this._box('dark', o.w, o.h, 0.06, cx, o.y + o.h / 2, -WALL_T - 0.02, m, null, 0.4);
         if (st < 0.7) {
@@ -1555,18 +1955,139 @@ export class Level {
     }
   }
 
+  /**
+   * A radial fan set into a recessed shroud: blades, hub, guard and the ring of
+   * shadow round the mouth. Shared by the wall units and the rooftop
+   * condensers, because a solid black ellipse is the single thing that made
+   * both of them read as a placeholder cube with a decal on it.
+   *
+   * `axis` is 'z' (facing out of a wall) or 'y' (discharging upward).
+   */
+  _fan(x, y, z, r, axis, m, rnd, blades = 5) {
+    const up = axis === 'y';
+    const place = (dx, dy, dz, spin) => up
+      ? mat(x + dx, y + dz, z + dy, spin)
+      : mat(x + dx, y + dy, z + dz, 0, 0, spin);
+    // Recess: the mouth is a well, not a disc painted on the face.
+    this._stage('dark', up
+      ? cylGeo(r * 1.02, r * 1.02, r * 0.5, 12, 1.2).translate(x, y - r * 0.26, z)
+      : cylGeo(r * 1.02, r * 1.02, r * 0.5, 12, 1.2).rotateX(Math.PI / 2).translate(x, y, z - r * 0.26), m);
+    // Throat ring — a bright rim round a dark hole is what gives it depth.
+    this._stage('metal', up
+      ? cylGeo(r * 1.10, r * 1.02, 0.028, 12, 1.6).translate(x, y + 0.002, z)
+      : cylGeo(r * 1.10, r * 1.02, 0.028, 12, 1.6).rotateX(Math.PI / 2).translate(x, y, z + 0.002), m);
+    for (let i = 0; i < blades; i++) {
+      const a = (i / blades) * Math.PI * 2;
+      const g = boxGeo(r * 0.92, 0.012, r * 0.44, 2.2);
+      g.translate(r * 0.44, 0, 0);
+      g.applyMatrix4(place(0, 0, -r * 0.12, a));
+      this._stage('metal', g, m, new THREE.Color(0.42, 0.42, 0.44));
+    }
+    this._stage('metal', up
+      ? cylGeo(r * 0.24, r * 0.24, 0.07, 8, 1.6).translate(x, y - r * 0.10, z)
+      : cylGeo(r * 0.24, r * 0.24, 0.07, 8, 1.6).rotateX(Math.PI / 2).translate(x, y, z - r * 0.10), m);
+    // Wire guard: a rim plus crossing bars. Reads as a grille at any range.
+    // TorusGeometry lies in XY with its axis along Z, which is already right
+    // for a wall unit; a top-discharge fan needs it laid flat.
+    const gt = new THREE.TorusGeometry(r * 1.02, 0.010, 4, 12);
+    if (up) gt.rotateX(Math.PI / 2);
+    worldUV(gt, 2.0);
+    gt.translate(x, up ? y + 0.035 : y, up ? z : z + 0.035);
+    this._stage('metal', gt, m);
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI;
+      const g = boxGeo(r * 2.04, 0.011, 0.011, 3.0);
+      g.applyMatrix4(place(0, 0, 0.035, a));
+      this._stage('metal', g, m);
+    }
+  }
+
+  /**
+   * Wall-mounted split condenser: a bevelled shroud with a recessed grille, a
+   * real fan behind it, a coil with fins down one flank, and the brackets and
+   * bolts that hold it there. It used to be one box with a black ellipse.
+   */
   _acUnit(o, m, rnd, cx) {
     const y = o.y - 0.62, x = cx + (rnd() - 0.5) * 0.4;
-    this._box('metal', 0.66, 0.44, 0.36, x, y, 0.2, m, null, 1.3);
-    this._box('rust', 0.7, 0.05, 0.4, x, y - 0.24, 0.2, m, null, 1.3);
-    // Fan grille reads as a dark disc from any distance.
-    this._stage('dark', cylGeo(0.16, 0.16, 0.03, 10, 1.0)
-      .rotateX(Math.PI / 2).translate(x, y, 0.385), m);
-    for (const sx of [-1, 1]) {
-      this._box('rust', 0.05, 0.3, 0.05, x + sx * 0.3, y - 0.34, 0.06, m, null, 2.0);
+    const W = 0.64, Hh = 0.44, D = 0.30;
+    const fz = D + 0.05;
+    // Casing, then a front panel set proud of it: the 2 cm step round the
+    // perimeter is the bevel, and it costs one box.
+    this._box('metal', W, Hh, D, x, y, 0.05 + D / 2, m, null, 1.3);
+    this._box('metal', W - 0.05, Hh - 0.05, 0.03, x, y, fz - 0.015, m, null, 1.3);
+    this._box('metal', W + 0.03, 0.035, D + 0.03, x, y + Hh / 2 + 0.017, 0.05 + D / 2, m, null, 1.6);
+    this._box('rust', W + 0.03, 0.03, D + 0.02, x, y - Hh / 2 - 0.015, 0.05 + D / 2, m, null, 1.6);
+    this._fan(x, y + 0.015, fz - 0.02, 0.155, 'z', m, rnd);
+    // Coil fins down one flank — the give-away that there is a heat exchanger
+    // inside rather than a solid block.
+    const sx = rnd() < 0.5 ? -1 : 1;
+    for (let i = 0; i < 7; i++) {
+      this._box('metal', 0.012, Hh - 0.07, 0.014, x + sx * (W / 2 - 0.006),
+        y, 0.09 + i * 0.032, m, new THREE.Color(0.72, 0.73, 0.74), 3.0);
     }
+    // Brackets and bolt heads.
+    for (const bx of [-1, 1]) {
+      this._box('rust', 0.045, 0.05, D + 0.02, x + bx * (W / 2 - 0.06), y - Hh / 2 - 0.03, 0.05 + D / 2, m, null, 2.4);
+      this._box('rust', 0.045, 0.30, 0.045, x + bx * (W / 2 - 0.06), y - Hh / 2 - 0.18, 0.07, m, null, 2.4);
+      for (const by of [-1, 1]) {
+        this._box('rust', 0.032, 0.032, 0.022, x + bx * (W / 2 - 0.06),
+          y + by * (Hh / 2 - 0.05), 0.045, m, null, 4.0);
+      }
+    }
+    // Lagged refrigerant pair and the condensate drain running off the tray.
+    this._stage('dark', cylGeo(0.026, 0.026, 0.30, 6, 2.0)
+      .applyMatrix4(mat(x - W / 2 - 0.03, y - Hh / 2 + 0.08, 0.16, 0, 0, Math.PI / 2)), m);
+    this._stage('rust', cylGeo(0.014, 0.014, 0.55, 5, 2.0)
+      .translate(x + 0.16, y - Hh / 2 - 0.28, 0.06), m);
     // Condensate stain streaking down the wall below it.
     this._box('dark', 0.16, 1.4, 0.012, x, y - 0.95, 0.005, m, new THREE.Color(0.35, 0.33, 0.3), 0.6);
+  }
+
+  /**
+   * Rooftop condenser. Top-discharge, so the fan is the silhouette from a
+   * rooftop pose: a bevelled shroud on corner posts, recessed coil panels with
+   * fins, a sunken fan well with blades and a guard, and an anti-vibration
+   * skid. This is the box the `skyline` frame spends its foreground on.
+   */
+  _condenser(x, y, z, ry, rnd) {
+    const m = mat(x, y, z, ry);
+    const W = 0.94, D = 0.78, Hh = 0.66;
+    // Skid and anti-vibration mounts.
+    this._box('concreteDark', W + 0.10, 0.05, D + 0.10, 0, 0.025, 0, m, null, 1.4);
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      this._box('rubber', 0.09, 0.05, 0.09, sx * (W / 2 - 0.09), 0.075, sz * (D / 2 - 0.09), m, null, 3.0);
+    }
+    const y0 = 0.10;
+    // Corner posts + top/bottom rails: the frame is what gives the shroud its
+    // bevel, and it is why the recessed panels between them read as panels.
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      this._box('metal', 0.075, Hh, 0.075, sx * (W / 2 - 0.038), y0 + Hh / 2, sz * (D / 2 - 0.038), m, null, 2.0);
+    }
+    for (const yy of [y0 + 0.045, y0 + Hh - 0.045]) {
+      for (const sz of [-1, 1]) this._box('metal', W - 0.02, 0.055, 0.055, 0, yy, sz * (D / 2 - 0.028), m, null, 2.2);
+      for (const sx of [-1, 1]) this._box('metal', 0.055, 0.055, D - 0.02, sx * (W / 2 - 0.028), yy, 0, m, null, 2.2);
+    }
+    // Recessed coil panels, and the fins standing in them.
+    for (const sz of [-1, 1]) {
+      this._box('dark', W - 0.13, Hh - 0.14, 0.03, 0, y0 + Hh / 2, sz * (D / 2 - 0.055), m, null, 1.0);
+      for (let i = 0; i < 11; i++) {
+        this._box('metal', 0.013, Hh - 0.17, 0.013, -(W / 2 - 0.13) + i * ((W - 0.26) / 10),
+          y0 + Hh / 2, sz * (D / 2 - 0.038), m, new THREE.Color(0.70, 0.71, 0.72), 3.2);
+      }
+    }
+    for (const sx of [-1, 1]) {
+      this._box('metal', 0.03, Hh - 0.14, D - 0.13, sx * (W / 2 - 0.055), y0 + Hh / 2, 0, m, null, 1.2);
+    }
+    // Top deck with the fan well sunk into it.
+    this._box('metal', W, 0.045, D, 0, y0 + Hh + 0.022, 0, m, null, 1.4);
+    this._fan(0, y0 + Hh + 0.012, 0, 0.30, 'y', m, rnd, 6);
+    // Nameplate, control box and the lagged pipework leaving the flank.
+    this._box('panel', 0.20, 0.14, 0.02, W * 0.28, y0 + Hh * 0.62, D / 2 + 0.005, m, null, 2.0);
+    this._box('metal', 0.16, 0.22, 0.12, -W / 2 - 0.06, y0 + Hh * 0.45, D * 0.2, m, null, 2.0);
+    this._stage('dark', cylGeo(0.032, 0.032, 0.42, 6, 2.0)
+      .applyMatrix4(mat(-W / 2 - 0.20, y0 + 0.18, D * 0.1, 0, 0, Math.PI / 2)).applyMatrix4(m));
+    this._stage('rust', cylGeo(0.020, 0.020, 0.38, 5, 2.0)
+      .applyMatrix4(mat(-W / 2 - 0.20, y0 + 0.10, D * 0.28, 0, 0, Math.PI / 2)).applyMatrix4(m));
   }
 
   /**
@@ -1579,14 +2100,23 @@ export class Level {
    * they cost 42 vertices.
    */
   _clothSheet(a, b, sag, h, tint, rnd) {
-    const NU = 6, NV = 5;
+    const NU = 7, NV = 6;
     const pos = new Float32Array((NU + 1) * (NV + 1) * 3);
     const uv = new Float32Array((NU + 1) * (NV + 1) * 2);
     const idx = new Uint16Array(NU * NV * 6);
-    // Sit the UVs inside a single stripe band so a sheet reads as one cloth
-    // colour with a weave, not as a two-axis check.
-    const band = ((rnd() * 8) | 0) * 0.125 + 0.03;
-    const phase = rnd() * 6.28, curl = 0.05 + rnd() * 0.09;
+    // Isotropic UVs at a fixed world density.
+    //
+    // These used to be pinned inside one 1/8th-wide stripe of the awning canvas
+    // map, which meant the whole width of a sheet sampled 6% of u while its
+    // height sampled 130% of v. That is a 20:1 anisotropic stretch, and it
+    // turned a plain weave into a regular horizontal rib six or seven pixels
+    // apart — a sheet of corrugated roofing hanging on a line. The linen map
+    // has no bands, so u and v can both run at the true scale of the cloth.
+    const D = 2.4;
+    const span = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+    const uo = rnd() * 5, vo = rnd() * 5;
+    const phase = rnd() * 6.28, curl = 0.055 + rnd() * 0.10;
+    const phase2 = rnd() * 6.28;
     let nx = -(b.z - a.z), nz = b.x - a.x;
     const nl = Math.hypot(nx, nz) || 1;
     nx /= nl; nz /= nl;
@@ -1596,12 +2126,17 @@ export class Level {
       for (let i = 0; i <= NU; i++, k++) {
         const u = i / NU;
         const droop = sag * 4 * u * (1 - u);
-        const belly = Math.sin(u * Math.PI * 2.1 + phase) * curl * v * v;
+        // Two folds of different wavelength, both growing toward the hem: one
+        // sine is a corrugation, two beating against each other is cloth.
+        const belly = (Math.sin(u * Math.PI * 2.1 + phase) * curl
+                     + Math.sin(u * Math.PI * 4.7 + phase2) * curl * 0.42) * v * v;
+        // The hem itself is not level: a wet sheet hangs longer where it folds.
+        const hem = h * (1 + Math.sin(u * Math.PI * 3.3 + phase2) * 0.09) * v;
         pos[k * 3] = lerp(a.x, b.x, u) + nx * belly;
-        pos[k * 3 + 1] = lerp(a.y, b.y, u) - droop - v * h - Math.sin(u * Math.PI) * sag * 0.3 * v;
+        pos[k * 3 + 1] = lerp(a.y, b.y, u) - droop - hem - Math.sin(u * Math.PI) * sag * 0.3 * v;
         pos[k * 3 + 2] = lerp(a.z, b.z, u) + nz * belly;
-        uv[k * 2] = band + u * 0.06;
-        uv[k * 2 + 1] = (1 - v) * h * 1.3;
+        uv[k * 2] = uo + u * span * D;
+        uv[k * 2 + 1] = vo + (1 - v) * h * D;
       }
     }
     let t = 0;
@@ -1630,7 +2165,7 @@ export class Level {
       pb.y -= sag * 4 * t1 * (1 - t1);
       const tint = _col.setHex(LAUNDRY_COLORS[(rnd() * LAUNDRY_COLORS.length) | 0]).clone();
       const sheet = this._clothSheet(pa, pb, sag * 0.22, 0.42 + rnd() * 0.55, tint, rnd);
-      this._stage('fabric', sheet.geo, m, tint);
+      this._stage('sheet', sheet.geo, m, tint);
       for (const p of [pa, pb]) {
         this._box('charred', 0.05, 0.07, 0.05, p.x, p.y + 0.02, p.z, m, null, 3.0);
       }
@@ -1646,21 +2181,124 @@ export class Level {
     this._washingRun(a, b, sag, rnd, m);
   }
 
+  /**
+   * A slab of hanging cloth with real thickness and real sag.
+   *
+   * Built as two skins stitched round a rim rather than a single plane: an
+   * awning seen from the street is edge-on for most of its length, and a
+   * zero-thickness quad edge-on is a hairline that vanishes. `sagU` is the
+   * catenary the canvas takes between its two side arms, `sagV` the belly it
+   * takes between the wall and the front bar; without them a canvas awning is
+   * a coloured card, which is exactly how these read.
+   *
+   * Returns geometry in local space: x centred on 0, z running 0 (wall) to dp.
+   */
+  _canopyGeo(w, dp, yBack, yFront, sagU, sagV, t, density = 1.15) {
+    const NU = 7, NV = 4;
+    const P = [];
+    for (let j = 0; j <= NV; j++) {
+      const v = j / NV;
+      for (let i = 0; i <= NU; i++) {
+        const u = i / NU;
+        const x = (u - 0.5) * w;
+        const z = v * dp;
+        // The cross-canvas sag is pinned at the arms and deepest at mid-span,
+        // and it grows with distance from the wall because that is where the
+        // fabric is least supported.
+        const y = lerp(yBack, yFront, v)
+          - sagU * 4 * u * (1 - u) * (0.30 + 0.70 * v)
+          - sagV * 4 * v * (1 - v);
+        P.push(x, y, z);
+      }
+    }
+    const nRow = NU + 1, nGrid = nRow * (NV + 1);
+    const pos = [], uv = [], idx = [];
+    const push = (x, y, z) => { pos.push(x, y, z); uv.push(x * density, z * density); };
+    for (let s = 0; s < 2; s++) {
+      const off = s ? -t : 0;
+      for (let g = 0; g < nGrid; g++) push(P[g * 3], P[g * 3 + 1] + off, P[g * 3 + 2]);
+    }
+    for (let j = 0; j < NV; j++) {
+      for (let i = 0; i < NU; i++) {
+        const a = j * nRow + i, b = a + 1, c = a + nRow, d = c + 1;
+        idx.push(a, c, b, b, c, d);                                  // top skin
+        const e = nGrid;
+        idx.push(e + a, e + b, e + c, e + b, e + d, e + c);          // under skin
+      }
+    }
+    // Rim: the front hem and both selvedges, so the slab is closed and its edge
+    // catches light instead of disappearing.
+    const rim = (p, q) => idx.push(p, q, nGrid + p, q, nGrid + q, nGrid + p);
+    for (let i = 0; i < NU; i++) rim(NV * nRow + i + 1, NV * nRow + i);
+    for (let j = 0; j < NV; j++) {
+      rim(j * nRow, (j + 1) * nRow);
+      rim((j + 1) * nRow + NU, j * nRow + NU);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+    geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv), 2));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    return geo;
+  }
+
   _awning(o, m, rnd, cx) {
-    const w = o.w + 0.3, dp = 1.5, y = o.y + o.h + 0.3;
+    const w = o.w + 0.34, dp = 1.35 + rnd() * 0.36, y = o.y + o.h + 0.32;
+    const drop = 0.34 + rnd() * 0.12;
     const tint = [
       new THREE.Color(0.85, 0.3, 0.24), new THREE.Color(0.25, 0.42, 0.6),
       new THREE.Color(0.35, 0.55, 0.32), new THREE.Color(0.9, 0.78, 0.5),
     ][(rnd() * 4) | 0];
-    const g = boxGeo(w, 0.05, dp, 1.1);
-    g.applyMatrix4(mat(cx, y - 0.16, dp / 2 + 0.1, 0, -0.34));
+
+    // Canvas over the frame: 4 cm thick, bellied between the arms and sagging
+    // toward the front bar it is lashed to.
+    const sagU = 0.06 + rnd() * 0.055;
+    const g = this._canopyGeo(w, dp, y - 0.06, y - 0.06 - drop, sagU, 0.0, 0.038, 1.15);
+    g.translate(cx, 0, 0.10);
     this._stage('fabric', g, m, tint);
-    // Valance hanging off the leading edge — the detail that says "market".
-    this._box('fabric', w, 0.3, 0.02, cx, y - 0.58, dp + 0.06, m, tint, 1.4);
+
+    // The front edge is not level — it hangs on the same catenary as the
+    // canvas — so everything lashed to it has to follow the same curve or a
+    // wedge of daylight opens between the canopy and its valance.
+    const frontY = (u) => y - 0.06 - drop - sagU * 4 * u * (1 - u);
+    const fy = frontY(0.5);
+    this._stage('metal', cylGeo(0.026, 0.026, w + 0.1, 6, 2.0)
+      .applyMatrix4(mat(cx, fy - 0.012, dp + 0.10, 0, 0, Math.PI / 2)), m);
     for (const sx of [-1, 1]) {
-      this._box('metal', 0.05, 0.05, dp, cx + sx * w / 2, y - 0.08, dp / 2 + 0.1, m, null, 2.0);
-      this._stage('metal', cylGeo(0.03, 0.03, 1.0, 6, 2.0)
-        .applyMatrix4(mat(cx + sx * (w / 2 - 0.05), y - 0.55, dp * 0.55, 0, 0, 0.5)), m);
+      const ax = cx + sx * w / 2;
+      const arm = boxGeo(0.045, 0.045, Math.hypot(dp, drop), 2.0);
+      arm.applyMatrix4(mat(ax, y - 0.06 - drop / 2, dp / 2 + 0.10, 0, -Math.atan2(drop, dp)));
+      this._stage('metal', arm, m);
+      // Tie rod back to the wall, and the wall plate it lands on.
+      this._stage('metal', cylGeo(0.018, 0.018, Math.hypot(dp * 0.75, 0.62), 5, 2.0)
+        .applyMatrix4(mat(ax, y - 0.06 - drop * 0.62, dp * 0.42 + 0.10, 0, 0.72)), m);
+      this._box('rust', 0.09, 0.16, 0.05, ax, y + 0.02, 0.04, m, null, 2.4);
+    }
+
+    // Valance: a scalloped strip lashed to the bar, with its own sag. This is
+    // the silhouette that reads as "market" from down the street.
+    {
+      const NU = 9;
+      const pos = [], uv = [], idx = [];
+      const vh = 0.24 + rnd() * 0.12;
+      for (let i = 0; i <= NU; i++) {
+        const u = i / NU;
+        const x = cx + (u - 0.5) * (w + 0.04);
+        const top = frontY(u) - 0.008;
+        const scal = vh * (0.74 + 0.26 * Math.abs(Math.sin(u * Math.PI * 4.0)));
+        pos.push(x, top, dp + 0.095, x, top - scal, dp + 0.125);
+        uv.push(x * 1.3, 0, x * 1.3, scal * 1.3);
+      }
+      for (let i = 0; i < NU; i++) {
+        const a = i * 2;
+        idx.push(a, a + 1, a + 2, a + 2, a + 1, a + 3);
+      }
+      const vg = new THREE.BufferGeometry();
+      vg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+      vg.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv), 2));
+      vg.setIndex(idx);
+      vg.computeVertexNormals();
+      this._stage('fabric', vg, m, tint);
     }
   }
 
@@ -1734,6 +2372,28 @@ export class Level {
    * it is a patchwork of repairs draining badly toward one corner — and reading
    * that patchwork is the whole reason a rooftop pose has anything to look at.
    */
+  /** An irregular flat dish: a puddle outline, not a rectangle. */
+  _pondGeo(rx, rz, rnd) {
+    const N = 12;
+    const pos = [0, 0, 0], uv = [0, 0], idx = [];
+    const ph = rnd() * 6.28, ph2 = rnd() * 6.28;
+    for (let i = 0; i < N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      const k = 0.70 + 0.30 * (Math.sin(a * 2.0 + ph) * 0.5 + 0.5)
+        + 0.14 * Math.sin(a * 5.0 + ph2);
+      const x = Math.cos(a) * rx * k, z = Math.sin(a) * rz * k;
+      pos.push(x, 0, z);
+      uv.push(x * 0.6, z * 0.6);
+    }
+    for (let i = 0; i < N; i++) idx.push(0, 1 + ((i + 1) % N), 1 + i);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pos), 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(uv), 2));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    return g;
+  }
+
   _roofSurface(spec, rnd) {
     const { _cx: cx, _cz: cz, _w: w, _d: d, _H: H, _base: base } = spec;
     const y = base + H;
@@ -1747,11 +2407,20 @@ export class Level {
     for (let p = -span / 2 + 0.7; p < span / 2 - 0.4; p += 0.9 + rnd() * 0.8) {
       const cut = rnd() < 0.3 ? 0.45 + rnd() * 0.4 : 1;
       const off = (1 - cut) * len * (rnd() - 0.5);
-      const tw = 0.07 + rnd() * 0.04;
+      // A lap is a real step, not a line: the upper sheet stands 2 cm proud
+      // over a 20 cm overlap and the bitumen bead at its edge throws a shadow.
+      // The old 7 cm strip 3 cm high resolved to a one-pixel aliased hairline
+      // at every range the roof is actually seen from.
+      const tw = 0.18 + rnd() * 0.08;
       // A lap is a fold of the same felt, not a grout line: keep it close in
       // value to the deck or the roof reads as a floor of paving slabs.
-      if (alongX) this._box('roofPatch', len * cut, 0.03, tw, cx + off, y + 0.015, cz + p, null, null, 1.6);
-      else this._box('roofPatch', tw, 0.03, len * cut, cx + p, y + 0.015, cz + off, null, null, 1.6);
+      if (alongX) {
+        this._box('roofPatch', len * cut, 0.024, tw, cx + off, y + 0.012, cz + p, null, null, 1.2);
+        this._box('roofWet', len * cut, 0.020, tw * 0.30, cx + off, y + 0.028, cz + p - tw * 0.33, null, null, 1.8);
+      } else {
+        this._box('roofPatch', tw, 0.024, len * cut, cx + p, y + 0.012, cz + off, null, null, 1.2);
+        this._box('roofWet', tw * 0.30, 0.020, len * cut, cx + p - tw * 0.33, y + 0.028, cz + off, null, null, 1.8);
+      }
     }
     // Cross joints where the rolls butt — two or three, never on a grid.
     for (let i = 0; i < 2 + ((rnd() * 2) | 0); i++) {
@@ -1770,15 +2439,24 @@ export class Level {
       this._box('roofWet', uw, 0.18, ud, ux, y + 0.08, uz, null, null, 1.1);
     }
 
-    // Ponding and silver-coat repair patches, laid on the diagonal so they
-    // never line up with the seam grid.
-    for (let i = 0; i < 3 + ((rnd() * 3) | 0); i++) {
+    // Silver-coat repair patches: rectangular, because a repair is cut and
+    // rolled to a straight edge. Laid on the diagonal so they never line up
+    // with the seam grid.
+    for (let i = 0; i < 2 + ((rnd() * 3) | 0); i++) {
       const pw = 1.6 + rnd() * 3.4, pd = 1.2 + rnd() * 2.8;
-      const px = cx + (rnd() - 0.5) * (w - pw - 1.6);
-      const pz = cz + (rnd() - 0.5) * (d - pd - 1.6);
-      const wet = rnd() < 0.55;
-      this._stage(wet ? 'roofWet' : 'roofPatch', boxGeo(pw, 0.022, pd, 0.5),
-        mat(px, y + 0.012 + (wet ? 0 : 0.004), pz, rnd() * 0.7 - 0.35));
+      this._stage('roofPatch', boxGeo(pw, 0.022, pd, 0.5),
+        mat(cx + (rnd() - 0.5) * (w - pw - 1.6), y + 0.016,
+          cz + (rnd() - 0.5) * (d - pd - 1.6), rnd() * 0.7 - 0.35));
+    }
+    // Ponding. Water does not stand in a rectangle, and it does not turn a
+    // bitumen roof blue: the pool is an irregular dish of the same felt,
+    // darker and much glossier than the deck around it, and the read comes off
+    // the sheen the sun leaves on it rather than off a hue shift.
+    for (let i = 0; i < 2 + ((rnd() * 3) | 0); i++) {
+      const pw = 0.9 + rnd() * 1.9, pd = 0.8 + rnd() * 1.6;
+      this._stage('roofPond', this._pondGeo(pw, pd, rnd),
+        mat(cx + (rnd() - 0.5) * (w - pw * 2 - 1.4), y + 0.009,
+          cz + (rnd() - 0.5) * (d - pd * 2 - 1.4), rnd() * 3.14));
     }
     // Chippings swept into drifts. Small and close to the deck in hue — a wide
     // flat quad of dune-coloured sand up here reads as an unassigned plane.
@@ -1976,10 +2654,8 @@ export class Level {
       }
     }
     // Rooftop AC condensers.
-    for (let i = 0; i < ((rnd() * 3) | 0); i++) {
-      const ax = px(), az = pz();
-      this._box('metal', 0.9, 0.62, 0.7, ax, y + 0.31, az, null, null, 1.1);
-      this._stage('dark', cylGeo(0.24, 0.24, 0.03, 10, 1.0).translate(ax, y + 0.63, az));
+    for (let i = 0; i < 1 + ((rnd() * 3) | 0); i++) {
+      this._condenser(px(), y, pz(), rnd() * 3.14, rnd);
     }
   }
 
@@ -2314,18 +2990,96 @@ export class Level {
    */
   _barrier(x, z, ry, rnd) {
     if (!this._barrierGeo) {
+      // Five distinct planes per flank, not two: the splayed foot, the steep
+      // lower slope, the shallow upper slope and the top chamfer each meet at a
+      // hard arris, and it is those arrises — one catching the sun, the next in
+      // half light, the next in shade — that make 82 cm of moulded concrete
+      // read as a solid rather than as a pale card standing on the road. The
+      // ends get a bevel too, so a barrier seen end-on has a lit edge.
       const s = new THREE.Shape();
-      s.moveTo(-0.31, 0); s.lineTo(0.31, 0); s.lineTo(0.31, 0.09);
-      s.lineTo(0.155, 0.33); s.lineTo(0.115, 0.82); s.lineTo(-0.115, 0.82);
-      s.lineTo(-0.155, 0.33); s.lineTo(-0.31, 0.09); s.closePath();
-      const g = new THREE.ExtrudeGeometry(s, { depth: 2.2, bevelEnabled: false, steps: 1 });
-      g.translate(0, 0, -1.1);
-      this._barrierGeo = worldUV(facet(g), 0.85);
+      const half = [
+        [0.292, 0.000], [0.318, 0.038], [0.318, 0.098],
+        [0.168, 0.335], [0.126, 0.775], [0.098, 0.842],
+      ];
+      s.moveTo(-half[0][0], 0);
+      for (const [px, py] of half) s.lineTo(px, py);
+      s.lineTo(-half[5][0], half[5][1]);
+      for (let i = 4; i >= 0; i--) s.lineTo(-half[i][0], half[i][1]);
+      s.closePath();
+      const body = new THREE.ExtrudeGeometry(s, {
+        depth: 2.14, bevelEnabled: true, bevelThickness: 0.022,
+        bevelSize: 0.020, bevelOffset: 0, bevelSegments: 1,
+      });
+      body.translate(0, 0, -1.1);
+      // Lifting eyes and the pin lug at each end: small, but they are what a
+      // player reads as "this is a cast unit somebody craned into place".
+      const parts = [body];
+      for (const sz of [-0.62, 0.62]) {
+        const eye = new THREE.BoxGeometry(0.14, 0.055, 0.05);
+        eye.translate(0, 0.862, sz);
+        parts.push(eye);
+      }
+      for (const sz of [-1, 1]) {
+        const lug = new THREE.BoxGeometry(0.10, 0.20, 0.05);
+        lug.translate(0, 0.40, sz * 1.10);
+        parts.push(lug);
+      }
+      const merged = mergeGeometries(parts.map((g) => g.toNonIndexed()), false);
+      const bg = worldUV(facet(merged), 0.85);
+      // Baked value break. An instanced prop carries none of the world-space
+      // weathering the merged geometry gets, so under a near-uniform sky dome
+      // every plane of the moulding resolves to the same tone and 82 cm of cast
+      // concrete flattens back into the pale card the review kept seeing. Road
+      // splash up the foot, dust on the top surfaces and a hard darkening under
+      // the flare put the four faces of the profile back on four values.
+      {
+        const bp = bg.attributes.position, bn = bg.attributes.normal;
+        const bc = new Float32Array(bp.count * 3);
+        for (let i = 0; i < bp.count; i++) {
+          const y = bp.getY(i), ny = bn.getY(i);
+          const splash = 1 - smoothstep(0.06, 0.52, y);
+          const up = clamp(ny, 0, 1), down = clamp(-ny, 0, 1);
+          let v = 1.0 - splash * 0.30;
+          v *= 1 - down * 0.38;
+          v *= 1 + up * 0.09;
+          v *= 1 - smoothstep(0.80, 0.845, y) * 0.06;   // rubbed top arris
+          bc[i * 3] = v * (1 + splash * 0.07);
+          bc[i * 3 + 1] = v * (1 + splash * 0.01);
+          bc[i * 3 + 2] = v * (1 - splash * 0.10);
+        }
+        bg.setAttribute('color', new THREE.BufferAttribute(bc, 3));
+      }
+      this._barrierGeo = bg;
     }
     const gy = this._groundY(x, z);
-    this._scatterAdd('barrier', mat(x, gy, z, ry, 0, (rnd() - 0.5) * 0.05),
+    // Bedded, not balanced: a 3 cm sink and a tenth of the old roll. The old
+    // ±0.025 rad lifted one bottom corner 1.5 cm clear of the road, and a
+    // 1.5 cm slot of daylight under a 2 t block is the loudest possible tell.
+    this._scatterAdd('barrier', mat(x, gy - 0.03, z, ry, 0, (rnd() - 0.5) * 0.012),
       _col.setHSL(0.09, 0.05, 0.60 + rnd() * 0.26).clone());
     this._collideBox(x, gy + 0.41, z, 0.62, 0.82, 2.2, ry);
+    // Contact: grit and shed concrete washed up against both feet.
+    const cos = Math.cos(ry), sin = Math.sin(ry);
+    for (let i = 0; i < 9; i++) {
+      const t = (rnd() - 0.5) * 2.1;
+      const off = (rnd() < 0.5 ? -1 : 1) * (0.28 + rnd() * 0.18);
+      const px = x + cos * t + sin * off;
+      const pz = z - sin * t + cos * off;
+      const s = 0.5 + rnd() * 0.9;
+      this._scatterAdd('debris',
+        mat(px, this._groundY(px, pz) + 0.02, pz, rnd() * 6.28, 0, (rnd() - 0.5) * 0.2)
+          .scale(_v.set(s, 0.7, s)),
+        _col.setHSL(0.09, 0.07, 0.42 + rnd() * 0.34).clone());
+    }
+    for (let i = 0; i < 3; i++) {
+      const t = (rnd() - 0.5) * 2.0;
+      const off = (rnd() < 0.5 ? -1 : 1) * (0.30 + rnd() * 0.14);
+      const px = x + cos * t + sin * off, pz = z - sin * t + cos * off;
+      const s = 0.16 + rnd() * 0.2;
+      this._scatterAdd('brickChunk',
+        mat(px, this._groundY(px, pz) + s * 0.1, pz, rnd() * 6.28, rnd(), rnd()).scale(_v.set(s, s, s)),
+        _col.setHSL(0.09, 0.08, 0.5 + rnd() * 0.3).clone());
+    }
   }
 
   /**
@@ -2335,22 +3089,55 @@ export class Level {
   _sandbagWall(x, z, length, ry, courses, rnd, baseY = null) {
     const gy = baseY ?? this._groundY(x, z);
     const cos = Math.cos(ry), sin = Math.sin(ry);
+    const CH = 0.196;                              // course height
+    // The ground is not level over five metres of wall, so the bottom course is
+    // set from the height under each bag and pressed 3 cm into it. Sampling one
+    // height at the wall's centre is what put daylight under the near end.
+    const groundAt = (px, pz) => baseY ?? this._groundY(px, pz);
+    // Berm: a low bank of spoil closing the foot of the wall, so there is no
+    // line of sky between the bottom course and the road however it is lit.
+    for (let i = 0; i < Math.max(2, Math.round(length / 0.9)); i++) {
+      const t = ((i + 0.5) / Math.max(2, Math.round(length / 0.9)) - 0.5) * length;
+      const px = x + cos * t, pz = z - sin * t;
+      const by = groundAt(px, pz);
+      this._stage('sandbagDark', boxGeo(length / Math.max(2, Math.round(length / 0.9)) + 0.12, 0.16, 0.66, 1.6),
+        mat(px, by + 0.03, pz, ry));
+    }
     for (let c = 0; c < courses; c++) {
       const inset = c * 0.12;
       const len = length - inset * 2;
-      const n = Math.max(1, Math.round(len / 0.52));
-      for (let i = 0; i < n; i++) {
-        const t = (i + 0.5) / n - 0.5 + (c % 2 ? 0.25 / n : 0);
-        const off = t * len;
-        const px = x + cos * off + (rnd() - 0.5) * 0.05;
-        const pz = z - sin * off + (rnd() - 0.5) * 0.05;
-        const py = gy + 0.115 + c * 0.215;
-        this._scatterAdd('sandbag',
-          mat(px, py, pz, ry + (rnd() - 0.5) * 0.22, (rnd() - 0.5) * 0.12, (rnd() - 0.5) * 0.1),
-          _col.setHSL(0.11, 0.13 + rnd() * 0.1, 0.5 + rnd() * 0.28).clone());
+      const n = Math.max(1, Math.round(len / 0.50));
+      // Two bags deep, and the two rows swap header/stretcher every course —
+      // which is how they are actually laid and why the face of a real
+      // emplacement is a chequer of ends and sides rather than a row of buns.
+      for (let row = 0; row < 2; row++) {
+        const perp = (row === 0 ? -0.115 : 0.115) + c * 0.028;
+        const header = ((c + row) & 1) === 1;
+        const pitch = header ? 0.30 : 0.50;
+        const nb = header ? Math.max(1, Math.round(len / pitch)) : n;
+        for (let i = 0; i < nb; i++) {
+          const t = (i + 0.5) / nb - 0.5 + (c % 2 ? 0.28 / nb : 0);
+          const off = t * len;
+          const px = x + cos * off + sin * perp + (rnd() - 0.5) * 0.035;
+          const pz = z - sin * off + cos * perp + (rnd() - 0.5) * 0.035;
+          const py = groundAt(px, pz) + (c === 0 ? 0.072 : 0.092) + c * CH;
+          this._scatterAdd('sandbag',
+            mat(px, py, pz, ry + (header ? Math.PI / 2 : 0) + (rnd() - 0.5) * 0.16,
+              (rnd() - 0.5) * 0.09, (rnd() - 0.5) * 0.07),
+            _col.setHSL(0.095 + rnd() * 0.02, 0.09 + rnd() * 0.09, 0.66 + rnd() * 0.28).clone());
+        }
       }
     }
-    this._collideBox(x, gy + courses * 0.215 / 2, z, length, courses * 0.215, 0.55, ry, SURFACE.SAND);
+    // A couple of bags fallen off the top, and one split open.
+    for (let i = 0; i < 2; i++) {
+      const off = (rnd() - 0.5) * length;
+      const px = x + cos * off - sin * (0.48 + rnd() * 0.4);
+      const pz = z - sin * off - cos * (0.48 + rnd() * 0.4);
+      this._scatterAdd('sandbag',
+        mat(px, groundAt(px, pz) + 0.075, pz, rnd() * 6.28, (rnd() - 0.5) * 0.5, (rnd() - 0.5) * 0.4),
+        _col.setHSL(0.10, 0.11, 0.62 + rnd() * 0.26).clone());
+    }
+    this._collideBox(x, gy + courses * CH / 2, z, length, courses * CH + 0.1, 0.62, ry, SURFACE.SAND);
     // Kit dumped behind the position sells it as occupied.
     for (let i = 0; i < 3; i++) {
       const off = (rnd() - 0.5) * length;
@@ -2510,11 +3297,63 @@ export class Level {
       case 'brickChunk': return { geo: rockGeo(0.38, rnd), mat: 'brick', cast: true };
       case 'debris': return { geo: boxGeo(0.34, 0.05, 0.26, 1.6), mat: 'concreteDark', cast: false };
       case 'sandbag': {
-        const g = new THREE.SphereGeometry(0.5, 6, 4);
-        g.scale(1.05, 0.42, 0.62);
+        // A filled hessian bag, not an ellipsoid.
+        //
+        // The sphere is pushed out onto a superellipsoid so the bag has flanks
+        // and a top rather than a continuous curve, slumped flat underneath
+        // where it beds onto the course below, pinched at the sewn ends into
+        // the ears every sandbag has, and given a raised welt where the mouth
+        // is folded under. The girth carries a slow wobble so no two sides of
+        // one bag are the same. Baked AO in the vertex colours darkens the
+        // underside, the ears and the seam trough — the crevices between bags
+        // are most of what a stacked wall actually reads as, and an instanced
+        // prop has nowhere else to put them.
+        const g = new THREE.SphereGeometry(0.5, 14, 9);
+        const p = g.attributes.position;
+        const HW = 0.300, HH = 0.112, HD = 0.192;
+        const col = new Float32Array(p.count * 3);
         const uv = g.attributes.uv;
-        for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 1.4, uv.getY(i) * 0.9);
-        return { geo: g, mat: 'sandbag', cast: true };
+        for (let i = 0; i < p.count; i++) {
+          let x = p.getX(i) * 2, y = p.getY(i) * 2, z = p.getZ(i) * 2;
+          const e = 3.1;
+          const k = Math.pow(Math.pow(Math.abs(x), e) + Math.pow(Math.abs(y), e)
+            + Math.pow(Math.abs(z), e), -1 / e);
+          x *= k; y *= k; z *= k;
+          // Sewn ends: the last fifth of the bag pinches down into an ear.
+          const ex = Math.abs(x);
+          if (ex > 0.78) {
+            const t = (ex - 0.78) / 0.22;
+            const pinch = 1 - 0.46 * t * t;
+            y *= pinch; z *= pinch;
+            x += Math.sign(x) * t * 0.05;
+          }
+          // Slow girth wobble: a filled bag is never symmetric.
+          const wob = 1 + 0.055 * Math.sin(x * 5.1 + z * 3.7) + 0.030 * Math.sin(z * 9.3 - x * 2.1);
+          z *= wob;
+          y *= 1 + 0.035 * Math.sin(x * 7.7 + 1.3);
+          x *= HW; y *= HH; z *= HD;
+          // Slumped base: the bag spreads where it takes the load.
+          const floor = -HH * 0.70;
+          if (y < floor) y = floor + (y - floor) * 0.22;
+          // Folded mouth: a welt running the length of the bag, off centre.
+          const seam = Math.exp(-Math.pow((z - HD * 0.22) / (HD * 0.16), 2));
+          const topness = clamp((y / HH + 0.1) / 1.1, 0, 1);
+          y += seam * topness * 0.016;
+          const trough = Math.exp(-Math.pow((z - HD * 0.52) / (HD * 0.18), 2)) * topness;
+          y -= trough * 0.010;
+          p.setXYZ(i, x, y, z);
+          // Baked occlusion.
+          const under = 1 - smoothstep(-1.0, 0.35, y / HH);
+          const end = smoothstep(0.70, 1.0, Math.abs(x) / HW);
+          const ao = clamp((1 - under * 0.58) * (1 - end * 0.36) * (1 - trough * 0.34), 0.20, 1);
+          col[i * 3] = ao; col[i * 3 + 1] = ao * 0.995; col[i * 3 + 2] = ao * 0.975;
+        }
+        g.computeVertexNormals();
+        // Weave density from the sphere's own parameterisation: ~5 tiles per
+        // metre of girth, which puts the jute yarn at about 5 mm.
+        for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 5.0, uv.getY(i) * 2.6);
+        g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+        return { geo: g, mat: 'sandbag', cast: true, vcol: true };
       }
       case 'drum': {
         const body = cylGeo(0.3, 0.3, 0.88, 12, 1.0).translate(0, 0.44, 0);
@@ -2542,7 +3381,7 @@ export class Level {
         for (let i = 0; i < 3; i++) parts.push(boxGeo(0.1, 0.11, 1.1, 1.6).translate(-0.45 + i * 0.45, 0.06, 0));
         return { geo: mergeGeometries(parts), mat: 'wood', cast: true };
       }
-      case 'barrier': return { geo: this._barrierGeo, mat: 'barrier', cast: true };
+      case 'barrier': return { geo: this._barrierGeo, mat: 'barrier', cast: true, vcol: true };
       default: return null;
     }
   }
@@ -2618,7 +3457,20 @@ export class Level {
       if (!list.length) continue;
       const proto = this._scatterProto(kind, mulberry32(this.seed + kind.length * 31));
       if (!proto || !proto.geo) continue;
-      const mesh = new THREE.InstancedMesh(proto.geo, this._mat(proto.mat, true), list.length);
+      // A prototype that carries baked AO needs vertexColors on; three.js
+      // multiplies the vertex colour and the instance colour, so per-bag hue
+      // variation survives alongside the per-vertex occlusion.
+      let material = this._mat(proto.mat, true);
+      if (proto.vcol) {
+        const vk = `${proto.mat}#iv`;
+        if (!this._mats.has(vk)) {
+          const mm = material.clone();
+          mm.vertexColors = true;
+          this._mats.set(vk, mm);
+        }
+        material = this._mats.get(vk);
+      }
+      const mesh = new THREE.InstancedMesh(proto.geo, material, list.length);
       for (let i = 0; i < list.length; i++) {
         mesh.setMatrixAt(i, list[i].m);
         if (list[i].c) mesh.setColorAt(i, list[i].c);
@@ -2664,6 +3516,7 @@ export class Level {
         .replace('#include <common>',
           '#include <common>\n'
           + 'attribute vec3 aNext;\n'
+          + 'attribute vec3 aPrev;\n'
           + 'attribute vec2 aSide;      // x: -1/+1 across the ribbon, y: real radius (m)\n'
           + 'uniform vec2 uWireRes;\n'
           + 'varying vec3 vWire;        // x: side, y: half width (px), z: coverage')
@@ -2671,24 +3524,42 @@ export class Level {
           '#include <project_vertex>\n'
           + '{\n'
           + '  vec4 cB = projectionMatrix * (modelViewMatrix * vec4(aNext, 1.0));\n'
+          + '  vec4 cP = projectionMatrix * (modelViewMatrix * vec4(aPrev, 1.0));\n'
           + '  vec2 sA = gl_Position.xy / max(1e-4, abs(gl_Position.w)) * uWireRes;\n'
           + '  vec2 sB = cB.xy / max(1e-4, abs(cB.w)) * uWireRes;\n'
-          + '  vec2 dv = sB - sA;\n'
-          + '  float dl = length(dv);\n'
-          + '  vec2 nrm = dl > 1e-4 ? vec2(dv.y, -dv.x) / dl : vec2(0.0, 1.0);\n'
+          + '  vec2 sP = cP.xy / max(1e-4, abs(cP.w)) * uWireRes;\n'
+          // Miter join. Every vertex is shared by the segment arriving and the
+          // segment leaving, so expanding it along only the outgoing segment's
+          // normal pinches the ribbon at every joint — and a ribbon pinched
+          // once per segment is a dotted line, which is exactly what the near
+          // vertical drops were doing. Bisect the two tangents instead and pay
+          // the 1/cos to keep the ribbon's width constant through the corner.
+          + '  vec2 dN = sB - sA, dP = sA - sP;\n'
+          + '  float lN = length(dN), lP = length(dP);\n'
+          + '  vec2 tN = lN > 1e-4 ? dN / lN : vec2(1.0, 0.0);\n'
+          + '  vec2 tP = lP > 1e-4 ? dP / lP : tN;\n'
+          + '  vec2 tm = tN + tP;\n'
+          + '  tm = dot(tm, tm) > 1e-8 ? normalize(tm) : tN;\n'
+          + '  vec2 nrm = vec2(tm.y, -tm.x);\n'
+          + '  float miter = 1.0 / max(abs(dot(nrm, vec2(tN.y, -tN.x))), 0.40);\n'
           + '  float pxPerM = uWireRes.y * projectionMatrix[1][1] * 0.5 / max(0.05, -mvPosition.z);\n'
           + '  float trueHalf = aSide.y * pxPerM;\n'
-          + '  float halfPx = max(trueHalf, 0.80);\n'
-          + '  vWire = vec3(aSide.x, halfPx, clamp(trueHalf / halfPx, 0.30, 1.0));\n'
-          + '  gl_Position.xy += nrm * aSide.x * (halfPx * 2.0 / uWireRes) * gl_Position.w;\n'
+          // A one-pixel half width is the narrowest a resolve-time AA pass can
+          // still see as a line rather than as a run of isolated samples.
+          + '  float halfPx = max(trueHalf, 1.05);\n'
+          + '  vWire = vec3(aSide.x, halfPx, clamp(trueHalf / halfPx, 0.42, 1.0));\n'
+          + '  gl_Position.xy += nrm * aSide.x * (halfPx * miter * 2.0 / uWireRes) * gl_Position.w;\n'
           + '}');
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', '#include <common>\nvarying vec3 vWire;')
         .replace('#include <alphamap_fragment>',
           '#include <alphamap_fragment>\n'
-          // Soft edge one texel wide however far away the run is, and the
-          // coverage term gives back the ink the width floor took away.
-          + 'diffuseColor.a *= vWire.z * clamp((1.0 - abs(vWire.x)) * vWire.y * 1.7, 0.0, 1.0);');
+          // Analytic coverage of a round wire across the ribbon rather than a
+          // linear ramp: the profile stays full-strength through the middle and
+          // only falls off in the last pixel, so a two-pixel run never drops
+          // below the contrast SMAA needs to resolve it as continuous.
+          + 'float cov = clamp((1.0 - abs(vWire.x)) * vWire.y, 0.0, 1.0);\n'
+          + 'diffuseColor.a *= vWire.z * clamp(cov * 2.4, 0.0, 1.0);');
     };
     m.customProgramCacheKey = () => 'levelWireRibbon';
     this._wireMat = m;
@@ -2698,20 +3569,23 @@ export class Level {
   /** Stage a polyline as a ribbon. Points are consumed, not retained. */
   _addWire(points, radius = 0.028, tint = null, matrix = null) {
     if (points.length < 2) return;
-    if (!this._wires) this._wires = { pos: [], next: [], side: [], col: [], idx: [], n: 0 };
+    if (!this._wires) this._wires = { pos: [], next: [], prev: [], side: [], col: [], idx: [], n: 0 };
     const W = this._wires;
     if (matrix) for (const p of points) p.applyMatrix4(matrix);
     const c = tint || _col.setHex(0x211d18);
     const base = W.n;
+    const last = points.length - 1;
     for (let i = 0; i < points.length; i++) {
       const p = points[i];
-      // The last vertex has no successor, so mirror the previous segment: the
-      // ribbon keeps its orientation instead of collapsing at the end cap.
-      const q = i < points.length - 1 ? points[i + 1]
-        : _v.copy(p).multiplyScalar(2).sub(points[i - 1]);
+      // The end vertices have no successor / predecessor, so mirror the segment
+      // they do have: the miter degenerates to that segment's own normal
+      // instead of collapsing the ribbon at the cap.
+      const q = i < last ? points[i + 1] : _v.copy(p).multiplyScalar(2).sub(points[i - 1]).clone();
+      const r = i > 0 ? points[i - 1] : _v.copy(p).multiplyScalar(2).sub(points[1]).clone();
       for (const s of [-1, 1]) {
         W.pos.push(p.x, p.y, p.z);
         W.next.push(q.x, q.y, q.z);
+        W.prev.push(r.x, r.y, r.z);
         W.side.push(s, radius);
         W.col.push(c.r, c.g, c.b);
       }
@@ -2742,6 +3616,7 @@ export class Level {
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(W.pos), 3));
     geo.setAttribute('aNext', new THREE.BufferAttribute(new Float32Array(W.next), 3));
+    geo.setAttribute('aPrev', new THREE.BufferAttribute(new Float32Array(W.prev), 3));
     geo.setAttribute('aSide', new THREE.BufferAttribute(new Float32Array(W.side), 2));
     geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(W.col), 3));
     geo.setIndex(W.n > 65535 ? new THREE.BufferAttribute(new Uint32Array(W.idx), 1)

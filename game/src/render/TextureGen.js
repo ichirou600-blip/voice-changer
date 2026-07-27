@@ -759,7 +759,27 @@ void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out f
   // 4 — damage: shrinkage cracks, then whole patches of render fallen away to
   //     reveal the masonry behind. That sub-layer is the story of the material,
   //     so the loss threshold is set where it actually fires often enough to see.
-  float crack = smoothstep( 0.85, 0.98, ridged( warp( uv, vec2( 3.0 ), 0.06, 2 ), vec2( 6.0 ), 4 ) );
+  //
+  //     The crack network is a *contour*, not a threshold on a rough field. A
+  //     single-octave ridged crest is the zero set of a smooth function, which
+  //     is by construction one continuous curve; every octave above the first
+  //     chops that curve into short arcs, and thresholding those arcs high is
+  //     precisely how a crack network degenerates into a scatter of black
+  //     comma-shaped ticks that repeat with the tile. One octave, two
+  //     independent generations, and a fine one that only fires where the
+  //     coarse one is already close — cracks branch off cracks.
+  vec2 cw = warp( uv, vec2( 2.0 ), 0.11, 2 );
+  float ridgeA = ridged( cw, vec2( 3.0, 2.0 ), 1 );
+  float ridgeB = ridged( cw + 7.9, vec2( 2.0, 4.0 ), 1 );
+  float crackMain = max( smoothstep( 0.940, 0.994, ridgeA ),
+                         smoothstep( 0.958, 0.996, ridgeB ) * 0.80 );
+  float crackFine = smoothstep( 0.966, 0.998, ridged( cw + 2.6, vec2( 11.0, 9.0 ), 1 ) )
+                  * smoothstep( 0.55, 0.86, max( ridgeA, ridgeB ) );
+  // Crazing is patchy: render cracks where the substrate moved and where damp
+  // got behind it, not evenly over every square metre. An unmasked network at
+  // full strength covers a wall in what reads as handwriting.
+  float crackZone = smoothstep( 0.40, 0.74, fbm( uv + 13.1, vec2( 2.0 ), 3 ) );
+  float crack = sat( crackMain + crackFine * 0.45 ) * ( 0.16 + 0.84 * crackZone );
   float lossField = fbm( warp( uv + 15.0, vec2( 4.0 ), 0.05, 2 ), vec2( 5.0 ), 3 );
   // Ragged perimeter: a high-frequency fringe eats into the threshold so the
   //     patches lose their blobby silhouette.
@@ -778,16 +798,19 @@ void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out f
   substrate *= 0.86 + fbm( uv, vec2( 50.0 ), 3 ) * 0.30;
 
   height = 0.66 + ( tone - 0.5 ) * 0.07 + ( trowel - 0.5 ) * 0.10 + ( stipple - 0.5 ) * 0.10
-         + ( tooth - 0.5 ) * 0.03 - crack * 0.32 - loss * 0.34 + lip * 0.07;
+         + ( tooth - 0.5 ) * 0.03 - crack * 0.13 - loss * 0.34 + lip * 0.07;
 
-  cav = 1.0 - sat( crack * 0.95 + loss * 0.28 + ( 1.0 - stipple ) * 0.22 );
+  // A hairline in lime render is a shadow slot, not an inkwell. Letting the
+  // crack drive cavity to zero handed the finish pass a licence to fill it with
+  // near-black grime, which is what turned a 1 cm crack into a painted glyph.
+  cav = 1.0 - sat( crack * 0.12 + loss * 0.28 + ( 1.0 - stipple ) * 0.22 );
 
   vec3 colr = render * ( 0.70 + tone * 0.62 );
   colr = mix( colr, render * 0.66, stain * 0.45 );
   colr *= 0.92 + stipple * 0.17;
   colr = mix( colr, substrate, loss * 0.88 );
   colr = mix( colr, render * 1.12, lip * 0.45 );
-  colr = mix( colr, colr * 0.45, crack * 0.7 );
+  colr = mix( colr, colr * 0.80, crack * 0.34 );
 
   rough = mix( 0.92 + ( stipple - 0.5 ) * 0.08, 0.90, loss );
 
