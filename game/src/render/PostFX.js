@@ -9,7 +9,9 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
  *
  *   1. WorldPass      world + viewmodel -> rtScene           (HDR, linear)
  *   2. GBufferPass    view normal + linear depth + velocity  (MRT, 8-bit packed)
- *   3. GTAO           half-res horizon AO -> bilateral blur -> multiplied into rtScene
+ *   3a. GTAO          half-res horizon AO -> bilateral blur
+ *   3b. Contact       full-res short-range obscurance + sun-direction shadow ray
+ *       -> both multiplied into rtScene by one apply pass
  *   4. TAA            jittered accumulation, velocity reprojection, neighbourhood clip
  *   5. Motion blur    velocity-buffer directional reconstruction
  *   6. Depth of field autofocus on the crosshair, half-res golden-angle bokeh
@@ -31,17 +33,17 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 /** Per-tier cost knobs. Everything visual stays on; only sample counts drop. */
 const TIERS = {
   low: {
-    aa: 'smaa', aoScale: 0.5, aoDirs: 2, aoSteps: 3, aoBlur: 1,
+    aa: 'smaa', aoScale: 0.5, aoDirs: 2, aoSteps: 3, aoBlur: 1, contactTaps: 8, raySteps: 8,
     motionBlur: false, motionSamples: 6, dof: false, dofTaps: 8,
     bloomMips: 4, historyFilter: 0,
   },
   medium: {
-    aa: 'taa', aoScale: 0.5, aoDirs: 2, aoSteps: 5, aoBlur: 2,
+    aa: 'taa', aoScale: 0.5, aoDirs: 2, aoSteps: 5, aoBlur: 2, contactTaps: 10, raySteps: 10,
     motionBlur: true, motionSamples: 8, dof: true, dofTaps: 12,
     bloomMips: 5, historyFilter: 1,
   },
   high: {
-    aa: 'taa', aoScale: 0.5, aoDirs: 3, aoSteps: 6, aoBlur: 2,
+    aa: 'taa', aoScale: 0.5, aoDirs: 3, aoSteps: 6, aoBlur: 2, contactTaps: 12, raySteps: 12,
     motionBlur: true, motionSamples: 12, dof: true, dofTaps: 20,
     bloomMips: 6, historyFilter: 1,
   },
@@ -520,29 +522,260 @@ const AOBlurShader = {
 };
 
 /**
+ * Contact occlusion — the short-range half of the ambient term, and the reason
+ * props stop floating.
+ *
+ * The wide GTAO above runs at half resolution with a 0.85 m search: at 1280x720
+ * its innermost sample is already ~2 full-res pixels out, so a 5 cm gap between
+ * a crate and the floor falls entirely inside its first step and is never seen.
+ * No amount of retuning fixes that — the signal is below the pass's sampling
+ * rate. This is a genuinely separate, genuinely short-range trace at *full*
+ * resolution, so it resolves the metre of world nearest each contact.
+ *
+ * The estimator is Alchemy/HBAO obscurance rather than GTAO's horizon integral:
+ * for each tap, how far the sample rises above this pixel's tangent plane,
+ * attenuated by distance. It is noisier per sample than a horizon search but it
+ * needs no marching, so all of its samples land inside the contact instead of
+ * being spent walking out of it.
+ *
+ * The same tangent-plane rejection the wide pass uses applies here, for the same
+ * reason: without it a road seen at a grazing angle occludes itself and the
+ * whole ground darkens. Coplanar samples read elevation ~0 and are rejected
+ * regardless of how far away they are, so the test costs nothing at range.
+ */
+const ContactAOShader = {
+  uniforms: {
+    tGBuffer: { value: null },
+    tVelocity: { value: null },
+    uProjInfo: { value: new THREE.Vector2(1, 1) },
+    uResolution: { value: new THREE.Vector2(1, 1) },
+    uProjScale: { value: 500 },
+    uRadius: { value: 0.32 },
+    uBias: { value: 0.13 },
+    uIntensity: { value: 1.0 },
+    uMinRadiusPx: { value: 3.0 },
+    uMaxRadiusPx: { value: 42.0 },
+    uSunView: { value: new THREE.Vector3(0, 1, 0) },
+    uRayRange: { value: 0.8 },
+    uRayThickness: { value: 0.35 },
+    uRayStrength: { value: 0.6 },
+    uFrame: { value: 0 },
+  },
+  vertexShader: GLSL_FS_VERT,
+  fragmentShader: /* glsl */`
+    precision highp float;
+    ${GLSL_GBUFFER}
+    ${GLSL_IGN}
+    uniform vec2 uResolution;
+    uniform float uProjScale, uRadius, uBias, uIntensity,
+                  uMinRadiusPx, uMaxRadiusPx, uFrame,
+                  uRayRange, uRayThickness, uRayStrength;
+    uniform vec3 uSunView;
+    varying vec2 vUv;
+    const float GOLDEN = 2.39996323;
+
+    /** View-space point back to the uv it was rasterised from. */
+    vec2 viewToUv(vec3 Q) {
+      return (Q.xy / max(-Q.z, 1e-4)) / uProjInfo * 0.5 + 0.5;
+    }
+
+    /**
+     * Short screen-space shadow ray toward the sun.
+     *
+     * This is the half of the problem ambient occlusion physically cannot
+     * solve. On a road seen at a grazing angle, one screen pixel spans roughly
+     * ten centimetres of ground, so the entire half-metre of floor beside a
+     * barrier — the whole region an AO search of any radius could darken — is
+     * three pixels wide. A shadow ray does not have that problem: it walks
+     * along the *light*, and the strip of ground the barrier actually shades
+     * runs a metre or more downsun, which is tens of pixels even edge-on.
+     *
+     * Deliberately short. This is not a replacement for the cascades; it is the
+     * few tens of centimetres nearest a caster that a shadow map with a working
+     * normal bias must give up in order not to acne, which is exactly the range
+     * where a prop reads as glued down or floating.
+     */
+    float sunRay(vec3 P, vec3 N, float z, float jitter) {
+      // Back-facing to the sun is the cosine term's job, not ours; tracing it
+      // would just paint a second, offset terminator.
+      if (uRayStrength <= 0.0 || dot(N, uSunView) <= 0.03) return 1.0;
+
+      // Lift off along the normal before starting. The g-buffer stores depth in
+      // 16 sqrt-encoded bits, so a step near the eye is well under a
+      // millimetre but grows to centimetres at range; the offset has to track
+      // it or the surface shadows itself at distance.
+      vec3 O = P + N * (0.01 + z * 0.0022);
+      float occ = 0.0;
+
+      for (int i = 0; i < RAY_STEPS; i++) {
+        float t = (float(i) + jitter) / float(RAY_STEPS) * uRayRange;
+        vec3 Q = O + uSunView * t;
+        float qz = -Q.z;
+        if (qz < 0.05) break;
+        vec2 uv = viewToUv(Q);
+        if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) break;
+
+        float sz = gbufDepth(uv);
+        float diff = qz - sz;                  // >0: something is in front of the ray
+        // A depth buffer records surfaces, not solids. Without an upper bound
+        // every distant rooftop between the pixel and the sun counts as an
+        // occluder and the whole frame goes into shadow.
+        float thick = uRayThickness + qz * 0.02;
+        if (diff > 0.004 + qz * 0.0025 && diff < thick) {
+          // Fade out over the last third of the trace. A hit at the very end of
+          // a half-metre ray is as likely to be the ray running out as it is a
+          // real occluder, and terminating hard draws a straight edge across
+          // the ground at exactly uRayRange from every caster.
+          occ = max(occ, 1.0 - smoothstep(0.62, 1.0, t / uRayRange));
+        }
+      }
+      return sat01(1.0 - occ * uRayStrength);
+    }
+
+    void main() {
+      vec4 g = texture2D(tGBuffer, vUv);
+      float z = gbufDepth(vUv);
+      if (isSky(z)) { gl_FragColor = vec4(1.0, 1.0, g.b, g.a); return; }
+
+      vec3 P = viewPos(vUv, z);
+      vec3 N = octDecode(g.rg);
+
+      // World radius projected to pixels, then clamped at both ends. The upper
+      // clamp is the same guard the wide pass needs — the viewmodel is 30 cm
+      // from the lens and a 0.32 m search there would swallow the whole weapon.
+      // The lower clamp matters more here: past ~50 m a 0.32 m radius is under
+      // one texel and every tap would land back in the centre pixel, silently
+      // switching the term off exactly where a prop needs its base pinned.
+      // Whichever clamp bites, the world falloff radius follows it.
+      float radiusPx = clamp(uRadius * uProjScale / z, uMinRadiusPx, uMaxRadiusPx);
+      float R = radiusPx * z / uProjScale;
+
+      float noise = ign(gl_FragCoord.xy, uFrame);
+      float rot = noise * 6.2831853;
+      vec2 texel = 1.0 / uResolution;
+
+      float occ = 0.0, wsum = 0.0;
+      for (int i = 0; i < CONTACT_TAPS; i++) {
+        float fi = float(i) + 0.5;
+        // Taps are spaced linearly from 1.5 px out to the full radius. The
+        // g-buffer is point sampled, so anything closer than about a texel
+        // returns the centre pixel itself and contributes nothing.
+        float rPx = mix(1.5, radiusPx, fi / float(CONTACT_TAPS));
+        float ang = fi * GOLDEN + rot;
+        vec2 suv = vUv + vec2(cos(ang), sin(ang)) * rPx * texel;
+
+        vec3 S = viewPos(suv, gbufDepth(suv)) - P;
+        float d = length(S);
+        // Elevation above the tangent plane, as a sine — scale invariant, so
+        // one bias works from the muzzle to the far parapet. It saturates about
+        // 20 degrees above the bias rather than ramping all the way to the
+        // zenith: a wall meeting a floor at a right angle presents most of its
+        // occluding area at shallow elevations, and a ramp normalised to 90
+        // degrees scores that wall at a third of its true obscurance. That
+        // single mis-normalisation is most of why the first cut of this pass
+        // measured 253/255 mean and was invisible.
+        float rise = smoothstep(uBias, uBias + 0.34, dot(S, N) / max(d, 1e-5));
+        // Proximity weight: full inside half the radius, gone at the edge.
+        float att = smoothstep(0.0, 0.5, 1.0 - d / R);
+        occ += rise * att;
+        wsum += att;
+      }
+
+      // Normalise by the weight actually in range, not by the tap count. A tap
+      // that landed on the skyline two hundred metres away is not evidence that
+      // this pixel is open — it is no evidence at all, and averaging it in as a
+      // zero is what lets seven distant taps bury the one that found the floor
+      // the crate is sitting on. occ never exceeds wsum, so the ratio needs no
+      // clamping beyond the divide-by-zero guard.
+      float ao = sat01(1.0 - uIntensity * occ / max(wsum, 1e-4));
+      // .r ambient contact, .g direct contact shadow — the two are consumed
+      // with opposite sensitivity to how lit a pixel is, so they cannot be
+      // folded into one number here. .ba carry the packed depth so the resolve
+      // can reject taps across an edge without a second g-buffer fetch.
+      gl_FragColor = vec4(ao, sunRay(P, N, z, noise), g.b, g.a);
+    }`,
+};
+
+/**
  * Multiplies AO into the lit image. AO is an ambient term, but all we have here
  * is the composite, so the darkening is eased off where a pixel is obviously
  * under direct sun. Without that, occlusion reads as dirt on bright walls.
+ *
+ * The contact term gets its own, far gentler relief. A wide bowl of ambient
+ * occlusion genuinely does vanish on a surface the sun is hitting square on; a
+ * 5 cm gap does not — it still blocks most of the sky and all of the bounce.
+ * Relieving both by the same amount is what made the previous pass invisible on
+ * the sunlit road and the sunlit rooftop, which is precisely where the props
+ * looked pasted on.
+ *
+ * The contact trace is one rotated tap set per pixel, so it arrives noisy. The
+ * five-tap diagonal resolve here averages four neighbouring rotation cells
+ * together under a depth guard, which makes an 8-tap trace read like a 40-tap
+ * one and costs four fetches instead of a whole blur pass.
  */
 const AOApplyShader = {
   uniforms: {
     tDiffuse: { value: null },
     tAO: { value: null },
+    tContact: { value: null },
+    uTexel: { value: new THREE.Vector2() },
     uStrength: { value: 1.0 },
     uDirectRelief: { value: 0.5 },
+    uContactStrength: { value: 1.0 },
+    uContactRelief: { value: 0.22 },
+    uShadowStrength: { value: 1.0 },
   },
   vertexShader: GLSL_FS_VERT,
   fragmentShader: /* glsl */`
     precision highp float;
-    uniform sampler2D tDiffuse, tAO;
-    uniform float uStrength, uDirectRelief;
+    ${GLSL_CODEC}
+    uniform sampler2D tDiffuse, tAO, tContact;
+    uniform vec2 uTexel;
+    uniform float uStrength, uDirectRelief, uContactStrength, uContactRelief,
+                  uShadowStrength;
     varying vec2 vUv;
+
     void main() {
       vec3 c = texture2D(tDiffuse, vUv).rgb;
       float ao = texture2D(tAO, vUv).r;
+
+      float contact = 1.0, shadow = 1.0;
+      if (uContactStrength > 0.0) {
+        vec4 k0 = texture2D(tContact, vUv);
+        float z0 = unpackUnit(k0.ba);
+        vec2 sum = k0.rg;
+        float wsum = 1.0;
+        for (int i = 0; i < 4; i++) {
+          vec2 o = i == 0 ? vec2(1.0, 1.0) : i == 1 ? vec2(-1.0, 1.0)
+                 : i == 2 ? vec2(1.0, -1.0) : vec2(-1.0, -1.0);
+          vec4 s = texture2D(tContact, vUv + o * uTexel);
+          // Depth is sqrt encoded, so a fixed tolerance here is a world-space
+          // tolerance that widens with distance — which is what you want: the
+          // resolve must not blur a contact across the silhouette in front of
+          // it, but at 100 m the whole prop is a few pixels wide.
+          float w = exp(-abs(unpackUnit(s.ba) - z0) * 1200.0);
+          sum += s.rg * w; wsum += w;
+        }
+        contact = sum.x / wsum;
+        shadow = sum.y / wsum;
+      }
+
       float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-      float k = uStrength * (1.0 - uDirectRelief * smoothstep(0.35, 1.6, l));
-      gl_FragColor = vec4(c * mix(1.0, ao, k), 1.0);
+      float bright = smoothstep(0.35, 1.6, l);
+      float kWide = uStrength * (1.0 - uDirectRelief * bright);
+      float kNear = uContactStrength * (1.0 - uContactRelief * bright);
+
+      // The shadow ray reads the opposite way round. Occlusion scales ambient,
+      // which is why it has to be eased off in full sun; a contact shadow
+      // scales *direct*, so it applies only where there is direct light left to
+      // remove. Gating it on how lit the pixel already is doubles as the guard
+      // against double-darkening: a pixel the cascades have already put in
+      // shadow is dark, reads as unlit, and is left alone.
+      float lit = smoothstep(0.30, 1.05, l);
+      float kSun = uShadowStrength * lit;
+
+      gl_FragColor = vec4(
+        c * mix(1.0, ao, kWide) * mix(1.0, contact, kNear) * mix(1.0, shadow, kSun), 1.0);
     }`,
 };
 
@@ -1197,13 +1430,24 @@ const GradeShader = {
       // only because the image reaching this pass is already TAA-resolved.
       vec2 px = 1.0 / uResolution;
       float l0 = luma(col);
-      float lb = 0.25 * (
-        luma(texture2D(tDiffuse, uv + vec2( px.x, 0.0)).rgb) +
-        luma(texture2D(tDiffuse, uv + vec2(-px.x, 0.0)).rgb) +
-        luma(texture2D(tDiffuse, uv + vec2(0.0,  px.y)).rgb) +
-        luma(texture2D(tDiffuse, uv + vec2(0.0, -px.y)).rgb));
+      float lR = luma(texture2D(tDiffuse, uv + vec2( px.x, 0.0)).rgb);
+      float lL = luma(texture2D(tDiffuse, uv + vec2(-px.x, 0.0)).rgb);
+      float lU = luma(texture2D(tDiffuse, uv + vec2(0.0,  px.y)).rgb);
+      float lD = luma(texture2D(tDiffuse, uv + vec2(0.0, -px.y)).rgb);
+      float lb = 0.25 * (lR + lL + lU + lD);
       float hp = clamp((l0 - lb) / max(l0 + lb, 1e-4), -0.6, 0.6);
-      col *= 1.0 + hp * uSharpen * sat01(1.0 - r2 * 1.4);
+      // Contrast-limited: the sharpened luma is clamped into the range its own
+      // neighbourhood already spans. An unbounded unsharp mask overshoots on
+      // one side of every silhouette, which is exactly the 1-2 px light rim
+      // that was showing along the left edge of the rooftop AC unit — the halo
+      // is not a tuning problem, it is what the operator does. Clamped, a step
+      // edge still steepens (the dark side falls toward the local minimum, the
+      // bright side rises toward the local maximum) but neither side can leave
+      // the range, so no rim can be created that was not already in the image.
+      float lo = min(l0, min(min(lL, lR), min(lU, lD)));
+      float hi = max(l0, max(max(lL, lR), max(lU, lD)));
+      float lSharp = clamp(l0 * (1.0 + hp * uSharpen * sat01(1.0 - r2 * 1.4)), lo, hi);
+      col *= lSharp / max(l0, 1e-4);
 
       col += texture2D(tBloom, uv).rgb * uBloomStrength;
       col = agxOrAces(col * uExposure);
@@ -1269,6 +1513,39 @@ export class RenderPipeline {
       aoPower: 1.5,
       aoBias: 0.09,
 
+      // Short-range contact occlusion, full res, independent of the wide term.
+      // 0.32 m is deliberately just over prop scale: wide enough that the
+      // gradient under a crate or a barrier foot reads as a soft shadow rather
+      // than a hard line, tight enough that it never becomes a second, worse
+      // copy of the GTAO above.
+      contact: true,
+      contactRadius: 0.32,
+      contactIntensity: 1.0,
+      // Same units as aoBias — sine of the minimum elevation above the tangent
+      // plane. Slightly higher than the wide pass because the taps here are one
+      // to two pixels apart, where depth quantisation is a larger share of the
+      // measured rise.
+      contactBias: 0.13,
+      contactStrength: 1.0,
+
+      // Screen-space contact shadow, traced along the sun. The range is chosen
+      // against the cascades rather than against the art: cascade 0's normal
+      // bias measures 0.008 world units and grows with each split, and the band
+      // a shadow map necessarily loses to that bias is the first few tens of
+      // centimetres downsun of a caster. This covers that band and stops there.
+      // 0.8 m rather than 0.5 because on ground seen edge-on it is the *length*
+      // of the shaded strip that has to survive the projection, not its width.
+      contactShadow: true,
+      contactShadowRange: 0.8,
+      // Depth buffers store surfaces, not solids: an occluder is only an
+      // occluder if the ray passes within this much of it, otherwise every
+      // rooftop between here and the sun shadows the whole street.
+      contactShadowThickness: 0.35,
+      // How much direct light a full hit removes. Not 1.0: this multiplies the
+      // composite, which still contains sky and bounce, and a contact shadow
+      // that takes the ambient with it reads as a hole rather than as shade.
+      contactShadowStrength: 0.6,
+
       taa: this.tier.aa === 'taa',
       taaFeedback: 0.93,
 
@@ -1305,8 +1582,10 @@ export class RenderPipeline {
       distortion: 0.024,
       saturation: 1.03,
       contrast: 1.02,
-      // Was ringing a 1-2px light halo along silhouettes.
-      sharpen: 0.15,
+      // Was ringing a 1-2px light halo along silhouettes; the unsharp is now
+      // clamped to its own neighbourhood, so overshoot is structurally
+      // impossible and the amount can go back up to where the image needs it.
+      sharpen: 0.22,
       lift: 0.0,
     };
 
@@ -1329,6 +1608,9 @@ export class RenderPipeline {
 
     this._quads = {
       gtao: fsQuad(GTAOShader, { AO_DIRS: this.tier.aoDirs, AO_STEPS: this.tier.aoSteps }),
+      contact: fsQuad(ContactAOShader, {
+        CONTACT_TAPS: this.tier.contactTaps, RAY_STEPS: this.tier.raySteps,
+      }),
       aoBlur: fsQuad(AOBlurShader),
       aoApply: fsQuad(AOApplyShader),
       taa: fsQuad(TAAShader, this.tier.historyFilter ? { HISTORY_CATMULL_ROM: '' } : {}),
@@ -1415,6 +1697,9 @@ export class RenderPipeline {
 
     const s = this.tier.aoScale;
     this.rtAO = [this._rt(w * s, h * s), this._rt(w * s, h * s)];
+    // Contact occlusion is the one screen-space term that must not be
+    // downsampled: the feature it is looking for is a handful of pixels wide.
+    this.rtContact = this._rt(w, h, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
     this.rtFocus = [
       this._rt(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter }),
       this._rt(1, 1, { minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter }),
@@ -1496,7 +1781,11 @@ export class RenderPipeline {
       const u = this._quads.aoApply.material.uniforms;
       u.tDiffuse.value = this.rtScene.texture;
       u.tAO.value = this.rtAO[0].texture;
+      u.tContact.value = this.rtContact.texture;
+      u.uTexel.value.set(1 / this.width, 1 / this.height);
       u.uStrength.value = p.aoIntensity;
+      u.uContactStrength.value = p.contact ? p.contactStrength : 0.0;
+      u.uShadowStrength.value = (p.contact && p.contactShadow) ? 1.0 : 0.0;
       this._time('aoApply', () => this._draw(r, this._quads.aoApply, this.rtLit));
       lit = this.rtLit.texture;
     }
@@ -1690,6 +1979,37 @@ export class RenderPipeline {
       b.uDirection.value.set(0, 1);
       this._draw(renderer, this._quads.aoBlur, this.rtAO[0]);
     }
+
+    if (!p.contact) return;
+    const c = this._quads.contact.material.uniforms;
+    c.tGBuffer.value = gbuf;
+    c.tVelocity.value = vel;
+    c.uProjInfo.value.copy(projInfo);
+    c.uResolution.value.set(this.width, this.height);
+    // Full-res pixels per metre at one metre — this pass is not downsampled, so
+    // it must not inherit the AO buffer's scale.
+    c.uProjScale.value = (this.height * 0.5) / projInfo.y;
+    c.uRadius.value = p.contactRadius;
+    c.uBias.value = p.contactBias;
+    c.uIntensity.value = p.contactIntensity;
+    c.uMaxRadiusPx.value = this.height * 0.058;
+    // Sun direction in view space. The sky owns it and it points *toward* the
+    // sun, which is the direction a shadow ray marches. Without a sky the trace
+    // has no light to aim at and switches itself off rather than guessing.
+    if (this.sky?.sunDirection) {
+      c.uSunView.value.copy(this.sky.sunDirection)
+        .transformDirection(this.engine.camera.matrixWorldInverse);
+      c.uRayStrength.value = p.contactShadow ? p.contactShadowStrength : 0.0;
+    } else {
+      c.uRayStrength.value = 0.0;
+    }
+    c.uRayRange.value = p.contactShadowRange;
+    c.uRayThickness.value = p.contactShadowThickness;
+    // Rotating the tap set per frame is only free when something integrates the
+    // frames. With TAA off the rotation is held still, trading a fixed dither
+    // for occlusion that crawls over every static surface as you stand there.
+    c.uFrame.value = this.useTaa ? this._frame : 0;
+    this._draw(renderer, this._quads.contact, this.rtContact);
   }
 
   _renderDOF(renderer, src, gbuf, vel, projInfo) {
