@@ -1,6 +1,9 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { SURFACE } from './Physics.js';
-import { damp, clamp, mulberry32 } from '../core/Noise.js';
+import {
+  damp, clamp, mulberry32, Simplex, fbm2, worley2, smoothstep,
+} from '../core/Noise.js';
 
 /**
  * Hostile AI. Each enemy is a capsule with a hitbox stack (head / torso / limbs)
@@ -14,6 +17,161 @@ import { damp, clamp, mulberry32 } from '../core/Noise.js';
  */
 
 const STATE = { IDLE: 0, ALERT: 1, ENGAGE: 2, REPOSITION: 3, DEAD: 4 };
+
+// ---------------------------------------------------------------------------
+// Kit surfaces
+// ---------------------------------------------------------------------------
+// A soldier needs three tiles — cloth weave, nylon webbing, moulded rubber —
+// whose only job is to give MeshStandardMaterial a normal and a roughness break
+// so the uniform stops reading as a single flat diffuse. TextureGen bakes 512px
+// architectural sets through the GPU; three more passes there would cost the
+// loading screen more than these are worth, so they are baked on the CPU at
+// 128px, which is roughly a millimetre per texel at the tilings used below.
+
+const KIT_TEX = 128;
+
+/**
+ * Bilinear cross-fade of four offset copies of a non-tiling field. Cheap way to
+ * make fbm seamless across the 0..1 tile, which matters because the same sheet
+ * is repeated two or three times around a limb.
+ */
+function tileFbm(noise, u, v, freq, octaves) {
+  const a = fbm2(noise, u * freq, v * freq, octaves);
+  const b = fbm2(noise, (u - 1) * freq, v * freq, octaves);
+  const c = fbm2(noise, u * freq, (v - 1) * freq, octaves);
+  const d = fbm2(noise, (u - 1) * freq, (v - 1) * freq, octaves);
+  return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
+}
+
+/**
+ * Bakes one surface set from a per-texel callback.
+ *
+ * @param {function(number,number):number[]} fn (u,v) -> [height, roughness, r,g,b]
+ *   `height` is only ever differentiated, so its absolute level is free;
+ *   `roughness` is stored as a multiplier around 1.0 so the per-material
+ *   `roughness` scalar still carries the fabric/gear split; rgb is optional.
+ * @param {number} relief Sobel gain — how deep the weave reads.
+ */
+function bakeKit(fn, relief, albedo = false, size = KIT_TEX) {
+  const n = size;
+  const N = n * n;
+  const h = new Float32Array(N);
+  const rough = new Uint8Array(N * 4);
+  const alb = albedo ? new Uint8Array(N * 4) : null;
+
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const i = y * n + x;
+      const o = fn((x + 0.5) / n, (y + 0.5) / n);
+      h[i] = o[0];
+      // Roughness lives in green; three reads roughnessMap.g and multiplies.
+      rough[i * 4] = 255;
+      rough[i * 4 + 1] = clamp(o[1], 0, 1) * 255;
+      rough[i * 4 + 2] = 0;
+      rough[i * 4 + 3] = 255;
+      if (alb) {
+        alb[i * 4] = clamp(o[2], 0, 1) * 255;
+        alb[i * 4 + 1] = clamp(o[3], 0, 1) * 255;
+        alb[i * 4 + 2] = clamp(o[4], 0, 1) * 255;
+        alb[i * 4 + 3] = 255;
+      }
+    }
+  }
+
+  // Sobel the height field into a tangent-space normal, wrapping at the edges
+  // so the derivative is continuous across the tile join.
+  const nrm = new Uint8Array(N * 4);
+  const at = (x, y) => h[((y + n) % n) * n + ((x + n) % n)];
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const dx = (at(x - 1, y) - at(x + 1, y)) * relief;
+      const dy = (at(x, y - 1) - at(x, y + 1)) * relief;
+      const inv = 1 / Math.sqrt(dx * dx + dy * dy + 1);
+      const i = (y * n + x) * 4;
+      nrm[i] = (dx * inv * 0.5 + 0.5) * 255;
+      nrm[i + 1] = (dy * inv * 0.5 + 0.5) * 255;
+      nrm[i + 2] = (inv * 0.5 + 0.5) * 255;
+      nrm[i + 3] = 255;
+    }
+  }
+
+  const mk = (data, srgb) => {
+    const t = new THREE.DataTexture(data, n, n, THREE.RGBAFormat);
+    t.wrapS = THREE.RepeatWrapping;
+    t.wrapT = THREE.RepeatWrapping;
+    t.magFilter = THREE.LinearFilter;
+    t.minFilter = THREE.LinearMipmapLinearFilter;
+    t.generateMipmaps = true;
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    t.needsUpdate = true;
+    return t;
+  };
+
+  return {
+    map: alb ? mk(alb, true) : null,
+    normalMap: mk(nrm, false),
+    roughnessMap: mk(rough, false),
+  };
+}
+
+/**
+ * Repeat is a property of the texture, so a second tiling needs a clone — but
+ * clones share the Source, so this costs one upload, not two. The albedo gets
+ * its own tiling because the two layers live at completely different scales: a
+ * camo patch is 20 cm and a thread is a millimetre, and tiling them together
+ * means choosing which one to get wrong.
+ */
+function retile(set, u, v, mu = u, mv = v) {
+  const out = {};
+  for (const k of ['map', 'normalMap', 'roughnessMap']) {
+    if (!set[k]) { out[k] = null; continue; }
+    const t = set[k].clone();
+    if (k === 'map') t.repeat.set(mu, mv);
+    else t.repeat.set(u, v);
+    t.needsUpdate = true;
+    out[k] = t;
+  }
+  return out;
+}
+
+/**
+ * Collects transformed primitives per material and merges them into one buffer
+ * each. A kitted soldier is ~90 primitives; merging by material takes that to
+ * about thirty draw calls, and because the merge happens inside `_shared()` the
+ * result is still one set of buffers for the whole wave.
+ */
+class GeoBag {
+  constructor() { this.byMat = new Map(); }
+
+  add(mat, geo, p = null, r = null, s = null) {
+    const g = geo.clone();
+    _pos.set(p ? p[0] : 0, p ? p[1] : 0, p ? p[2] : 0);
+    _eul.set(r ? r[0] : 0, r ? r[1] : 0, r ? r[2] : 0);
+    _quat.setFromEuler(_eul);
+    if (s === null) _scl.set(1, 1, 1);
+    else if (typeof s === 'number') _scl.set(s, s, s);
+    else _scl.set(s[0], s[1], s[2]);
+    _mat4.compose(_pos, _quat, _scl);
+    g.applyMatrix4(_mat4);
+    let arr = this.byMat.get(mat);
+    if (!arr) this.byMat.set(mat, arr = []);
+    arr.push(g);
+    return this;
+  }
+
+  /** @returns {{mat: THREE.Material, geo: THREE.BufferGeometry}[]} */
+  build() {
+    const out = [];
+    for (const [mat, arr] of this.byMat) {
+      const geo = arr.length === 1 ? arr[0] : mergeGeometries(arr, false);
+      if (arr.length > 1) for (const a of arr) a.dispose();
+      geo.computeBoundingSphere();
+      out.push({ mat, geo });
+    }
+    this.byMat.clear();
+    return out;
+  }
+}
 
 export class EnemyManager {
   constructor(engine, { physics, level, player, ballistics, particles, audio, textures, enabled = true }) {
@@ -50,161 +208,324 @@ export class EnemyManager {
   }
 
   /**
-   * Materials and geometry are built once and shared by every soldier. Eight
-   * fully-detailed characters would otherwise mean eight copies of ~40 buffers,
-   * and the GPU would see no instancing benefit at all.
+   * The three surface sheets. Baked lazily, once, and shared by every material
+   * below; the clones only exist because tiling is a property of the texture.
+   */
+  _sheets() {
+    if (this._sheetCache) return this._sheetCache;
+    const nz = new Simplex(9137);
+
+    // Ripstop weave carrying a four-tone camo. The pattern is the single biggest
+    // thing separating "soldier" from "green mannequin" at 6 m: it breaks the
+    // body into patches long before any individual thread is resolvable, and it
+    // is the reason the uniform stops reading as one flat diffuse.
+    const DARK = [0.115, 0.124, 0.090];
+    const MID = [0.186, 0.192, 0.138];
+    const LIGHT = [0.256, 0.246, 0.180];
+    const BROWN = [0.180, 0.148, 0.112];
+    const cloth = bakeKit((u, v) => {
+      // Plain weave: warp and weft alternate over and under, so the height field
+      // is a checker of two orthogonal ribs rather than a grid of bumps.
+      const F = Math.PI * 2 * 22;
+      const over = ((Math.floor(u * 44) + Math.floor(v * 44)) & 1) === 0;
+      const rib = over ? Math.sin(u * F) : Math.sin(v * F);
+      // Ripstop grid — the heavier thread every few millimetres that says
+      // "military fabric" rather than "cotton".
+      const grid = ((u * 11) % 1 < 0.10 || (v * 11) % 1 < 0.10) ? 0.28 : 0;
+      const fuzz = tileFbm(nz, u, v, 40, 2) * 0.10;
+      const hgt = 0.5 + rib * 0.16 + grid + fuzz;
+
+      const n1 = tileFbm(nz, u, v, 1.8, 4);
+      const n2 = tileFbm(nz, u + 0.31, v + 0.77, 3.6, 3);
+      let c = MID;
+      if (n1 > 0.10) c = LIGHT;
+      if (n1 < -0.13) c = DARK;
+      if (n2 > 0.26) c = BROWN;
+      // Sun-bleached high points, dirt in the folds.
+      const wear = 1 + tileFbm(nz, u + 4.2, v + 1.5, 7, 3) * 0.11 + grid * 0.22;
+      const rough = 1 - Math.abs(fuzz) * 1.2 - (over ? 0 : 0.04);
+      return [hgt, rough, c[0] * wear, c[1] * wear, c[2] * wear];
+    }, 1.6, true);
+
+    // Cordura webbing: coarse ribs across the strap with a stitch line down it.
+    // Its sheen is what separates the carrier and pouches from the uniform once
+    // the gear roughness of 0.5 is applied on top.
+    const nylon = bakeKit((u, v) => {
+      const rib = Math.cos(v * Math.PI * 2 * 26);
+      const stitch = Math.abs(((u * 6) % 1) - 0.5) < 0.055 ? 0.24 : 0;
+      const grain = tileFbm(nz, u + 2.1, v + 8.4, 30, 2) * 0.09;
+      return [0.5 + rib * 0.13 + stitch + grain, 0.92 + rib * 0.06 - stitch * 0.35];
+    }, 1.4);
+
+    // Moulded rubber / pebbled leather for boot soles and gloves.
+    const rubber = bakeKit((u, v) => {
+      const w = worley2(u * 18, v * 18, 18, 771);
+      const cell = smoothstep(0.02, 0.30, w.f1);
+      return [0.5 + cell * 0.42 + tileFbm(nz, u + 3, v + 3, 34, 2) * 0.06, 1 - cell * 0.16];
+    }, 2.2);
+
+    // A limb's UV wraps once around a much smaller circumference than the
+    // torso's, so an albedo tiled the same on both puts 20 cm camo patches on
+    // the chest and 5 cm ones on the forearm — which is what makes a print read
+    // as noise rather than as camouflage.
+    this._sheetCache = {
+      cloth: retile(cloth, 3, 3, 1.15, 1.15),
+      clothLimb: retile(cloth, 2.2, 2.6, 0.55, 0.80),
+      clothFine: retile(cloth, 1.5, 1.5, 0.9, 0.9),
+      nylon: retile(nylon, 2, 2),
+      nylonFine: retile(nylon, 1, 1),
+      rubber: retile(rubber, 2, 2),
+    };
+    return this._sheetCache;
+  }
+
+  /**
+   * Materials and merged part geometry, built once and shared by every soldier.
+   * Eight fully-detailed characters would otherwise mean eight copies of ~100
+   * buffers, and the GPU would see no instancing benefit at all.
+   *
+   * The primitives making up one rigid node are merged per material *inside*
+   * this shared build, so a soldier costs about thirty draw calls instead of a
+   * hundred while the whole wave still shares a single set of buffers.
    */
   _shared() {
     if (this._assets) return this._assets;
-    const M = (color, roughness, metalness = 0.02) =>
-      new THREE.MeshStandardMaterial({ color, roughness, metalness });
+    const s = this._sheets();
 
-    const a = {
-      fatigue: M(0x4a4c3c, 0.90),          // uniform cloth
-      fatigueDark: M(0x35372b, 0.92),      // knee/elbow pads, shadowed panels
-      plate: M(0x2b2d24, 0.72, 0.05),      // plate carrier shell
-      pouch: M(0x3a3c30, 0.86),
-      webbing: M(0x24261e, 0.88),
-      skin: M(0x9c7355, 0.58),
-      glove: M(0x1e1f1c, 0.82),
-      boot: M(0x181816, 0.74),
-      helmet: M(0x33362c, 0.62, 0.08),
-      gear: M(0x141513, 0.55, 0.30),       // NVG mount, buckles, optics housing
+    // Two roughness families, exactly as the surfaces divide: fabric is matte
+    // and close to Lambertian, moulded gear and hard armour hold a broad sheen.
+    // The sheets carry the break-up, these two scalars carry the split.
+    const FABRIC = 0.90;
+    const GEAR = 0.50;
+
+    const M = (color, roughness, metalness, sheet, normalScale = 1) => {
+      const mat = new THREE.MeshStandardMaterial({
+        color,
+        roughness,
+        metalness,
+        map: sheet.map,
+        normalMap: sheet.normalMap,
+        roughnessMap: sheet.roughnessMap,
+      });
+      mat.normalScale.set(normalScale, normalScale);
+      return mat;
+    };
+
+    // A deliberate value ladder — sole 0x0d, webbing 0x19, plate 0x27, pouch
+    // 0x3c, helmet 0x42, camo 0x28..0x62, skin 0xb0. Eight steps between the
+    // darkest strap and the face is what keeps the kit legible in silhouette.
+    const m = {
+      camo: M(0xffffff, FABRIC, 0.0, s.cloth),           // albedo is the sheet
+      camoLimb: M(0xffffff, FABRIC, 0.0, s.clothLimb),   // arms and legs
+      camoWorn: M(0x8f8d84, 0.96, 0.0, s.clothFine),     // pads, cargo pockets
+      gaiter: M(0x26271f, FABRIC, 0.0, s.nylonFine, 0.7),
+      plate: M(0x1d1f19, GEAR, 0.06, s.nylon),
+      pouch: M(0x303227, 0.62, 0.02, s.nylon),
+      webbing: M(0x191a15, 0.55, 0.02, s.nylonFine),
+      helmet: M(0x42452f, 0.58, 0.05, s.nylonFine, 0.55),
+      gear: M(0x131412, 0.42, 0.35, s.nylonFine, 0.5),
+      skin: M(0xb08466, 0.62, 0.0, s.nylonFine, 0.22),
+      glove: M(0x232420, 0.66, 0.03, s.rubber),
+      boot: M(0x2a2823, 0.60, 0.04, s.rubber),
+      sole: M(0x0d0d0c, 0.95, 0.0, s.rubber, 1.4),
       lens: new THREE.MeshStandardMaterial({
         color: 0x101a18, roughness: 0.12, metalness: 0.1,
         emissive: 0x0a1512, emissiveIntensity: 0.3,
       }),
-      gunmetal: M(0x1a1c1b, 0.52, 0.85),
+      gunmetal: M(0x1c1e1d, 0.45, 0.80, s.nylonFine, 0.4),
     };
 
-    const g = {
-      // Limb segments are tapered capsules; real limbs are not cylinders and the
-      // taper is most of what stops a character reading as a balloon animal.
+    // Unit primitives, scaled into place by the bag. Limb segments stay tapered
+    // capsules: real limbs are not cylinders, and the taper is most of what
+    // stops a character reading as a balloon animal.
+    const P = {
+      box: new THREE.BoxGeometry(1, 1, 1),
+      sphere: new THREE.SphereGeometry(0.5, 12, 9),
+      cyl: new THREE.CylinderGeometry(0.5, 0.5, 1, 12),
+      torus: new THREE.TorusGeometry(0.5, 0.048, 6, 20),
+      chest: new THREE.CapsuleGeometry(0.172, 0.235, 5, 12),
+      pelvis: new THREE.CapsuleGeometry(0.158, 0.125, 5, 10),
       thigh: new THREE.CapsuleGeometry(0.093, 0.24, 4, 10),
-      shin: new THREE.CapsuleGeometry(0.072, 0.26, 4, 10),
-      boot: new THREE.BoxGeometry(0.108, 0.088, 0.235),
+      shin: new THREE.CapsuleGeometry(0.070, 0.26, 4, 10),
       upperArm: new THREE.CapsuleGeometry(0.058, 0.19, 4, 9),
       foreArm: new THREE.CapsuleGeometry(0.050, 0.20, 4, 9),
-      hand: new THREE.BoxGeometry(0.070, 0.098, 0.052),
-      chest: new THREE.CapsuleGeometry(0.185, 0.24, 5, 12),
-      pelvis: new THREE.CapsuleGeometry(0.163, 0.13, 5, 10),
-      plateFront: new THREE.BoxGeometry(0.315, 0.345, 0.098),
-      shoulder: new THREE.SphereGeometry(0.093, 10, 8),
-      neck: new THREE.CylinderGeometry(0.055, 0.062, 0.075, 8),
-      skull: new THREE.SphereGeometry(0.098, 14, 12),
-      jaw: new THREE.BoxGeometry(0.118, 0.082, 0.115),
-      helmetShell: new THREE.SphereGeometry(0.126, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.62),
-      pouch: new THREE.BoxGeometry(0.088, 0.098, 0.062),
-      mag: new THREE.BoxGeometry(0.030, 0.098, 0.056),
-      nvgMount: new THREE.BoxGeometry(0.052, 0.040, 0.030),
-      goggle: new THREE.BoxGeometry(0.148, 0.048, 0.036),
-      headsetCup: new THREE.CylinderGeometry(0.046, 0.046, 0.032, 10),
-      rifleBody: new THREE.BoxGeometry(0.045, 0.070, 0.330),
-      rifleBarrel: new THREE.CylinderGeometry(0.011, 0.012, 0.230, 8),
-      rifleMag: new THREE.BoxGeometry(0.028, 0.115, 0.048),
-      rifleStock: new THREE.BoxGeometry(0.038, 0.058, 0.135),
-      strap: new THREE.BoxGeometry(0.062, 0.235, 0.030),
+      helmetShell: new THREE.LatheGeometry(HELMET_PROFILE, 22),
     };
 
-    this._assets = { m: a, g };
+    // --- pelvis ---------------------------------------------------------------
+    const hips = new GeoBag();
+    hips.add(m.camo, P.pelvis);
+    // A solid duty belt is what actually reads at distance; the pouches hanging
+    // off it are second-order detail.
+    hips.add(m.webbing, P.cyl, [0, 0.008, 0], null, [0.336, 0.072, 0.256]);
+    for (let i = 0; i < 6; i++) {
+      const a = -Math.PI * 0.60 + (i / 5) * Math.PI * 1.2;
+      const cx = Math.sin(a);
+      const cz = Math.cos(a);
+      hips.add(m.pouch, P.box, [cx * 0.150, -0.048, cz * 0.116], [0, a, 0], [0.082, 0.100, 0.060]);
+      hips.add(m.webbing, P.box, [cx * 0.154, 0.014, cz * 0.119], [0, a, 0], [0.086, 0.030, 0.064]);
+    }
+    hips.add(m.pouch, P.box, [-0.105, -0.100, -0.150], [0.10, 0.20, 0], [0.125, 0.150, 0.085]);
+    hips.add(m.gear, P.box, [0.162, -0.115, 0.030], [0, 0, 0.12], [0.072, 0.170, 0.100]);
+
+    // --- torso ----------------------------------------------------------------
+    const torso = new GeoBag();
+    torso.add(m.camo, P.chest);
+    torso.add(m.gaiter, P.cyl, [0, 0.168, 0.004], null, [0.200, 0.078, 0.178]);
+
+    // Plate carrier. The hard, bevelled slab standing off the soft body is the
+    // strongest "kitted up" cue there is, so it is built as a chest plate, an
+    // angled upper bevel and a cummerbund rather than one flat box.
+    for (const sz of [1, -1]) {
+      torso.add(m.plate, P.box, [0, -0.022, sz * 0.118], null, [0.310, 0.260, 0.056]);
+      torso.add(m.plate, P.box, [0, 0.128, sz * 0.096], [-sz * 0.30, 0, 0], [0.258, 0.120, 0.050]);
+    }
+    // Cummerbund round the ribs — the piece that closes the silhouette from the
+    // side, where bare front and back plates leave the body reading as a tube.
+    for (const sx of [-1, 1]) {
+      torso.add(m.pouch, P.box, [sx * 0.170, -0.078, 0], [0, 0, sx * 0.06], [0.060, 0.150, 0.212]);
+      torso.add(m.plate, P.box, [sx * 0.106, 0.148, 0.012], [0, 0, -sx * 0.10], [0.086, 0.076, 0.212]);
+    }
+    // Three magazine pouches with flaps, a radio, an admin pouch, two grenades.
+    // The chest line has to be broken by hard objects standing off it, not by
+    // anything painted on.
+    for (let i = -1; i <= 1; i++) {
+      torso.add(m.pouch, P.box, [i * 0.082, -0.078, 0.152], null, [0.076, 0.135, 0.062]);
+      torso.add(m.webbing, P.box, [i * 0.082, 0.002, 0.155], [0.12, 0, 0], [0.080, 0.038, 0.068]);
+    }
+    torso.add(m.gear, P.box, [-0.148, 0.052, 0.096], [0, 0.25, 0], [0.070, 0.135, 0.062]);
+    torso.add(m.gear, P.cyl, [-0.152, 0.212, 0.086], [0, 0, 0.16], [0.010, 0.240, 0.010]);
+    torso.add(m.pouch, P.box, [0.150, 0.055, 0.100], [0, -0.25, 0], [0.078, 0.108, 0.055]);
+    for (const sx of [-1, 1]) {
+      torso.add(m.gear, P.cyl, [sx * 0.058, 0.092, 0.152], null, [0.048, 0.086, 0.048]);
+    }
+    torso.add(m.pouch, P.box, [0.072, -0.108, -0.148], null, [0.112, 0.102, 0.072]);
+    // Sling, right shoulder to left hip, front and back runs.
+    torso.add(m.webbing, P.box, [0.005, -0.012, 0.150], [0, 0, 0.62], [0.040, 0.300, 0.020]);
+    torso.add(m.webbing, P.box, [0.005, -0.012, -0.150], [0, 0, -0.62], [0.040, 0.290, 0.020]);
+
+    // --- head -----------------------------------------------------------------
+    const head = new GeoBag();
+    head.add(m.gaiter, P.cyl, [0, -0.082, 0], null, [0.118, 0.092, 0.118]);
+    head.add(m.skin, P.sphere, [0, 0, 0.004], null, [0.185, 0.205, 0.196]);
+    // Lower face is a neck gaiter, not a blank chin. It puts a hard dark value
+    // under the cheekbones, which is what lets a head read as a face at range
+    // without modelling features nobody can resolve anyway.
+    head.add(m.gaiter, P.sphere, [0, -0.042, 0.010], null, [0.182, 0.150, 0.194]);
+
+    head.add(m.helmet, P.helmetShell, [0, 0.010, -0.006], null, [1.02, 1.0, 1.08]);
+    // The brim. A hemisphere reads as a bowl; the lip is what reads as a helmet,
+    // and it is also the edge that catches the sun and draws the head.
+    head.add(m.helmet, P.box, [0, -0.062, 0.104], [-0.28, 0, 0], [0.176, 0.020, 0.072]);
+    head.add(m.webbing, P.torus, [0, -0.012, -0.004], [Math.PI / 2, 0, 0], [0.278, 0.278, 0.278]);
+    for (const sx of [-1, 1]) {
+      head.add(m.gear, P.box, [sx * 0.130, -0.020, 0.006], null, [0.016, 0.026, 0.150]);
+      head.add(m.gear, P.cyl, [sx * 0.114, -0.014, 0.004], [0, 0, Math.PI / 2], [0.096, 0.036, 0.096]);
+      head.add(m.webbing, P.box, [sx * 0.084, -0.052, 0.030], [0, 0, sx * 0.35], [0.018, 0.112, 0.052]);
+    }
+    // NVG mount and its stub arm: the two details that instantly date a helmet
+    // as modern military, and a bump proud of the brow line in silhouette.
+    head.add(m.gear, P.box, [0, 0.050, 0.108], [0.10, 0, 0], [0.072, 0.044, 0.032]);
+    head.add(m.gear, P.box, [0, 0.098, 0.120], [-0.30, 0, 0], [0.032, 0.072, 0.034]);
+    head.add(m.webbing, P.box, [0, 0.010, -0.132], [0.18, 0, 0], [0.112, 0.070, 0.062]);
+    head.add(m.gear, P.box, [0, 0.028, 0.084], null, [0.166, 0.058, 0.032]);
+    head.add(m.lens, P.box, [0, 0.030, 0.092], [0.06, 0, 0], [0.152, 0.044, 0.038]);
+
+    // --- limb segments --------------------------------------------------------
+    const thigh = new GeoBag();
+    thigh.add(m.camoLimb, P.thigh, [0, -0.210, 0]);
+    for (const sx of [-1, 1]) {
+      thigh.add(m.camoWorn, P.box, [sx * 0.082, -0.238, 0.006], [0, 0, sx * 0.04], [0.038, 0.135, 0.132]);
+      thigh.add(m.webbing, P.box, [sx * 0.090, -0.176, 0.006], null, [0.020, 0.028, 0.126]);
+    }
+
+    const knee = new GeoBag();
+    knee.add(m.camoLimb, P.shin, [0, -0.200, 0]);
+    knee.add(m.camoWorn, P.sphere, [0, -0.022, 0.036], null, [0.156, 0.132, 0.098]);
+    knee.add(m.gear, P.box, [0, -0.026, 0.058], [0.10, 0, 0], [0.108, 0.088, 0.022]);
+    // Boot: ankle cuff, leather upper, proud rubber sole. The sole is what gives
+    // the foot a horizontal line to sit on the ground with.
+    knee.add(m.boot, P.cyl, [0, -0.322, 0.004], null, [0.148, 0.112, 0.148]);
+    knee.add(m.boot, P.box, [0, -0.394, 0.040], null, [0.108, 0.082, 0.238]);
+    knee.add(m.boot, P.box, [0, -0.368, 0.108], [0.30, 0, 0], [0.100, 0.058, 0.072]);
+    knee.add(m.webbing, P.box, [0, -0.350, 0.070], null, [0.052, 0.068, 0.054]);
+    knee.add(m.sole, P.box, [0, -0.437, 0.044], null, [0.116, 0.028, 0.250]);
+    knee.add(m.sole, P.box, [0, -0.424, 0.152], [0.22, 0, 0], [0.104, 0.032, 0.058]);
+
+    const upperArm = new GeoBag();
+    upperArm.add(m.plate, P.sphere, [0, 0.010, 0], null, [0.206, 0.172, 0.206]);
+    upperArm.add(m.camoLimb, P.upperArm, [0, -0.155, 0]);
+    upperArm.add(m.camoWorn, P.cyl, [0, -0.262, 0], null, [0.126, 0.046, 0.126]);
+
+    const elbow = new GeoBag();
+    elbow.add(m.camoLimb, P.foreArm, [0, -0.155, 0]);
+    elbow.add(m.camoWorn, P.sphere, [0, -0.012, 0.028], null, [0.122, 0.100, 0.076]);
+    // Glove: palm, knuckle plate, thumb, fingers. A bare box reads as a mitten.
+    elbow.add(m.glove, P.box, [0, -0.308, 0.010], null, [0.068, 0.098, 0.058]);
+    elbow.add(m.gear, P.box, [0, -0.290, 0.042], [0.20, 0, 0], [0.062, 0.052, 0.020]);
+    elbow.add(m.glove, P.box, [0.036, -0.292, 0.026], [0, 0, 0.40], [0.030, 0.058, 0.034]);
+    elbow.add(m.glove, P.box, [0, -0.356, 0.014], [0.10, 0, 0], [0.062, 0.048, 0.052]);
+
+    // --- slung rifle ----------------------------------------------------------
+    const rifle = new GeoBag();
+    rifle.add(m.gunmetal, P.box, [0, 0, 0], null, [0.046, 0.072, 0.230]);
+    rifle.add(m.gunmetal, P.box, [0, -0.004, -0.185], null, [0.042, 0.056, 0.160]);
+    rifle.add(m.gunmetal, P.cyl, [0, 0.010, -0.320], [Math.PI / 2, 0, 0], [0.022, 0.190, 0.022]);
+    rifle.add(m.gunmetal, P.box, [0, -0.086, -0.010], [0.16, 0, 0], [0.028, 0.120, 0.050]);
+    rifle.add(m.gunmetal, P.box, [0, -0.052, 0.058], [-0.22, 0, 0], [0.026, 0.072, 0.045]);
+    rifle.add(m.gunmetal, P.box, [0, -0.002, 0.190], null, [0.038, 0.060, 0.150]);
+    rifle.add(m.gear, P.box, [0, 0.048, -0.030], null, [0.030, 0.034, 0.110]);
+    rifle.add(m.gear, P.box, [0, 0.040, 0.078], null, [0.024, 0.016, 0.140]);
+
+    this._assets = {
+      m,
+      rig: {
+        hips: hips.build(),
+        torso: torso.build(),
+        head: head.build(),
+        thigh: thigh.build(),
+        knee: knee.build(),
+        upperArm: upperArm.build(),
+        elbow: elbow.build(),
+        rifle: rifle.build(),
+      },
+    };
     return this._assets;
   }
 
   _makeEnemy(position) {
-    const { m, g } = this._shared();
+    const { rig } = this._shared();
     const group = new THREE.Group();
     group.position.copy(position);
 
-    const part = (geo, mat, x, y, z) => {
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.set(x, y, z);
-      return mesh;
+    /** One rigid node: a group of merged, material-sorted meshes. */
+    const node = (parts) => {
+      const n = new THREE.Group();
+      for (const p of parts) {
+        const mesh = new THREE.Mesh(p.geo, p.mat);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.userData.noCollide = true;
+        n.add(mesh);
+      }
+      return n;
     };
 
-    // --- pelvis --------------------------------------------------------------
-    const hips = new THREE.Group();
+    const hips = node(rig.hips);
     hips.position.y = 0.92;
-    hips.add(part(g.pelvis, m.fatigue, 0, 0, 0));
-    // Duty belt with pouches around the hips.
-    for (let i = 0; i < 5; i++) {
-      const a = (i / 5) * Math.PI * 1.5 + Math.PI * 0.25;
-      const p = part(g.pouch, m.pouch, Math.cos(a) * 0.155, -0.03, Math.sin(a) * 0.115);
-      p.rotation.y = -a;
-      p.scale.setScalar(0.78);
-      hips.add(p);
-    }
-    group.add(hips);
-
-    // --- torso ---------------------------------------------------------------
-    const torso = new THREE.Group();
+    const torso = node(rig.torso);
     torso.position.y = 1.22;
-    torso.add(part(g.chest, m.fatigue, 0, 0, 0));
-
-    // Plate carrier: front and rear plates plus shoulder straps. The hard,
-    // squared-off silhouette against the soft body is what reads as "kitted up".
-    const front = part(g.plateFront, m.plate, 0, 0.012, 0.088);
-    front.scale.set(1, 1, 0.55);
-    torso.add(front);
-    const rear = part(g.plateFront, m.plate, 0, 0.012, -0.088);
-    rear.scale.set(1, 1, 0.55);
-    torso.add(rear);
-    for (const sx of [-1, 1]) {
-      torso.add(part(g.strap, m.webbing, sx * 0.098, 0.145, 0));
-    }
-    // Magazine pouches across the chest rig.
-    for (let i = 0; i < 3; i++) {
-      torso.add(part(g.mag, m.pouch, -0.078 + i * 0.078, -0.055, 0.128));
-    }
-    // Radio on the left shoulder with a stub antenna.
-    const radio = part(g.pouch, m.gear, -0.135, 0.075, 0.062);
-    radio.scale.set(0.7, 0.9, 0.7);
-    torso.add(radio);
-    const antenna = part(new THREE.CylinderGeometry(0.004, 0.003, 0.24, 5), m.gear, -0.135, 0.20, 0.062);
-    antenna.rotation.z = 0.18;
-    torso.add(antenna);
-    group.add(torso);
-
-    // --- head ----------------------------------------------------------------
-    const head = new THREE.Group();
+    const head = node(rig.head);
     head.position.y = 1.62;
-    head.add(part(g.neck, m.skin, 0, -0.075, 0));
-    head.add(part(g.skull, m.skin, 0, 0, 0));
-    const jaw = part(g.jaw, m.skin, 0, -0.048, 0.022);
-    jaw.scale.set(0.92, 1, 0.92);
-    head.add(jaw);
+    group.add(hips, torso, head);
 
-    const helmet = part(g.helmetShell, m.helmet, 0, 0.012, -0.004);
-    helmet.scale.set(1.03, 1.1, 1.06);
-    head.add(helmet);
-    // NVG mount on the brow and the counterweight pouch at the rear — the two
-    // details that instantly date a helmet as modern military.
-    head.add(part(g.nvgMount, m.gear, 0, 0.072, 0.098));
-    const counterweight = part(g.pouch, m.webbing, 0, 0.030, -0.115);
-    counterweight.scale.set(0.9, 0.6, 0.6);
-    head.add(counterweight);
-    head.add(part(g.goggle, m.lens, 0, 0.038, 0.092));
-    for (const sx of [-1, 1]) {
-      const cup = part(g.headsetCup, m.gear, sx * 0.106, -0.005, 0);
-      cup.rotation.z = Math.PI / 2;
-      head.add(cup);
-    }
-    group.add(head);
-
-    // --- limbs ---------------------------------------------------------------
     // Each limb is a group pivoting at the joint, so the locomotion code can
     // rotate it directly and the child segments follow.
     const makeLeg = (side) => {
-      const leg = new THREE.Group();
+      const leg = node(rig.thigh);
       leg.position.set(side * 0.098, 0.88, 0);
-      leg.add(part(g.thigh, m.fatigue, 0, -0.21, 0));
-      const knee = new THREE.Group();
+      const knee = node(rig.knee);
       knee.position.y = -0.42;
-      knee.add(part(g.shin, m.fatigue, 0, -0.20, 0));
-      const kneePad = part(new THREE.SphereGeometry(0.078, 8, 6), m.fatigueDark, 0, -0.02, 0.038);
-      kneePad.scale.set(1, 0.85, 0.62);
-      knee.add(kneePad);
-      const boot = part(g.boot, m.boot, 0, -0.40, 0.038);
-      knee.add(boot);
       leg.add(knee);
       leg.userData.knee = knee;
       return leg;
@@ -214,17 +535,10 @@ export class EnemyManager {
     group.add(legL, legR);
 
     const makeArm = (side) => {
-      const arm = new THREE.Group();
+      const arm = node(rig.upperArm);
       arm.position.set(side * 0.223, 1.36, 0);
-      arm.add(part(g.shoulder, m.plate, 0, 0.012, 0));
-      arm.add(part(g.upperArm, m.fatigue, 0, -0.155, 0));
-      const elbow = new THREE.Group();
+      const elbow = node(rig.elbow);
       elbow.position.y = -0.305;
-      elbow.add(part(g.foreArm, m.fatigue, 0, -0.155, 0));
-      const elbowPad = part(new THREE.SphereGeometry(0.062, 8, 6), m.fatigueDark, 0, -0.01, 0.030);
-      elbowPad.scale.set(1, 0.8, 0.6);
-      elbow.add(elbowPad);
-      elbow.add(part(g.hand, m.glove, 0, -0.315, 0.012));
       arm.add(elbow);
       arm.userData.elbow = elbow;
       return arm;
@@ -233,25 +547,13 @@ export class EnemyManager {
     const armR = makeArm(1);
     group.add(armL, armR);
 
-    // --- carried rifle -------------------------------------------------------
-    // Parented to the torso so it tracks the body, posed across the chest.
-    const rifle = new THREE.Group();
-    rifle.add(part(g.rifleBody, m.gunmetal, 0, 0, 0));
-    const barrel = part(g.rifleBarrel, m.gunmetal, 0, 0.012, -0.28);
-    barrel.rotation.x = Math.PI / 2;
-    rifle.add(barrel);
-    rifle.add(part(g.rifleMag, m.gunmetal, 0, -0.085, -0.02));
-    rifle.add(part(g.rifleStock, m.gunmetal, 0, -0.004, 0.225));
-    rifle.position.set(0.16, -0.10, 0.135);
-    rifle.rotation.set(0.08, -0.30, -0.22);
+    // Slung across the chest, muzzle down and across the body: the pose reads as
+    // a carried weapon from any angle, and the diagonal breaks the torso block.
+    const rifle = node(rig.rifle);
+    rifle.position.set(0.118, -0.090, 0.196);
+    rifle.rotation.set(-0.45, 0.30, 0);
     torso.add(rifle);
 
-    group.traverse((c) => {
-      if (!c.isMesh) return;
-      c.castShadow = true;
-      c.receiveShadow = true;
-      c.userData.noCollide = true;
-    });
     this.root.add(group);
 
     return {
@@ -535,6 +837,27 @@ function raySphere(origin, dir, center, radius, maxDist) {
   if (t < 0 || t > maxDist) return null;
   return t;
 }
+
+/**
+ * Half-section of a combat helmet, lathed about Y. The first three points are
+ * the underside lip and the flared brim: a plain hemisphere reads as a salad
+ * bowl, and the brim is both the shape cue and the edge the sun catches.
+ *
+ * Ordered bottom-to-top, which is the order LatheGeometry needs if the faces
+ * are to come out with their normals pointing outwards — reversed, the crown of
+ * the helmet is back-facing, gets culled, and the wearer's scalp shows through.
+ */
+const HELMET_PROFILE = [
+  [0.118, -0.086], [0.139, -0.090], [0.147, -0.080], [0.141, -0.068],
+  [0.133, -0.050], [0.132, -0.014], [0.128, 0.030], [0.118, 0.068],
+  [0.101, 0.098], [0.076, 0.118], [0.042, 0.128], [0.000, 0.130],
+].map(([r, y]) => new THREE.Vector2(r, y));
+
+const _pos = new THREE.Vector3();
+const _scl = new THREE.Vector3();
+const _eul = new THREE.Euler();
+const _quat = new THREE.Quaternion();
+const _mat4 = new THREE.Matrix4();
 
 const _c = new THREE.Vector3();
 const _eye = new THREE.Vector3();

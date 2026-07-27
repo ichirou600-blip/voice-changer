@@ -68,6 +68,17 @@ const PCF_RADIUS = [1.6, 2.0, 2.4, 2.6];
 // back-off distance is this divided by the sun elevation, so a low golden-hour
 // sun still catches the tops of the buildings.
 const CASTER_HEIGHT = 28;
+// Normal-offset bias in texels, per cascade. Cascade 0 is deliberately far
+// below one texel: at a 14 m radius on a 1024 map a single texel is 2.8 cm, and
+// a contact shadow lives at exactly that scale, so anything approaching a full
+// texel of peter-panning erases the darkening where a prop meets the ground.
+// The slack is taken back out by the slope-scaled depth bias in the shader.
+const NORMAL_BIAS = [0.4, 0.85, 1.15, 1.3];
+// Depth-bias multiplier per unit of tan(angle-to-sun). Two texels of extra bias
+// at 45 degrees, which is what a five-tap PCF disc needs to stay clean.
+const SLOPE_BIAS = 1.9;
+// Viewmodel IBL multiplier. See the note where it is applied.
+const VIEW_ENV = 0.6;
 
 let _patched = false;
 
@@ -99,10 +110,12 @@ function patchCascadeShader(count, splits, bands, fadeStart) {
   const stock = src.slice(a, b);
 
   const f = (x) => (Number.isInteger(x) ? `${x}.0` : x.toFixed(5));
+  // Depth bias is scaled per fragment by the surface slope relative to the sun
+  // (see `csmBiasScale` below), so what the uniform carries is the flat-on case.
   const sample = (i) => `getShadow( directionalShadowMap[ ${i} ], `
     + `directionalLightShadows[ ${i} ].shadowMapSize, `
     + `directionalLightShadows[ ${i} ].shadowIntensity, `
-    + `directionalLightShadows[ ${i} ].shadowBias, `
+    + `directionalLightShadows[ ${i} ].shadowBias * csmBiasScale, `
     + `directionalLightShadows[ ${i} ].shadowRadius, `
     + `vDirectionalShadowCoord[ ${i} ] )`;
 
@@ -132,6 +145,17 @@ function patchCascadeShader(count, splits, bands, fadeStart) {
 	DirectionalLight directionalLight;
 	float csmViewZ = vViewPosition.z; // positive distance from the eye
 	float csmShadow = 1.0;
+
+	// Slope-scaled depth bias. Acne is a function of how much the light-space
+	// depth changes across one shadow texel, which is proportional to tan of the
+	// angle between the surface and the sun. Covering the worst case with a
+	// constant normal offset instead means every surface pays the steep-slope
+	// bias, and an offset that large lifts the shadow clear of the base of every
+	// object standing on flat ground — the "sticker on the road" look. Here the
+	// normal offset is cut to a fraction of a texel and the grazing case is paid
+	// for only by the fragments that actually graze.
+	float csmNdotL = saturate( dot( geometryNormal, directionalLights[ 0 ].direction ) );
+	float csmBiasScale = 1.0 + min( sqrt( 1.0 - csmNdotL * csmNdotL ) / max( csmNdotL, 0.08 ), 9.0 ) * ${f(SLOPE_BIAS)};
 
 	if ( receiveShadow ) {
 
@@ -255,6 +279,19 @@ export class Lighting {
     );
     engine.scene.add(this.hemi);
 
+    // Ground bounce. A HemisphereLight's ground colour is unreachable for a
+    // floor: the weight is `0.5 * dot(N, up) + 0.5`, so a horizontal surface
+    // takes 100% of the *sky* colour and none of the ground's. The road in
+    // shadow therefore ends up carrying the sky's chromaticity neat, which on a
+    // clear day is a strong cyan, and the whole lower half of the frame goes
+    // blue. This second hemisphere is inverted — its position is below the
+    // origin, so its "ground" half faces upwards — which puts the warm light
+    // coming back off sunlit asphalt exactly on the horizontal surfaces that
+    // could never see it, and half of it on the walls, which is about right.
+    this.bounce = new THREE.HemisphereLight(0x000000, 0xffffff, 0);
+    this.bounce.position.set(0, -1, 0);
+    engine.scene.add(this.bounce);
+
     // --- viewmodel rig ------------------------------------------------------
     // Viewmodel geometry is small and nearly edge-on to the camera, so a
     // world-calibrated sun leaves the weapon a black silhouette. This rig is
@@ -266,11 +303,12 @@ export class Lighting {
     this.viewKey.target.position.set(0, 0, -1);
     engine.viewScene.add(this.viewKey.target);
 
-    // Rim from high behind-right separates the barrel from the background.
-    // It used to sit nearly level with the camera, which put its specular lobe
-    // straight down the barrel and blew out the rubber butt pad; lifting it and
-    // dropping the intensity keeps the edge without the hot spot.
-    this.viewRim = new THREE.DirectionalLight(0xa8c2e8, 0.55);
+    // Rim from high behind-right separates the barrel from the background. It
+    // used to sit nearly level with the camera, which put its specular lobe
+    // straight down the barrel and blew out the rubber butt pad; lifting it
+    // keeps the edge without the hot spot. It carries most of the separation now
+    // that the fill has been cut, so it runs well above unity and cold.
+    this.viewRim = new THREE.DirectionalLight(0x86aae6, 1.3);
     this.viewRim.position.set(0.85, 1.15, -0.75);
     engine.viewScene.add(this.viewRim);
 
@@ -280,8 +318,17 @@ export class Lighting {
     this.viewBounce.position.set(-0.35, -1.0, 0.45);
     engine.viewScene.add(this.viewBounce);
 
-    this.viewFill = new THREE.HemisphereLight(0x9fb6d0, 0x2a2622, 1.9);
+    // Kept deliberately weak. This is ambient occlusion's opposite number: any
+    // more of it and the key stops modelling and starts competing.
+    this.viewFill = new THREE.HemisphereLight(0x9fb6d0, 0x2a2622, 0.6);
     engine.viewScene.add(this.viewFill);
+
+    // Sky.js hands the viewmodel scene the same PMREM probe the world uses,
+    // which is a fifth broad unshadowed source on a model that is only 40 cm
+    // deep — and the one no amount of tuning the four lights above can
+    // counteract. It is dialled back rather than removed because the specular
+    // half of it is what puts the sheen on the receiver and the optic body.
+    engine.viewScene.environmentIntensity = VIEW_ENV;
 
     // Muzzle flashes have to light the weapon too, and the viewmodel lives in
     // its own scene, so it needs its own copy of the flash.
@@ -385,7 +432,18 @@ export class Lighting {
     // ambientColor is clamped into gamut, so a fixed intensity calibrated when
     // that colour still carried raw radiance leaves the fill ~20x too weak and
     // crushes every shadowed surface to black.
+    const amb = sky.ambientIntensity ?? this.hemi.intensity;
     if (sky.ambientIntensity !== undefined) this.hemi.intensity = sky.ambientIntensity;
+
+    // Warm bounce off the ground. Chromaticity is the sun through one reflection
+    // off warm grey asphalt, normalised to unit maximum so the magnitude stays
+    // where it belongs — on the sky's published ambient level, scaled by how
+    // much sun there is to bounce in the first place.
+    _bounce.copy(sky.sunColor).lerp(_asphaltBounce, 0.72);
+    const peak = Math.max(_bounce.r, _bounce.g, _bounce.b, 1e-4);
+    this.bounce.groundColor.copy(_bounce).multiplyScalar(1 / peak);
+    const sun = THREE.MathUtils.clamp(sky.sunDirection.y * 2.2, 0, 1);
+    this.bounce.intensity = amb * (0.24 + 0.58 * sun);
 
     this._updateCascades();
     this._updateLocals(dt);
@@ -490,15 +548,14 @@ export class Lighting {
       c.light.target.position.copy(_v);
       c.light.target.updateMatrixWorld();
 
-      // Bias. The normal offset does the real work: pushing the lookup point
-      // along the surface normal by rather more than one shadow texel is what
-      // kills acne on sloped surfaces, and because it is expressed in world
-      // units it scales itself per cascade. The depth bias is then only large
-      // enough to cover depth quantisation, which keeps peter-panning down to
-      // a fraction of a texel.
+      // Bias. The normal offset is kept well under one texel in the near
+      // cascade so that contact shadows survive; acne is handled by the
+      // slope-scaled depth bias applied in the patched shader, which costs the
+      // flat-lit surfaces almost nothing. Both terms are expressed in world
+      // units first, so they scale themselves per cascade.
       const texelWorld = (2 * pad) / c.size;
-      shadow.normalBias = texelWorld * 1.4;
-      shadow.bias = -texelWorld * 0.25 / (scam.far - scam.near);
+      shadow.normalBias = texelWorld * NORMAL_BIAS[Math.min(i, NORMAL_BIAS.length - 1)];
+      shadow.bias = -texelWorld * 0.55 / (scam.far - scam.near);
       shadow.needsUpdate = true;
     }
     this._forceCascades = false;
@@ -599,11 +656,22 @@ export class Lighting {
     // Track the sky's own level so the weapon dims at dusk instead of staying
     // stuck at noon exposure, but hold a floor so it never goes to silhouette.
     const day = THREE.MathUtils.clamp(sky.sunDirection.y * 1.6, 0, 1);
-    this.viewKey.intensity = 1.9 + day * 1.7;
-    this.viewRim.intensity = 0.38 + day * 0.22;
-    this.viewBounce.color.copy(sky.ambientColor).lerp(_warmBounce, 0.55);
+    this.viewKey.intensity = 2.4 + day * 2.0;
+    // Re-asserted every frame: Sky.js reassigns viewScene.environment on every
+    // probe re-bake, and a future change there could reset the multiplier.
+    this.engine.viewScene.environmentIntensity = VIEW_ENV;
+    // Four broad lights with no shadowing flat-fill the model and erase every
+    // form-defining crease, and the weapon ends up one smooth brown lump. The
+    // fill is therefore cut to roughly a third of what it was: the key does the
+    // modelling, and what is left of the fill only keeps the shadow side off
+    // black. The rim is the other half of the fix — at 0.55 it could not
+    // separate the barrel from the background at all.
     this.viewFill.color.copy(sky.ambientColor);
-    this.viewFill.intensity = 1.3 + day * 0.7;
+    this.viewFill.intensity = 0.42 + day * 0.24;
+    this.viewRim.color.copy(sky.ambientColor).lerp(_coolRim, 0.55);
+    this.viewRim.intensity = 1.30 + day * 0.55;
+    this.viewBounce.color.copy(sky.ambientColor).lerp(_warmBounce, 0.62);
+    this.viewBounce.intensity = 0.34 + day * 0.16;
   }
 
   dispose() {
@@ -620,4 +688,11 @@ const _sunView = new THREE.Vector3();
 const _q = new THREE.Quaternion();
 const _white = new THREE.Color(1, 1, 1);
 const _warmBounce = new THREE.Color(1.0, 0.72, 0.45);
+// Sun through one bounce off warm grey asphalt.
+const _asphaltBounce = new THREE.Color(1.0, 0.63, 0.36);
+const _bounce = new THREE.Color();
+// Deep sky, well past the ambient chromaticity: the rim only has to say "not
+// the same light as the key", and a cold edge is what sells a barrel against a
+// warm-lit background.
+const _coolRim = new THREE.Color(0.34, 0.55, 1.0);
 const _rank = [];

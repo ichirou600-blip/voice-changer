@@ -43,40 +43,94 @@ const WALL_T = 0.34;        // facade thickness — this is the window reveal de
 const MAP_X = 112;          // ground half extent along the boulevard
 const MAP_Z = 84;
 const CELL = 34;            // merge-batch cell size; sets the culling granularity
+const CORE_X = 54;          // inside this box the fine merge grid is used; outside,
+const CORE_Z = 46;          // one coarse bucket, because nothing out there ever culls
 
 /**
- * Facade material palette. Everything derives from the procedural library; the
- * colour multiplier is what turns four base textures into a street that reads
- * as a dozen different buildings.
+ * The real GPU materials — one per texture set and shading model. Everything a
+ * building is made of resolves to one of these, so the whole city draws from
+ * about a dozen programs.
+ *
+ * Colour is deliberately absent: the tint that turns four base textures into a
+ * dozen different buildings is baked into vertex colour by `_colorize` instead
+ * (see PALETTE). That is what lets five plaster shades share one draw call.
  */
 const MATERIALS = {
-  plasterA: { tex: 'plaster', color: 0xb99f6d, surface: SURFACE.PLASTER },
-  plasterB: { tex: 'plaster', color: 0xd6c8a9, surface: SURFACE.PLASTER },
-  plasterC: { tex: 'plaster', color: 0x8d9b9c, surface: SURFACE.PLASTER },
-  plasterD: { tex: 'plaster', color: 0xa2a482, surface: SURFACE.PLASTER },
-  plasterE: { tex: 'plaster', color: 0xc09480, surface: SURFACE.PLASTER },
-  brick: { tex: 'brick', color: 0xa07b60, surface: SURFACE.CONCRETE },
-  concrete: { tex: 'concrete', color: 0xada695, surface: SURFACE.CONCRETE },
-  concreteDark: { tex: 'concrete', color: 0x6f6a5f, surface: SURFACE.CONCRETE },
-  stone: { tex: 'concrete', color: 0xc4b58e, surface: SURFACE.CONCRETE },
-  rust: { tex: 'rustMetal', color: 0x8b7d6b, metalness: 0.55, surface: SURFACE.METAL },
-  burnt: { tex: 'rustMetal', color: 0x3b332c, metalness: 0.45, roughness: 1, surface: SURFACE.METAL },
-  metal: { tex: 'metalPanel', color: 0x9aa0a6, metalness: 0.85, surface: SURFACE.METAL },
-  panel: { tex: 'metalPanel', color: 0xb0b4b6, metalness: 0.7, side: THREE.DoubleSide, surface: SURFACE.METAL },
-  wood: { tex: 'wood', color: 0xb59a72, surface: SURFACE.WOOD },
-  fabric: { tex: 'cloth', color: 0xffffff, side: THREE.DoubleSide, roughness: 1, surface: SURFACE.FABRIC },
-  sandbag: { tex: 'sand', color: 0x9c8f66, roughness: 1, surface: SURFACE.SAND },
-  sand: { tex: 'sand', color: 0xc9ad7d, roughness: 1, surface: SURFACE.SAND },
-  rubber: { color: 0x24242a, roughness: 0.85, surface: SURFACE.RUBBER },
-  dark: { color: 0x0d0b09, roughness: 1, surface: SURFACE.CONCRETE },
-  glass: { color: 0x1c2429, roughness: 0.12, metalness: 0.35, surface: SURFACE.GLASS },
-  cable: { color: 0x141210, roughness: 0.9, surface: SURFACE.METAL },
-  sign: { tex: 'sign', color: 0xffffff, roughness: 0.7, side: THREE.DoubleSide, surface: SURFACE.METAL },
-  lamp: { color: 0x2a2622, roughness: 0.6, metalness: 0.6, emissive: 0xffb562, emissiveIntensity: 0, surface: SURFACE.METAL },
+  plaster: { tex: 'plaster', surface: SURFACE.PLASTER },
+  brick: { tex: 'brick', surface: SURFACE.CONCRETE },
+  stonework: { tex: 'concrete', surface: SURFACE.CONCRETE },
+  ferrous: { tex: 'rustMetal', metalness: 0.22, roughness: 0.86, surface: SURFACE.METAL },
+  metal: { tex: 'metalPanel', metalness: 0.82, surface: SURFACE.METAL },
+  panel: { tex: 'metalPanel', metalness: 0.68, side: THREE.DoubleSide, surface: SURFACE.METAL },
+  wood: { tex: 'wood', roughness: 0.86, surface: SURFACE.WOOD },
+  fabric: { tex: 'cloth', side: THREE.DoubleSide, roughness: 0.97, surface: SURFACE.FABRIC },
+  granular: { tex: 'sand', roughness: 1, surface: SURFACE.SAND },
+  roofdeck: { tex: 'tarFelt', roughness: 1, surface: SURFACE.CONCRETE },
+  rubber: { tex: 'rubberTread', roughness: 0.88, surface: SURFACE.RUBBER },
+  dark: { tex: 'concrete', roughness: 1, surface: SURFACE.CONCRETE },
+  glass: { roughness: 0.12, metalness: 0.35, surface: SURFACE.GLASS },
+  sign: { tex: 'sign', roughness: 0.7, side: THREE.DoubleSide, surface: SURFACE.METAL },
+  lamp: { tex: 'metalPanel', roughness: 0.6, metalness: 0.6, emissive: 0xffb562, emissiveIntensity: 0, surface: SURFACE.METAL },
+};
+
+/**
+ * Authoring palette: the names the level actually builds with. Each maps to a
+ * GPU material plus the colour that separates it from its siblings. For merged
+ * geometry the colour is folded into the vertex colours; for instanced props it
+ * becomes the material colour and `instanceColor` varies from there.
+ */
+const PALETTE = {
+  plasterA: { batch: 'plaster', color: 0xb99f6d },
+  plasterB: { batch: 'plaster', color: 0xd6c8a9 },
+  plasterC: { batch: 'plaster', color: 0x8d9b9c },
+  plasterD: { batch: 'plaster', color: 0xa2a482 },
+  plasterE: { batch: 'plaster', color: 0xc09480 },
+  brick: { batch: 'brick', color: 0xa07b60 },
+  concrete: { batch: 'stonework', color: 0xada695 },
+  concreteDark: { batch: 'stonework', color: 0x6f6a5f },
+  stone: { batch: 'stonework', color: 0xc4b58e },
+  barrier: { batch: 'stonework', color: 0xa8a294 },
+  // Burnt metal used to be 0x3b332c over an already-dark rust map at metalness
+  // 0.45: the product was so close to zero that every wreck resolved to a pure
+  // black silhouette with no shading at all. Lifted, and the metalness dropped
+  // so the diffuse term survives.
+  rust: { batch: 'ferrous', color: 0x8b7d6b },
+  burnt: { batch: 'ferrous', color: 0x847767 },
+  charred: { batch: 'ferrous', color: 0x4a4237 },
+  metal: { batch: 'metal', color: 0x9aa0a6 },
+  panel: { batch: 'panel', color: 0xb0b4b6 },
+  wood: { batch: 'wood', color: 0xb59a72 },
+  fabric: { batch: 'fabric', color: 0xffffff },
+  sandbag: { batch: 'granular', color: 0x9c8f66 },
+  sand: { batch: 'granular', color: 0xc9ad7d },
+  // Deliberately neutral: `_colorize` adds a warm dust cast to every up-facing
+  // surface, and a warm base under it turns a bitumen roof into a sand dune.
+  roof: { batch: 'roofdeck', color: 0x74746f },
+  roofWet: { batch: 'roofdeck', color: 0x464640 },
+  roofPatch: { batch: 'roofdeck', color: 0x62625b },
+  rubber: { batch: 'rubber', color: 0x2a2a30 },
+  dark: { batch: 'dark', color: 0x16130f },
+  glass: { batch: 'glass', color: 0x1c2429 },
+  sign: { batch: 'sign', color: 0xffffff },
+  lamp: { batch: 'lamp', color: 0x2a2622 },
 };
 
 /** Batches that should not cast shadows — thin trim whose shadow map cost buys nothing. */
-const NO_CAST = new Set(['dark', 'glass', 'cable', 'sign', 'lamp']);
+const NO_CAST = new Set(['dark', 'glass', 'sign', 'lamp']);
+
+/**
+ * Batches too sparse to be worth a spatial grid. Glazing, signage and trim
+ * amount to a few thousand triangles across the whole map; splitting them into
+ * a dozen cells each buys culling on geometry that was never the cost and
+ * spends a dozen draw calls doing it. One bucket in the core, one outside.
+ */
+const SPARSE = new Set(['glass', 'sign', 'lamp', 'panel', 'rubber', 'fabric', 'metal', 'dark', 'granular']);
+
+/** Plausible laundry: whites, work blues, faded ochres. Never a random hue. */
+const LAUNDRY_COLORS = [
+  0xd9d4c6, 0xc3cbd2, 0xa9b6a2, 0xc9ab8d, 0x9fadbc, 0xdccba9,
+  0xb0584c, 0xe7e3d9, 0x8c9aa6, 0xd2c0a0,
+];
 
 // --- geometry helpers -------------------------------------------------------
 
@@ -129,6 +183,116 @@ function rockGeo(radius, rnd) {
   return g;
 }
 
+/**
+ * Constant-texel-density UVs derived from world position, chosen per triangle
+ * from the dominant normal axis. Needed for anything not built by boxGeo —
+ * ExtrudeGeometry in particular hands back UVs in raw shape units, which is
+ * what makes an extruded profile read as flat card however good the map is.
+ */
+function worldUV(geo, density = 0.9) {
+  const p = geo.attributes.position, n = geo.attributes.normal;
+  const uv = new Float32Array(p.count * 2);
+  for (let i = 0; i < p.count; i++) {
+    const ax = Math.abs(n.getX(i)), ay = Math.abs(n.getY(i)), az = Math.abs(n.getZ(i));
+    let u, v;
+    if (ax >= ay && ax >= az) { u = p.getZ(i); v = p.getY(i); }
+    else if (ay >= az) { u = p.getX(i); v = p.getZ(i); }
+    else { u = p.getX(i); v = p.getY(i); }
+    uv[i * 2] = u * density;
+    uv[i * 2 + 1] = v * density;
+  }
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return geo;
+}
+
+/**
+ * Split every triangle onto its own vertices and recompute normals, so a
+ * faceted profile shades as facets. Smoothing an extruded Jersey barrier across
+ * its corners is exactly what turns 82 cm of moulded concrete into a flat pale
+ * slab you would swear you could see through.
+ */
+function facet(geo) {
+  const g = geo.index ? geo.toNonIndexed() : geo;
+  g.clearGroups();
+  g.deleteAttribute('uv');
+  g.computeVertexNormals();
+  return g;
+}
+
+// --- tileable scalar fields for the level's own texture set -----------------
+
+/** One octave of wrapping value noise sampled onto an N×N grid. */
+function latticeField(rnd, N, freq) {
+  const g = new Float32Array(freq * freq);
+  for (let i = 0; i < g.length; i++) g[i] = rnd();
+  const out = new Float32Array(N * N);
+  const s = freq / N;
+  for (let y = 0; y < N; y++) {
+    const fy = y * s, y0 = Math.floor(fy), ty = fy - y0;
+    const wy = ty * ty * (3 - 2 * ty);
+    const ya = (y0 % freq) * freq, yb = ((y0 + 1) % freq) * freq;
+    for (let x = 0; x < N; x++) {
+      const fx = x * s, x0 = Math.floor(fx), tx = fx - x0;
+      const wx = tx * tx * (3 - 2 * tx);
+      const xa = x0 % freq, xb = (x0 + 1) % freq;
+      const t0 = g[ya + xa] + (g[ya + xb] - g[ya + xa]) * wx;
+      const t1 = g[yb + xa] + (g[yb + xb] - g[yb + xa]) * wx;
+      out[y * N + x] = t0 + (t1 - t0) * wy;
+    }
+  }
+  return out;
+}
+
+/** Wrapping fBm in [0,1]. `freq` is the lattice size of the first octave. */
+function fbmField(rnd, N, freq, octaves = 3, gain = 0.5) {
+  const out = new Float32Array(N * N);
+  let amp = 1, tot = 0, f = freq;
+  for (let o = 0; o < octaves; o++) {
+    const l = latticeField(rnd, N, f);
+    for (let i = 0; i < out.length; i++) out[i] += l[i] * amp;
+    tot += amp; amp *= gain; f *= 2;
+  }
+  for (let i = 0; i < out.length; i++) out[i] /= tot;
+  return out;
+}
+
+/**
+ * DataTexture in the same sampling regime as the library's own maps.
+ * DataTexture ignores flipY, so every array fed to this must already be in
+ * v-up order — see `_localSet`, which flips the canvas readback once.
+ */
+function dataTex(arr, N, aniso, srgb = false) {
+  const t = new THREE.DataTexture(arr, N, N, THREE.RGBAFormat, THREE.UnsignedByteType);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.LinearFilter;
+  t.minFilter = THREE.LinearMipmapLinearFilter;
+  t.generateMipmaps = true;
+  t.anisotropy = aniso;
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  t.needsUpdate = true;
+  return t;
+}
+
+/** Central-difference normal map from a wrapping height field, v-up. */
+function normalTex(h, N, strength, aniso) {
+  const d = new Uint8Array(N * N * 4);
+  for (let y = 0; y < N; y++) {
+    const row = y * N, up = ((y + 1) % N) * N, dn = ((y - 1 + N) % N) * N;
+    for (let x = 0; x < N; x++) {
+      const hl = h[row + ((x - 1 + N) % N)], hr = h[row + ((x + 1) % N)];
+      const nx = (hl - hr) * strength;
+      const ny = (h[dn + x] - h[up + x]) * strength;
+      const inv = 1 / Math.sqrt(nx * nx + ny * ny + 1);
+      const k = (row + x) * 4;
+      d[k] = (nx * inv * 0.5 + 0.5) * 255;
+      d[k + 1] = (ny * inv * 0.5 + 0.5) * 255;
+      d[k + 2] = (inv * 0.5 + 0.5) * 255;
+      d[k + 3] = 255;
+    }
+  }
+  return dataTex(d, N, aniso);
+}
+
 /** Sequential index so non-indexed primitives can be merged with indexed ones. */
 function ensureIndex(geo) {
   if (geo.index) return geo;
@@ -173,6 +337,8 @@ const _e = new THREE.Euler();
 const _v = new THREE.Vector3();
 const _one = new THREE.Vector3(1, 1, 1);
 const _col = new THREE.Color();
+const _tint = new THREE.Color();   // scratch for palette x caller tint; never escapes _stage
+const _size = new THREE.Vector2();
 
 /** Compose a placement matrix without allocating. */
 function mat(x = 0, y = 0, z = 0, ry = 0, rx = 0, rz = 0) {
@@ -201,8 +367,10 @@ export class Level {
 
     this._batches = new Map();   // material key -> staged geometries
     this._mats = new Map();
+    this._palCols = new Map();
     this._texSets = new Map();
     this._localTex = new Map();
+    this._wires = null;          // staged overhead cabling, flushed to one mesh
     this._footprints = [];       // building rects, drive ground sand-drift + splat
     this._poseFov = 0;
   }
@@ -250,6 +418,7 @@ export class Level {
 
     onProgress(0.9, 'MERGING GEOMETRY');
     this._flushBatches();
+    this._flushWires();
     await yieldFrame();
 
     onProgress(0.96, 'COLLISION');
@@ -287,12 +456,26 @@ export class Level {
     return out;
   }
 
+  /** Linear-space palette colour for an authoring key, cached. */
+  _paletteColor(key) {
+    let c = this._palCols.get(key);
+    if (!c) {
+      const p = PALETTE[key];
+      c = new THREE.Color(p ? p.color : 0xffffff);
+      this._palCols.set(key, c);
+    }
+    return c;
+  }
+
   _mat(key, instanced = false) {
-    const cacheKey = instanced ? `${key}#i` : key;
+    const cacheKey = instanced ? `${key}#i` : (PALETTE[key]?.batch || key);
     if (this._mats.has(cacheKey)) return this._mats.get(cacheKey);
-    const s = MATERIALS[key];
+    const s = MATERIALS[PALETTE[key]?.batch || key];
     const m = new THREE.MeshStandardMaterial({
-      color: s.color ?? 0xffffff,
+      // Merged geometry has the palette colour folded into its vertex colours,
+      // so the material itself is neutral and one program serves every tint.
+      // Instanced props have no vertex colours to fold into, so they keep it.
+      color: instanced ? (PALETTE[key]?.color ?? 0xffffff) : 0xffffff,
       roughness: s.roughness ?? 0.95,
       metalness: s.metalness ?? 0,
       side: s.side ?? THREE.FrontSide,
@@ -300,6 +483,14 @@ export class Level {
       // props vary per-instance through instanceColor instead.
       vertexColors: !instanced,
     });
+    // Nothing in the level is glazing: state this rather than inherit it, so a
+    // stray blend flag can never leak in and make solid concrete see-through.
+    m.transparent = false;
+    m.opacity = 1;
+    m.alphaTest = 0;
+    m.depthWrite = true;
+    m.depthTest = true;
+    m.blending = THREE.NoBlending;
     if (s.emissive !== undefined) {
       m.emissive = new THREE.Color(s.emissive);
       m.emissiveIntensity = s.emissiveIntensity ?? 1;
@@ -328,14 +519,23 @@ export class Level {
   _stage(key, geo, matrix = null, tint = null) {
     if (matrix) geo.applyMatrix4(matrix);
     ensureIndex(geo);
-    this._colorize(geo, tint);
+    const pc = this._paletteColor(key);
+    this._colorize(geo, tint ? _tint.copy(tint).multiply(pc) : pc);
     geo.computeBoundingBox();
     const bb = geo.boundingBox;
-    const ix = Math.floor((bb.min.x + bb.max.x) * 0.5 / CELL);
-    const iz = Math.floor((bb.min.z + bb.max.z) * 0.5 / CELL);
-    const full = `${key}#${ix}_${iz}`;
+    const mx = (bb.min.x + bb.max.x) * 0.5, mz = (bb.min.z + bb.max.z) * 0.5;
+    // Two-tier grid. Inside the playable core the fine cells buy real frustum
+    // culling; the skyline filler beyond it is on screen in every pose that can
+    // see it at all, so culling there costs draw calls and returns nothing.
+    const core = Math.abs(mx) <= CORE_X && Math.abs(mz) <= CORE_Z;
+    const batch = PALETTE[key]?.batch || key;
+    const c = core ? CELL : CELL * 3;
+    const full = SPARSE.has(batch)
+      ? `${batch}#${core ? 'c' : 'f'}`
+      : `${batch}#${core ? 'c' : 'f'}${Math.floor(mx / c)}_${Math.floor(mz / c)}`;
     let b = this._batches.get(full);
-    if (!b) { b = { key, geos: [] }; this._batches.set(full, b); }
+    if (!b) { b = { key, geos: [], far: !core }; this._batches.set(full, b); }
+    b.far = b.far && !core;
     b.geos.push(geo);
     return geo;
   }
@@ -394,7 +594,9 @@ export class Level {
       merged.setAttribute('uv1', merged.attributes.uv);
       merged.computeBoundingSphere();
       const mesh = new THREE.Mesh(merged, this._mat(b.key));
-      mesh.castShadow = !NO_CAST.has(b.key);
+      // Skyline filler shadows fall on other skyline filler and are never in
+      // frame, so the far batches stay out of the shadow pass entirely.
+      mesh.castShadow = !b.far && !NO_CAST.has(PALETTE[b.key]?.batch || b.key);
       mesh.receiveShadow = true;
       mesh.userData.noCollide = true;   // collision is authored separately
       mesh.name = `block_${full}`;
@@ -453,9 +655,48 @@ export class Level {
   // --- level-specific textures ----------------------------------------------
 
   /**
-   * Three maps the shared library has no reason to carry: timber for crates and
-   * market frames, striped awning canvas, and painted shop signage. Generated
-   * once, small, and packed the same way as the library sets.
+   * Pack a drawn canvas plus a height field into the same three-map set the
+   * shared library publishes, so anything built from these maps lands in the
+   * lit pipeline with a real normal and roughness rather than as smooth plastic.
+   *
+   * The canvas readback is flipped to v-up on the way in: CanvasTexture uploads
+   * with flipY, DataTexture cannot, and a normal map a texel-row out of phase
+   * with its albedo is worse than no normal map at all — so the albedo becomes
+   * a DataTexture too and everything shares one orientation.
+   */
+  _localSet(name, canvas, height, rough, nrmStrength = 3.0) {
+    const N = canvas.width;
+    const src = canvas.getContext('2d').getImageData(0, 0, N, N).data;
+    const aniso = this.textures.maxAniso ?? 1;
+    const alb = new Uint8Array(N * N * 4);
+    const orm = new Uint8Array(N * N * 4);
+    const hv = new Float32Array(N * N);
+    for (let y = 0; y < N; y++) {
+      const s = (N - 1 - y) * N, d = y * N;
+      for (let x = 0; x < N; x++) {
+        const si = (s + x) * 4, di = (d + x) * 4;
+        alb[di] = src[si]; alb[di + 1] = src[si + 1];
+        alb[di + 2] = src[si + 2]; alb[di + 3] = 255;
+        hv[d + x] = height[s + x];
+        orm[di] = 255;
+        orm[di + 1] = clamp(rough[s + x], 0, 1) * 255;
+        orm[di + 3] = 255;
+      }
+    }
+    const set = {
+      map: dataTex(alb, N, aniso, true),
+      normalMap: normalTex(hv, N, nrmStrength, aniso),
+      roughnessMap: dataTex(orm, N, aniso),
+    };
+    this._localTex.set(name, set);
+    return set;
+  }
+
+  /**
+   * Maps the shared library has no reason to carry: timber, awning canvas,
+   * painted signage, tyre rubber, and — the one that matters most — the
+   * bitumen-and-gravel roof deck. Every one publishes a normal and a roughness
+   * map, not just an albedo.
    */
   _makeLocalTexture(name) {
     const N = 256;
@@ -463,6 +704,11 @@ export class Level {
     c.width = c.height = N;
     const g = c.getContext('2d');
     const rnd = mulberry32(this.seed + name.length * 977);
+    const H = new Float32Array(N * N);
+    const R = new Float32Array(N * N);
+
+    if (name === 'tarFelt') return this._tarFeltTexture(c, g, rnd, N, H, R);
+    if (name === 'rubberTread') return this._rubberTexture(c, g, rnd, N, H, R);
 
     if (name === 'wood') {
       g.fillStyle = '#b08b5d';
@@ -483,20 +729,56 @@ export class Level {
         g.fillStyle = `rgba(${60 + rnd() * 60 | 0},${40 + rnd() * 40 | 0},20,${rnd() * 0.25})`;
         g.fillRect(rnd() * N, rnd() * N, 1 + rnd() * 26, 1);
       }
+      // Relief follows the grain, and the five plank seams cut right through it.
+      {
+        const tooth = fbmField(rnd, N, 32, 3);
+        for (let y = 0; y < N; y++) {
+          const grain = Math.sin(y * 0.35 + Math.sin(y * 0.07) * 5) * 0.5 + 0.5;
+          const seam = Math.min(...[0, 1, 2, 3, 4].map(
+            (k) => Math.abs(y - (k + 0.5) * N / 5))) < 2 ? 1 : 0;
+          for (let x = 0; x < N; x++) {
+            const i = y * N + x;
+            H[i] = 0.62 - grain * 0.30 + tooth[i] * 0.18 - seam * 0.55;
+            R[i] = 0.72 + grain * 0.16 + seam * 0.12;
+          }
+        }
+      }
+      return this._localSet(name, c, H, R, 2.2);
     } else if (name === 'cloth') {
-      // Vertical awning stripes. Kept white/neutral so per-prop tints decide
-      // the actual colour of each stall.
+      // Woven canvas. The eight stripe bands are what the market awnings read
+      // as; the weave under them is what stops a hanging sheet looking like an
+      // unassigned UV-test checker, which is exactly how the alley laundry read.
       const bands = 8;
       for (let i = 0; i < bands; i++) {
-        g.fillStyle = i % 2 ? '#efe6d4' : '#c8c0ae';
+        g.fillStyle = i % 2 ? '#efe6d4' : '#cfc7b5';
         g.fillRect(i * N / bands, 0, N / bands, N);
       }
-      for (let i = 0; i < 5000; i++) {
-        g.fillStyle = `rgba(90,80,66,${rnd() * 0.16})`;
-        g.fillRect(rnd() * N, rnd() * N, 2, 1);
+      const img = g.getImageData(0, 0, N, N);
+      const px = img.data;
+      const soil = fbmField(rnd, N, 6, 3);
+      const T = 6;                                   // threads per repeat cell
+      for (let y = 0; y < N; y++) {
+        for (let x = 0; x < N; x++) {
+          const i = y * N + x;
+          // Plain weave: warp over weft on alternating cells, each thread a
+          // rounded ridge, so the normal map gets a real fabric tooth.
+          const cxk = Math.floor(x / T), cyk = Math.floor(y / T);
+          const warpOver = ((cxk + cyk) & 1) === 0;
+          const tx = Math.sin(((x % T) + 0.5) / T * Math.PI);
+          const ty = Math.sin(((y % T) + 0.5) / T * Math.PI);
+          const h = warpOver ? 0.42 + 0.58 * tx : 0.30 * ty;
+          const shade = 0.80 + 0.30 * h - soil[i] * 0.16;
+          const k = i * 4;
+          px[k] *= shade; px[k + 1] *= shade * 0.995; px[k + 2] *= shade * 0.97;
+          H[i] = h * 0.7 + soil[i] * 0.3;
+          R[i] = 0.90 + 0.09 * (1 - h);
+        }
       }
-      g.fillStyle = 'rgba(120,105,80,0.22)';
-      for (let i = 0; i < 40; i++) g.fillRect(0, rnd() * N, N, 1 + rnd() * 3);
+      g.putImageData(img, 0, 0);
+      // Hem seams and a few worn creases across the bolt.
+      g.fillStyle = 'rgba(120,105,80,0.20)';
+      for (let i = 0; i < 26; i++) g.fillRect(0, rnd() * N, N, 1 + rnd() * 2);
+      return this._localSet(name, c, H, R, 1.4);
     } else if (name === 'sign') {
       // Four painted shop plates in one atlas: flat colour fields with a
       // hand-lettered feel from stroked blocks. No text, no fonts, no downloads.
@@ -518,18 +800,96 @@ export class Level {
         g.fillStyle = 'rgba(0,0,0,0.25)';
         for (let i = 0; i < 60; i++) g.fillRect(ox + rnd() * s, oy + rnd() * s, rnd() * 12, rnd() * 3);
       }
-    } else {
-      return null;
+      // Painted plate: the lettering stands a little proud, the rest is
+      // weathered sheet with a peeling-paint roughness break-up.
+      {
+        const img = g.getImageData(0, 0, N, N).data;
+        const wear = fbmField(rnd, N, 10, 3);
+        for (let i = 0; i < N * N; i++) {
+          const lum = (img[i * 4] + img[i * 4 + 1] + img[i * 4 + 2]) / 765;
+          H[i] = lum * 0.5 + wear[i] * 0.5;
+          R[i] = 0.44 + wear[i] * 0.46;
+        }
+      }
+      return this._localSet(name, c, H, R, 1.2);
     }
+    return null;
+  }
 
-    const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.anisotropy = this.textures.maxAniso ?? 1;
-    tex.needsUpdate = true;
-    const set = { map: tex };
-    this._localTex.set(name, set);
-    return set;
+  /**
+   * Bitumen roof deck: felt rolls with lapped seams, a scatter of chippings,
+   * silver-coat repair patches and the standing water that never drains off a
+   * flat roof. This is the map the `skyline` pose spends a third of its frame
+   * looking at, and the reason it used to measure as pure sensor grain.
+   */
+  _tarFeltTexture(c, g, rnd, N, H, R) {
+    const macro = fbmField(rnd, N, 3, 3);          // weathering and old repairs
+    const patch = fbmField(rnd, N, 5, 2);          // silver-coat patches
+    const pond = fbmField(rnd, N, 4, 2);           // where water stands
+    const chip = fbmField(rnd, N, 40, 3, 0.55);    // gravel dressing
+    const micro = fbmField(rnd, N, 110, 2);        // felt tooth
+    const img = g.createImageData(N, N);
+    const px = img.data;
+    // Roll laps at two per tile. Kept faint on purpose — the strong seams are
+    // modelled, and a texture grid on top of a geometry grid is what turns a
+    // tar roof into a floor of paving slabs.
+    const lapY = (y) => {
+      const t = Math.abs(((y / N) * 2 % 1) - 0.02);
+      return Math.exp(-t * t * 320);
+    };
+    for (let y = 0; y < N; y++) {
+      for (let x = 0; x < N; x++) {
+        const i = y * N + x;
+        const seam = lapY(y);
+        const wet = smoothstep(0.50, 0.84, pond[i]);
+        const sil = smoothstep(0.58, 0.71, patch[i]);
+        const grit = smoothstep(0.30, 0.82, chip[i]);
+        // Bitumen base, gravel lifting it, ponding sinking it, repair patches
+        // pulling it grey. Four separate scales, which is the whole point: a
+        // surface whose autocorrelation keeps climbing with pixel lag instead
+        // of flattening into sensor grain at lag two.
+        let v = 0.28 + macro[i] * 0.20 + grit * 0.34 + micro[i] * 0.12;
+        v = lerp(v, 0.44, sil);
+        v *= 1 - wet * 0.42;
+        v *= 1 - seam * 0.12;
+        const k = i * 4;
+        px[k] = clamp(v * 1.0, 0, 1) * 255;
+        px[k + 1] = clamp(v * 0.995, 0, 1) * 255;
+        px[k + 2] = clamp(v * 0.98, 0, 1) * 255;
+        px[k + 3] = 255;
+        H[i] = grit * 0.55 + micro[i] * 0.22 + macro[i] * 0.12 + seam * 0.22 - wet * 0.3;
+        // Dry chippings are matte; standing water and fresh bitumen are not.
+        R[i] = clamp(0.94 + grit * 0.06 - wet * 0.58 - sil * 0.10, 0.10, 1);
+      }
+    }
+    g.putImageData(img, 0, 0);
+    // Blistering and torn edges around the repair patches.
+    for (let i = 0; i < 260; i++) {
+      const x = rnd() * N, y = rnd() * N, r = 1 + rnd() * 3;
+      g.fillStyle = `rgba(20,17,13,${0.12 + rnd() * 0.2})`;
+      g.fillRect(x, y, r, r);
+    }
+    return this._localSet('tarFelt', c, H, R, 1.9);
+  }
+
+  /** Tyre rubber: circumferential ribs, sidewall lettering relief, matte. */
+  _rubberTexture(c, g, rnd, N, H, R) {
+    const grain = fbmField(rnd, N, 26, 3);
+    const img = g.createImageData(N, N);
+    const px = img.data;
+    for (let y = 0; y < N; y++) {
+      const rib = Math.abs(((y / N) * 9 % 1) - 0.5) < 0.28 ? 1 : 0.55;
+      for (let x = 0; x < N; x++) {
+        const i = y * N + x;
+        const v = (0.42 + grain[i] * 0.28) * rib;
+        const k = i * 4;
+        px[k] = v * 255; px[k + 1] = v * 250; px[k + 2] = v * 246; px[k + 3] = 255;
+        H[i] = rib * 0.6 + grain[i] * 0.4;
+        R[i] = 0.80 + grain[i] * 0.18;
+      }
+    }
+    g.putImageData(img, 0, 0);
+    return this._localSet('rubberTread', c, H, R, 2.0);
   }
 
   // --- ground ---------------------------------------------------------------
@@ -630,9 +990,16 @@ export class Level {
           + 'uniform sampler2D uSandMap; uniform sampler2D uSandNrm;\n'
           + 'uniform sampler2D uDirtMap; uniform sampler2D uDirtNrm;')
         .replace('vec4 sampledDiffuseColor = texture2D( map, vMapUv );',
-          // The library's asphalt is almost black; lift it affinely so tarmac
-          // reads as dusty grey while keeping the aggregate contrast.
-          'vec3 cRoad = vec3(0.20,0.20,0.21) * (0.30 + 9.0 * texture2D(map, vSplatUV*0.34).rgb);\n'
+          // The library's asphalt is almost black, so it has to be lifted. The
+          // pedestal in that lift is pure dilution: everything above it is the
+          // signal. Dropping it from 0.30 to 0.06 and paying for the lost mean
+          // with gain widens the readable range instead of shifting it, which
+          // is where the road's 3.6% RMS contrast was going.
+          'vec3 aTex = texture2D(map, vSplatUV*0.34).rgb;\n'
+          // Second scale on the same map: chip-seal aggregate at ~2 tiles/m, the
+          // frequency that makes autocorrelation keep climbing with pixel lag.
+          + 'float aggr = texture2D(map, vSplatUV*3.20).g;\n'
+          + 'vec3 cRoad = vec3(0.235,0.233,0.245) * (0.06 + 11.0 * aTex) * (0.74 + 0.55 * aggr);\n'
           + 'vec3 cSand = vec3(1.05,0.94,0.72) * texture2D(uSandMap, vSplatUV*0.21).rgb;\n'
           + 'vec3 cDirt = vec3(0.86,0.74,0.55) * texture2D(uDirtMap, vSplatUV*0.13).rgb;\n'
           + 'vec3 splatC = cRoad*vSplatW.x + cSand*vSplatW.y + cDirt*vSplatW.z;\n'
@@ -641,9 +1008,19 @@ export class Level {
         .replace('vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;',
           'vec3 mapN = ( texture2D(normalMap, vSplatUV*0.34).xyz * vSplatW.x\n'
           + '            + texture2D(uSandNrm, vSplatUV*0.21).xyz * vSplatW.y\n'
-          + '            + texture2D(uDirtNrm, vSplatUV*0.13).xyz * vSplatW.z ) * 2.0 - 1.0;');
+          + '            + texture2D(uDirtNrm, vSplatUV*0.13).xyz * vSplatW.z ) * 2.0 - 1.0;\n'
+          // Aggregate-scale relief on the tarmac only; sand and dirt already
+          // carry their own at a readable size.
+          + 'mapN.xy += (texture2D(normalMap, vSplatUV*3.1).xy * 2.0 - 1.0) * 0.65 * vSplatW.x;');
       sh.fragmentShader = sh.fragmentShader.replace('float roughnessFactor = roughness;',
-        'float roughnessFactor = roughness * (0.66*vSplatW.x + 0.98*vSplatW.y + 0.93*vSplatW.z);');
+        'float roughnessFactor = roughness * (0.66*vSplatW.x + 0.98*vSplatW.y + 0.93*vSplatW.z);\n'
+        // Asphalt is read almost entirely off its gloss: a high-frequency
+        // detail tile at ~8 tiles/m for the aggregate itself, and a very slow
+        // one for the dry-versus-damp patches that give tarmac its scale.
+        + 'float micro = texture2D(map, vSplatUV*8.0).r;\n'
+        + 'float damp = texture2D(uDirtMap, vSplatUV*0.045).r;\n'
+        + 'roughnessFactor *= mix(1.0, mix(0.48, 1.12, damp), vSplatW.x) * (0.84 + 0.34 * micro);\n'
+        + 'roughnessFactor = clamp(roughnessFactor, 0.06, 1.0);');
     };
     m.customProgramCacheKey = () => 'levelGroundSplat';
     return m;
@@ -837,8 +1214,18 @@ export class Level {
       S({ x0: -102, x1: -86, z0: 16, z1: 44, floors: 4, mat: 'brick', simple: true, face: { N: 'plain', E: 'plain', W: 'blank', S: 'blank' } }),
       // ---- the boulevard is terminated at both ends by a collapsed block, so
       //      the vista dies in rubble and haze rather than at the map edge.
-      N({ x0: 96, x1: 112, z0: -12, z1: 10, floors: 2, mat: 'concrete', simple: true, ruin: true, face: { W: 'plain', S: 'blank', E: 'blank', N: 'blank' } }),
-      S({ x0: -112, x1: -98, z0: -10, z1: 12, floors: 2, mat: 'concrete', simple: true, ruin: true, face: { E: 'plain', N: 'blank', W: 'blank', S: 'blank' } }),
+      //      These two close the `closeup` and `goldenHour` vistas, so they are
+      //      the one place in the level where detail is spent on a building
+      //      nobody can walk to: `simple` is deliberately off, and the shelled
+      //      top storey gives the frame a broken roofline to end on.
+      N({ x0: 94, x1: 112, z0: -14, z1: 12, floors: 4, mat: 'plasterE', ruin: true,
+          face: { W: 'street', S: 'plain', E: 'blank', N: 'plain' } }),
+      S({ x0: -112, x1: -94, z0: -12, z1: 14, floors: 4, mat: 'brick', ruin: true,
+          face: { E: 'street', N: 'plain', W: 'blank', S: 'plain' } }),
+      // Blocks set back behind each terminator so the vista has depth rather
+      // than dying on a single plane.
+      N({ x0: 74, x1: 100, z0: -78, z1: -56, floors: 7, mat: 'plasterC', simple: true, face: { S: 'plain', W: 'plain', E: 'blank', N: 'none' } }),
+      S({ x0: -100, x1: -72, z0: 56, z1: 78, floors: 6, mat: 'plasterB', simple: true, face: { N: 'plain', E: 'plain', W: 'blank', S: 'none' } }),
     ];
   }
 
@@ -886,14 +1273,19 @@ export class Level {
     }
 
     // Corner pilasters: they proud the corners by 0.1 on both faces, which is
-    // what stops a rectangular mass reading as a single flat extrusion.
-    if (!spec.simple) {
-      for (const sx of [-1, 1]) {
-        for (const sz of [-1, 1]) {
-          this._box(spec.mat, 0.62, H + 0.05, 0.62,
-            cx + sx * (w / 2 - 0.21), base + H / 2, cz + sz * (d / 2 - 0.21), null, null, 0.42);
-        }
+    // what stops a rectangular mass reading as a single flat extrusion. The
+    // filler blocks get a slimmer version — four boxes each, and they are the
+    // difference between a skyline of buildings and a skyline of boxes.
+    const pil = spec.simple ? 0.5 : 0.62;
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        this._box(spec.mat, pil, H + 0.05, pil,
+          cx + sx * (w / 2 - pil / 3), base + H / 2, cz + sz * (d / 2 - pil / 3), null, null, 0.42);
       }
+    }
+    if (spec.simple) {
+      // Plinth: one box, and the mass stops floating on the ground plane.
+      this._box('concreteDark', w + 0.34, 0.9, d + 0.34, cx, base + 0.45, cz, null, null, 0.55);
     }
 
     // Opaque core so windows read as black voids instead of see-through holes.
@@ -903,13 +1295,18 @@ export class Level {
       cx, base + fillY + (H - fillY) / 2,
       cz + (spec.breach?.side === 'S' ? -bz / 2 : spec.breach?.side === 'N' ? bz / 2 : 0), null, null, 0.2);
 
-    // Roof deck, cornice and parapet.
-    this._box('concreteDark', w + 0.1, 0.3, d + 0.1, cx, base + H - 0.15, cz, null, null, 0.5);
+    // Roof deck, cornice and parapet. The deck is bitumen felt with its own
+    // map, not the generic dark concrete it used to borrow — in the `skyline`
+    // pose this surface is a third of the frame.
+    this._box('roof', w + 0.1, 0.3, d + 0.1, cx, base + H - 0.15, cz, null, null, 0.52);
     if (!spec.simple) {
       this._box('concrete', w + 0.7, 0.3, d + 0.7, cx, base + H - 0.3, cz, null, null, 0.5);
     }
     this._parapet(spec, rnd);
-    if (!spec.simple) this._roofDressing(spec, rnd);
+    this._roofSurface(spec, rnd);
+    if (spec.simple) this._roofDressingLite(spec, rnd);
+    else this._roofDressing(spec, rnd);
+    if (spec.ruin) this._ruinTop(spec, rnd);
     if (spec.stair) this._exteriorStair(spec, rnd);
     if (spec.breach) this._breachDebris(spec, rnd);
 
@@ -963,13 +1360,19 @@ export class Level {
             const ow = 1.05, oh = 2.15, ox = bx + (bw - ow) / 2;
             openings.push({ x: ox, y: 0.02, w: ow, h: oh });
             detail.push({ t: 'steel', x: ox, y: 0.02, w: ow, h: oh });
+          } else if (spec.simple && r < 0.62) {
+            // The filler blocks need a ground floor too, or every distant
+            // building reads as a solid plinth with windows floating above it.
+            const ow = 1.25, oh = 2.0, ox = bx + (bw - ow) / 2;
+            openings.push({ x: ox, y: 1.0, w: ow, h: oh });
+            detail.push({ t: 'window', x: ox, y: 1.0, w: ow, h: oh, bw });
           }
         } else {
           const balcony = street && spec.balconies && r < 0.42;
           const ow = balcony ? 1.05 : alley ? 0.95 : 1.35;
           const oh = balcony ? 2.15 : alley ? 1.15 : 1.62;
           const oy = y0 + (balcony ? 0.12 : 1.02);
-          const chance = alley ? 0.62 : spec.simple ? 0.34 : 0.84;
+          const chance = alley ? 0.62 : spec.simple ? 0.68 : 0.84;
           if (r < chance || balcony) {
             const ox = bx + (bw - ow) / 2;
             openings.push({ x: ox, y: oy, w: ow, h: oh });
@@ -980,6 +1383,11 @@ export class Level {
       // String course between storeys: a band proud of the face by 12 cm, which
       // costs one box per floor and buys a hard horizontal shadow line.
       if (street && f > 0) this._box('concrete', pw, 0.22, 0.46, 0, y0 - 0.11, -0.11, m, null, 0.6);
+      // Even the filler gets a band every other floor; at skyline range one
+      // horizontal per storey is most of what separates a building from a slab.
+      else if (spec.simple && f > 0 && f % 2 === 1) {
+        this._box('concreteDark', pw, 0.16, 0.28, 0, y0 - 0.08, -0.05, m, null, 0.7);
+      }
     }
     if (breach) openings.push(breach);
 
@@ -1011,8 +1419,23 @@ export class Level {
    * the ones a camera ever gets close to, are built out in full.
    */
   _opening(spec, key, o, m, rnd, ctx) {
-    if (spec.simple) return;
     const cx = o.x + o.w / 2 - ctx.pw / 2;
+
+    if (spec.simple) {
+      // Skyline filler used to get the hole and nothing else, which is exactly
+      // why the distance read as pale boxes with two black rectangles punched
+      // in them. Three boxes per opening buys a sill shadow, a lintel and a
+      // recessed void — enough for a facade to have a grain at 80 metres.
+      this._box('concrete', o.w + 0.26, 0.09, 0.2, cx, o.y - 0.045, 0.03, m, null, 0.9);
+      this._box('concreteDark', o.w + 0.3, 0.15, 0.16, cx, o.y + o.h + 0.075, 0.0, m, null, 0.9);
+      this._box('dark', o.w, o.h, 0.04, cx, o.y + o.h / 2, -WALL_T - 0.02, m, null, 0.4);
+      if (rnd() < 0.3) {
+        // Boarded or shuttered: breaks the regularity of the grid.
+        this._box('rust', o.w, o.h * (0.4 + rnd() * 0.5), 0.05,
+          cx, o.y + o.h * 0.75, -0.1, m, null, 1.2);
+      }
+      return;
+    }
 
     if (!ctx.street && !ctx.alley) {
       this._box('concrete', o.w + 0.3, 0.1, 0.24, cx, o.y - 0.05, 0.02, m, null, 0.9);
@@ -1146,23 +1569,81 @@ export class Level {
     this._box('dark', 0.16, 1.4, 0.012, x, y - 0.95, 0.005, m, new THREE.Color(0.35, 0.33, 0.3), 0.6);
   }
 
-  _laundry(o, m, rnd, cx) {
-    const n = 2 + ((rnd() * 3) | 0);
-    this._stage('cable', new THREE.TubeGeometry(
-      new THREE.CatmullRomCurve3([
-        new THREE.Vector3(cx - o.w / 2 - 0.2, o.y + o.h - 0.1, 0.25),
-        new THREE.Vector3(cx, o.y + o.h - 0.22, 0.55),
-        new THREE.Vector3(cx + o.w / 2 + 0.2, o.y + o.h - 0.1, 0.25),
-      ]), 6, 0.018, 3, false), m);
-    for (let i = 0; i < n; i++) {
-      const t = (i + 0.5) / n;
-      const px = cx - o.w / 2 + t * o.w;
-      const hh = 0.35 + rnd() * 0.45, ww = 0.3 + rnd() * 0.25;
-      const tint = _col.setHSL(rnd(), 0.28 + rnd() * 0.3, 0.55 + rnd() * 0.25).clone();
-      const g = boxGeo(ww, hh, 0.02, 1.4);
-      g.rotateY((rnd() - 0.5) * 0.5);
-      this._stage('fabric', g.translate(px, o.y + o.h - 0.25 - hh / 2, 0.42), m, tint);
+  /**
+   * A hung sheet: a real surface, not a billboard.
+   *
+   * The top edge follows the line's own catenary, the hem droops further under
+   * its own weight, and the whole panel bellies out of plane with an amplitude
+   * that grows toward the hem. Those three things together are the entire
+   * difference between drying washing and an untextured placeholder quad, and
+   * they cost 42 vertices.
+   */
+  _clothSheet(a, b, sag, h, tint, rnd) {
+    const NU = 6, NV = 5;
+    const pos = new Float32Array((NU + 1) * (NV + 1) * 3);
+    const uv = new Float32Array((NU + 1) * (NV + 1) * 2);
+    const idx = new Uint16Array(NU * NV * 6);
+    // Sit the UVs inside a single stripe band so a sheet reads as one cloth
+    // colour with a weave, not as a two-axis check.
+    const band = ((rnd() * 8) | 0) * 0.125 + 0.03;
+    const phase = rnd() * 6.28, curl = 0.05 + rnd() * 0.09;
+    let nx = -(b.z - a.z), nz = b.x - a.x;
+    const nl = Math.hypot(nx, nz) || 1;
+    nx /= nl; nz /= nl;
+    let k = 0;
+    for (let j = 0; j <= NV; j++) {
+      const v = j / NV;
+      for (let i = 0; i <= NU; i++, k++) {
+        const u = i / NU;
+        const droop = sag * 4 * u * (1 - u);
+        const belly = Math.sin(u * Math.PI * 2.1 + phase) * curl * v * v;
+        pos[k * 3] = lerp(a.x, b.x, u) + nx * belly;
+        pos[k * 3 + 1] = lerp(a.y, b.y, u) - droop - v * h - Math.sin(u * Math.PI) * sag * 0.3 * v;
+        pos[k * 3 + 2] = lerp(a.z, b.z, u) + nz * belly;
+        uv[k * 2] = band + u * 0.06;
+        uv[k * 2 + 1] = (1 - v) * h * 1.3;
+      }
     }
+    let t = 0;
+    for (let j = 0; j < NV; j++) {
+      for (let i = 0; i < NU; i++) {
+        const p = j * (NU + 1) + i;
+        idx[t++] = p; idx[t++] = p + NU + 1; idx[t++] = p + 1;
+        idx[t++] = p + 1; idx[t++] = p + NU + 1; idx[t++] = p + NU + 2;
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    g.computeVertexNormals();
+    return { geo: g, tint };
+  }
+
+  /** Sheets pegged along a span, plus the pegs themselves. */
+  _washingRun(a, b, sag, rnd, m = null) {
+    const n = 2 + ((rnd() * 3) | 0);
+    for (let i = 0; i < n; i++) {
+      const t0 = (i + 0.12) / n, t1 = (i + 0.88) / n;
+      const pa = a.clone().lerp(b, t0), pb = a.clone().lerp(b, t1);
+      pa.y -= sag * 4 * t0 * (1 - t0);
+      pb.y -= sag * 4 * t1 * (1 - t1);
+      const tint = _col.setHex(LAUNDRY_COLORS[(rnd() * LAUNDRY_COLORS.length) | 0]).clone();
+      const sheet = this._clothSheet(pa, pb, sag * 0.22, 0.42 + rnd() * 0.55, tint, rnd);
+      this._stage('fabric', sheet.geo, m, tint);
+      for (const p of [pa, pb]) {
+        this._box('charred', 0.05, 0.07, 0.05, p.x, p.y + 0.02, p.z, m, null, 3.0);
+      }
+    }
+  }
+
+  _laundry(o, m, rnd, cx) {
+    const a = new THREE.Vector3(cx - o.w / 2 - 0.2, o.y + o.h - 0.1, 0.28);
+    const b = new THREE.Vector3(cx + o.w / 2 + 0.2, o.y + o.h - 0.12, 0.28);
+    const sag = 0.1;
+    this._addWire(this._catenary(a.clone(), b.clone(), sag, 8), 0.014,
+      new THREE.Color(0x8d8272), m);
+    this._washingRun(a, b, sag, rnd, m);
   }
 
   _awning(o, m, rnd, cx) {
@@ -1245,6 +1726,191 @@ export class Level {
       this._collideBox(cx, y + 0.5, cz - d / 2 + WALL_T / 2, w, 1.0, WALL_T);
       this._collideBox(cx - w / 2 + WALL_T / 2, y + 0.5, cz, WALL_T, 1.0, d);
     }
+  }
+
+  /**
+   * The deck itself: lapped felt seams, ponding, gravel dressing and the low
+   * upstand where the felt turns up the parapet. A flat roof is never flat —
+   * it is a patchwork of repairs draining badly toward one corner — and reading
+   * that patchwork is the whole reason a rooftop pose has anything to look at.
+   */
+  _roofSurface(spec, rnd) {
+    const { _cx: cx, _cz: cz, _w: w, _d: d, _H: H, _base: base } = spec;
+    const y = base + H;
+    const alongX = w >= d;
+    const span = alongX ? d : w;
+    const len = (alongX ? w : d) - 0.5;
+
+    // Lapped seams between the felt rolls. Spacing wanders per seam and the
+    // runs stop short at random: an even grid of full-width lines reads as a
+    // tiled floor, which is the opposite of what a tar roof looks like.
+    for (let p = -span / 2 + 0.7; p < span / 2 - 0.4; p += 0.9 + rnd() * 0.8) {
+      const cut = rnd() < 0.3 ? 0.45 + rnd() * 0.4 : 1;
+      const off = (1 - cut) * len * (rnd() - 0.5);
+      const tw = 0.07 + rnd() * 0.04;
+      // A lap is a fold of the same felt, not a grout line: keep it close in
+      // value to the deck or the roof reads as a floor of paving slabs.
+      if (alongX) this._box('roofPatch', len * cut, 0.03, tw, cx + off, y + 0.015, cz + p, null, null, 1.6);
+      else this._box('roofPatch', tw, 0.03, len * cut, cx + p, y + 0.015, cz + off, null, null, 1.6);
+    }
+    // Cross joints where the rolls butt — two or three, never on a grid.
+    for (let i = 0; i < 2 + ((rnd() * 2) | 0); i++) {
+      const bj = (rnd() - 0.5) * len * 0.7;
+      const cut = 0.4 + rnd() * 0.5;
+      const off = (1 - cut) * span * (rnd() - 0.5);
+      if (alongX) this._box('roofWet', 0.09, 0.03, span * cut, cx + bj, y + 0.016, cz + off, null, null, 1.6);
+      else this._box('roofWet', span * cut, 0.03, 0.09, cx + off, y + 0.016, cz + bj, null, null, 1.6);
+    }
+
+    // Upstand: the felt turned up against the parapet, capped with flashing.
+    for (const [ux, uz, uw, ud] of [
+      [cx, cz + d / 2 - 0.34, w - 0.2, 0.2], [cx, cz - d / 2 + 0.34, w - 0.2, 0.2],
+      [cx + w / 2 - 0.34, cz, 0.2, d - 0.9], [cx - w / 2 + 0.34, cz, 0.2, d - 0.9],
+    ]) {
+      this._box('roofWet', uw, 0.18, ud, ux, y + 0.08, uz, null, null, 1.1);
+    }
+
+    // Ponding and silver-coat repair patches, laid on the diagonal so they
+    // never line up with the seam grid.
+    for (let i = 0; i < 3 + ((rnd() * 3) | 0); i++) {
+      const pw = 1.6 + rnd() * 3.4, pd = 1.2 + rnd() * 2.8;
+      const px = cx + (rnd() - 0.5) * (w - pw - 1.6);
+      const pz = cz + (rnd() - 0.5) * (d - pd - 1.6);
+      const wet = rnd() < 0.55;
+      this._stage(wet ? 'roofWet' : 'roofPatch', boxGeo(pw, 0.022, pd, 0.5),
+        mat(px, y + 0.012 + (wet ? 0 : 0.004), pz, rnd() * 0.7 - 0.35));
+    }
+    // Chippings swept into drifts. Small and close to the deck in hue — a wide
+    // flat quad of dune-coloured sand up here reads as an unassigned plane.
+    for (let i = 0; i < 3 + ((rnd() * 4) | 0); i++) {
+      const pw = 0.7 + rnd() * 1.5, pd = 0.5 + rnd() * 1.2;
+      this._stage('roofPatch', boxGeo(pw, 0.035, pd, 2.2),
+        mat(cx + (rnd() - 0.5) * (w - pw - 2), y + 0.022, cz + (rnd() - 0.5) * (d - pd - 2), rnd() * 1.5),
+        _col.setHSL(0.10, 0.12, 0.68 + rnd() * 0.34).clone());
+    }
+    // Perimeter service run: cable on low stands a metre inside the parapet,
+    // with vent pipes breaking the deck alongside it. Anchored to the edge
+    // rather than scattered, so a rooftop pose always has something in the near
+    // field rather than an empty slab from here to the parapet.
+    const side = rnd() < 0.5 ? -1 : 1;
+    const eo = 1.25;
+    const runZ = cz + side * (d / 2 - eo);
+    const x0 = cx - w / 2 + 1.2, x1 = cx + w / 2 - 1.2;
+    const pts = [];
+    for (let i = 0; i <= 5; i++) {
+      const t = i / 5;
+      pts.push(new THREE.Vector3(lerp(x0, x1, t), y + 0.34 - Math.sin(t * Math.PI) * 0.05, runZ));
+      if (i < 5) {
+        const sxp = lerp(x0, x1, t + 0.05);
+        this._box('concreteDark', 0.24, 0.3, 0.2, sxp, y + 0.15, runZ, null, null, 1.4);
+      }
+    }
+    this._addWire(pts, 0.022, new THREE.Color(0x241f19));
+    // Vent stacks and a soil pipe head along the same run.
+    for (let i = 0; i < 3; i++) {
+      const vx = lerp(x0, x1, 0.18 + i * 0.32 + rnd() * 0.08);
+      const vz = runZ - side * (0.7 + rnd() * 1.6);
+      const vh = 0.55 + rnd() * 0.9;
+      this._stage('rust', cylGeo(0.085, 0.085, vh, 8, 1.2).translate(vx, y + vh / 2, vz));
+      this._stage('rust', cylGeo(0.155, 0.155, 0.06, 8, 1.2).translate(vx, y + vh + 0.03, vz));
+      this._box('roofWet', 0.44, 0.06, 0.44, vx, y + 0.03, vz, null, null, 1.4);
+    }
+    // A stack of spare blocks and an abandoned bucket: the litter of a roof
+    // that people actually use.
+    const kx = cx + (rnd() - 0.5) * (w - 5), kz = cz - side * (d / 2 - 2.6);
+    for (let i = 0; i < 4; i++) {
+      this._box('concreteDark', 0.5, 0.09, 0.24, kx + (rnd() - 0.5) * 0.14,
+        y + 0.05 + i * 0.09, kz + (rnd() - 0.5) * 0.14, null, null, 1.6);
+    }
+    this._stage('rust', cylGeo(0.16, 0.13, 0.26, 8, 1.4).translate(kx + 0.7, y + 0.13, kz + 0.3));
+  }
+
+  /**
+   * Cheap roof clutter for the skyline filler. A flat-topped box is the single
+   * most obvious tell that a city is a greybox, and a water tank, an aerial and
+   * two vent pipes per building — a dozen primitives, merged with everything
+   * else — is the cheapest possible cure.
+   */
+  _roofDressingLite(spec, rnd) {
+    const { _cx: cx, _cz: cz, _w: w, _d: d, _H: H, _base: base } = spec;
+    const y = base + H;
+    const px = () => cx + (rnd() - 0.5) * (w - 3.4);
+    const pz = () => cz + (rnd() - 0.5) * (d - 3.4);
+
+    // Stair head-house, and on the taller blocks a plant room beside it.
+    const sx = px(), sz = pz();
+    this._box(spec.mat, 2.8, 2.4 + rnd() * 0.8, 2.4, sx, y + 1.3, sz, null, null, 0.42);
+    this._box('concrete', 3.1, 0.16, 2.7, sx, y + 2.6, sz, null, null, 0.6);
+    if (rnd() < 0.5) {
+      this._box(spec.mat, 1.8, 1.5, 1.6, sx + 2.6, y + 0.75, sz + 0.6, null, null, 0.42);
+    }
+    // Water tanks on stands — the silhouette that says "roof" from a kilometre.
+    for (let i = 0; i < 1 + ((rnd() * 3) | 0); i++) {
+      const tx = px(), tz = pz();
+      this._stage('rust', cylGeo(0.6, 0.6, 1.1, 8, 0.8).translate(tx, y + 1.45, tz));
+      for (const ex of [-1, 1]) for (const ez of [-1, 1]) {
+        this._box('rust', 0.08, 0.9, 0.08, tx + ex * 0.42, y + 0.45, tz + ez * 0.42, null, null, 2.0);
+      }
+    }
+    // Aerial masts and vent stacks.
+    for (let i = 0; i < 1 + ((rnd() * 3) | 0); i++) {
+      const ax = px(), az = pz(), ah = 2.2 + rnd() * 3.4;
+      this._stage('metal', cylGeo(0.035, 0.055, ah, 5, 1.5).translate(ax, y + ah / 2, az));
+      for (let k = 0; k < 3; k++) {
+        this._box('metal', 0.85 - k * 0.16, 0.03, 0.03, ax, y + ah * (0.5 + k * 0.15), az, null, null, 3.0);
+      }
+    }
+    for (let i = 0; i < 2 + ((rnd() * 3) | 0); i++) {
+      const vx = px(), vz = pz(), vh = 0.45 + rnd() * 1.2;
+      this._stage('rust', cylGeo(0.09, 0.09, vh, 6, 1.2).translate(vx, y + vh / 2, vz));
+      this._stage('rust', cylGeo(0.17, 0.17, 0.06, 6, 1.2).translate(vx, y + vh + 0.03, vz));
+    }
+    // A dish or two, seen only in silhouette from the street.
+    if (rnd() < 0.7) {
+      const dx = px(), dz = pz(), r = 0.4 + rnd() * 0.25;
+      const bowl = new THREE.SphereGeometry(r, 8, 5, 0, Math.PI * 2, 0, Math.PI * 0.34);
+      bowl.applyMatrix4(mat(dx, y + 0.9, dz, rnd() * 6.28, -2.15));
+      this._stage('panel', bowl);
+      this._stage('metal', cylGeo(0.05, 0.05, 0.9, 5, 1.5).translate(dx, y + 0.45, dz));
+    }
+  }
+
+  /**
+   * A shelled top storey. The two blocks that terminate the boulevard are the
+   * focal point of the `closeup` vista, and a flat roofline on a blank slab is
+   * the worst possible thing to close a street with.
+   */
+  _ruinTop(spec, rnd) {
+    const { _cx: cx, _cz: cz, _w: w, _d: d, _H: H, _base: base } = spec;
+    const y = base + H;
+    // Jagged remains of the storey that came off, biased to one corner so the
+    // silhouette steps down across the frame instead of crenellating evenly.
+    const lean = rnd() < 0.5 ? -1 : 1;
+    for (let i = 0; i < 9; i++) {
+      const t = i / 8;
+      const hh = (0.6 + rnd() * 2.6) * (0.35 + 0.85 * (lean > 0 ? t : 1 - t));
+      const bx = cx + (t - 0.5) * (w - 1.2);
+      const bz = cz + (rnd() - 0.5) * (d - 1.6);
+      this._box(spec.mat, 0.8 + rnd() * 1.5, hh, 0.5 + rnd() * 0.8, bx, y + hh / 2, bz, null, null, 0.42);
+      if (rnd() < 0.5) {
+        this._box('concreteDark', 1.4 + rnd() * 1.6, 0.24, 1.8 + rnd() * 1.4,
+          bx, y + hh + 0.12, bz, null, null, 0.55);
+      }
+    }
+    // Exposed slab edges and rebar whiskers over the street face.
+    const face = spec.front === 'S' ? 1 : -1;
+    for (let i = 0; i < 6; i++) {
+      const g = cylGeo(0.018, 0.018, 0.8 + rnd() * 1.1, 4, 2.0);
+      g.applyMatrix4(mat(cx + (rnd() - 0.5) * (w - 1), y + 0.4 + rnd() * 1.6,
+        cz + face * (d / 2 - 0.3), rnd() * 6.28, 0.9 + rnd() * 0.7));
+      this._stage('rust', g);
+    }
+    // A slab that came down into the street, and the spill under it.
+    const sx = cx - (w / 2 + 2.2) * (spec.x0 > 0 ? 1 : -1);
+    const slab = boxGeo(3.6, 0.28, 2.6, 0.5);
+    slab.applyMatrix4(mat(sx, base + 1.4, cz + (rnd() - 0.5) * d * 0.4, 0.4, 0, 0.95));
+    this._stage('concreteDark', slab);
+    this._rubblePile(sx, cz + (rnd() - 0.5) * d * 0.3, 4.6, 1.6, rnd);
   }
 
   /**
@@ -1561,10 +2227,10 @@ export class Level {
         this.lighting.addLocal(l);
         // A bare bulb so the source is visible from the doorway.
         this._box('lamp', 0.1, 0.14, 0.1, cx, base + 2.62, cz, null, null, 1.0);
-        this._stage('cable', new THREE.TubeGeometry(new THREE.CatmullRomCurve3([
+        this._addWire([
           new THREE.Vector3(cx, base + GROUND_H - 0.2, cz),
           new THREE.Vector3(cx, base + 2.7, cz),
-        ]), 2, 0.012, 4, false));
+        ], 0.011, new THREE.Color(0x2a251e));
       }
     }
   }
@@ -1636,7 +2302,16 @@ export class Level {
     this._collideBox(x, gy + H / 2, z, 0.24, H, 0.24, 0, SURFACE.METAL);
   }
 
-  /** Classic F-shape Jersey profile, extruded and dropped onto the ground. */
+  /**
+   * Classic F-shape Jersey profile, extruded and dropped onto the ground.
+   *
+   * The extrusion is faceted and re-UV'd before it is used. ExtrudeGeometry
+   * hands back smoothed normals across the profile corners and UVs in raw shape
+   * units, and the two together flatten the moulding completely: the sloped
+   * toe, the vertical face and the top all resolve to one tone, and a solid
+   * 82 cm of concrete ends up reading as a translucent card standing on the
+   * road. Hard normals give each plane its own value again.
+   */
   _barrier(x, z, ry, rnd) {
     if (!this._barrierGeo) {
       const s = new THREE.Shape();
@@ -1645,11 +2320,11 @@ export class Level {
       s.lineTo(-0.155, 0.33); s.lineTo(-0.31, 0.09); s.closePath();
       const g = new THREE.ExtrudeGeometry(s, { depth: 2.2, bevelEnabled: false, steps: 1 });
       g.translate(0, 0, -1.1);
-      this._barrierGeo = g;
+      this._barrierGeo = worldUV(facet(g), 0.85);
     }
     const gy = this._groundY(x, z);
     this._scatterAdd('barrier', mat(x, gy, z, ry, 0, (rnd() - 0.5) * 0.05),
-      _col.setHSL(0.1, 0.05, 0.72 + rnd() * 0.28).clone());
+      _col.setHSL(0.09, 0.05, 0.60 + rnd() * 0.26).clone());
     this._collideBox(x, gy + 0.41, z, 0.62, 0.82, 2.2, ry);
   }
 
@@ -1700,30 +2375,40 @@ export class Level {
     const flipped = variant === 2;
     const M = flipped ? mat(x, gy + 1.2, z, ry, 0, 2.9) : m;
 
-    this._box('burnt', 4.15, 0.2, 1.72, 0, 0.46, 0, M, null, 1.0);         // floor pan
-    for (const sz of [-1, 1]) this._box('burnt', 4.15, 0.66, 0.14, 0, 0.78, sz * 0.85, M, null, 1.0);
-    for (const sx of [-1, 1]) this._box('burnt', 0.16, 0.66, 1.72, sx * 2.0, 0.78, 0, M, null, 1.0);
-    this._box('burnt', 1.3, 0.14, 1.7, 1.35, 1.12, 0, M, null, 1.0);        // bonnet
-    this._box('burnt', 1.05, 0.14, 1.7, -1.5, 1.12, 0, M, null, 1.0);       // boot lid
-    this._box('burnt', 0.14, 0.52, 1.62, 0.72, 1.35, 0, M, null, 1.0);      // firewall
-    this._box('burnt', 0.14, 0.42, 1.62, -1.0, 1.3, 0, M, null, 1.0);       // rear bulkhead
-    for (const sx of [-1, 1]) this._box('burnt', 0.2, 0.24, 1.9, sx * 2.12, 0.85, 0, M, null, 1.2);
-    this._box('dark', 1.2, 0.42, 1.55, 1.36, 1.05, 0, M, null, 0.8);        // gutted engine bay
+    // Faded paint still on the panels, soot on everything structural. Without
+    // the split the whole car resolved to one near-black value and every wreck
+    // in the level rendered as a flat silhouette with no shading at all.
+    const paint = [
+      new THREE.Color(1.15, 1.12, 1.05), new THREE.Color(0.82, 0.92, 1.05),
+      new THREE.Color(1.12, 0.98, 0.78), new THREE.Color(0.95, 0.80, 0.74),
+      new THREE.Color(0.88, 0.94, 0.86),
+    ][(rnd() * 5) | 0];
+    const soot = new THREE.Color(0.62, 0.60, 0.58);
+
+    this._box('burnt', 4.15, 0.2, 1.72, 0, 0.46, 0, M, soot, 1.0);         // floor pan
+    for (const sz of [-1, 1]) this._box('burnt', 4.15, 0.66, 0.14, 0, 0.78, sz * 0.85, M, paint, 1.0);
+    for (const sx of [-1, 1]) this._box('burnt', 0.16, 0.66, 1.72, sx * 2.0, 0.78, 0, M, paint, 1.0);
+    this._box('burnt', 1.3, 0.14, 1.7, 1.35, 1.12, 0, M, paint, 1.0);       // bonnet
+    this._box('burnt', 1.05, 0.14, 1.7, -1.5, 1.12, 0, M, paint, 1.0);      // boot lid
+    this._box('burnt', 0.14, 0.52, 1.62, 0.72, 1.35, 0, M, soot, 1.0);      // firewall
+    this._box('burnt', 0.14, 0.42, 1.62, -1.0, 1.3, 0, M, soot, 1.0);       // rear bulkhead
+    for (const sx of [-1, 1]) this._box('rust', 0.2, 0.24, 1.9, sx * 2.12, 0.85, 0, M, null, 1.2);
+    this._box('charred', 1.2, 0.42, 1.55, 1.36, 1.05, 0, M, null, 0.8);     // gutted engine bay
     // Seat frames.
     for (const sz of [-0.42, 0.42]) {
-      this._box('burnt', 0.5, 0.12, 0.5, -0.05, 0.85, sz, M, null, 1.4);
-      this._box('burnt', 0.12, 0.62, 0.5, -0.3, 1.16, sz, M, null, 1.4);
+      this._box('charred', 0.5, 0.12, 0.5, -0.05, 0.85, sz, M, null, 1.4);
+      this._box('charred', 0.12, 0.62, 0.5, -0.3, 1.16, sz, M, null, 1.4);
     }
     if (!noRoof) {
-      this._box('burnt', 1.6, 0.09, 1.5, -0.35, 1.86, 0, M, null, 1.0);
+      this._box('burnt', 1.6, 0.09, 1.5, -0.35, 1.86, 0, M, paint, 1.0);
       for (const sz of [-1, 1]) {
         const a = boxGeo(0.11, 0.95, 0.11, 1.6);
         a.applyMatrix4(mat(0.62, 1.42, sz * 0.74, 0, 0, -0.42));
-        this._stage('burnt', a.applyMatrix4(M));
+        this._stage('burnt', a.applyMatrix4(M), null, paint);
         const b = boxGeo(0.11, 0.9, 0.11, 1.6);
         b.applyMatrix4(mat(-1.15, 1.4, sz * 0.74, 0, 0, 0.2));
-        this._stage('burnt', b.applyMatrix4(M));
-        this._box('burnt', 1.7, 0.09, 0.1, -0.35, 1.82, sz * 0.78, M, null, 1.4);
+        this._stage('burnt', b.applyMatrix4(M), null, paint);
+        this._box('burnt', 1.7, 0.09, 0.1, -0.35, 1.82, sz * 0.78, M, paint, 1.4);
       }
     }
     // Wheels: some burnt down to the rim, some gone entirely.
@@ -1732,8 +2417,8 @@ export class Level {
       const missing = rnd() < 0.3;
       const g = cylGeo(missing ? 0.22 : 0.35, missing ? 0.22 : 0.35, missing ? 0.14 : 0.24, 10, 1.2);
       g.applyMatrix4(mat(hubs[i][0], 0.34, hubs[i][1], 0, 0, Math.PI / 2));
-      this._stage(missing ? 'burnt' : 'rubber', g.applyMatrix4(M));
-      this._box('burnt', 1.15, 0.5, 0.16, hubs[i][0], 0.85, hubs[i][1] * 1.02, M, null, 1.2);  // arch
+      this._stage(missing ? 'rust' : 'rubber', g.applyMatrix4(M));
+      this._box('burnt', 1.15, 0.5, 0.16, hubs[i][0], 0.85, hubs[i][1] * 1.02, M, paint, 1.2);  // arch
     }
     this._collideBox(x, gy + 0.9, z, 4.2, flipped ? 1.4 : 1.7, 1.9, ry, SURFACE.METAL);
     // Scorch halo and shed debris around the wreck.
@@ -1857,7 +2542,7 @@ export class Level {
         for (let i = 0; i < 3; i++) parts.push(boxGeo(0.1, 0.11, 1.1, 1.6).translate(-0.45 + i * 0.45, 0.06, 0));
         return { geo: mergeGeometries(parts), mat: 'wood', cast: true };
       }
-      case 'barrier': return { geo: this._barrierGeo, mat: 'concrete', cast: true };
+      case 'barrier': return { geo: this._barrierGeo, mat: 'barrier', cast: true };
       default: return null;
     }
   }
@@ -1953,25 +2638,150 @@ export class Level {
   // --- overhead cabling -----------------------------------------------------
 
   /**
+   * Cables as screen-space ribbons.
+   *
+   * A 3 cm tube is sub-pixel past about fifteen metres, and a sub-pixel dark
+   * tube on a software rasteriser is not a wire, it is a chain of stair-stepped
+   * black dots — which is why the runs used to read as scratches on the lens.
+   * The fix is the standard one for hair and wires: expand each segment into a
+   * quad in clip space, clamp its width to a screen-space floor, and pay for the
+   * clamp with alpha so total ink is conserved and distant runs simply go grey.
+   *
+   * Built as MeshBasic rather than a raw ShaderMaterial specifically so it
+   * inherits Sky's aerial-perspective fog chunks through the normal ShaderLib
+   * path: distant cabling then takes the colour of the haze it hangs in.
+   */
+  _wireMaterial() {
+    if (this._wireMat) return this._wireMat;
+    this._wireRes = { value: new THREE.Vector2(1280, 720) };
+    const m = new THREE.MeshBasicMaterial({
+      color: 0xffffff, vertexColors: true, fog: true,
+      transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    });
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.uWireRes = this._wireRes;
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>',
+          '#include <common>\n'
+          + 'attribute vec3 aNext;\n'
+          + 'attribute vec2 aSide;      // x: -1/+1 across the ribbon, y: real radius (m)\n'
+          + 'uniform vec2 uWireRes;\n'
+          + 'varying vec3 vWire;        // x: side, y: half width (px), z: coverage')
+        .replace('#include <project_vertex>',
+          '#include <project_vertex>\n'
+          + '{\n'
+          + '  vec4 cB = projectionMatrix * (modelViewMatrix * vec4(aNext, 1.0));\n'
+          + '  vec2 sA = gl_Position.xy / max(1e-4, abs(gl_Position.w)) * uWireRes;\n'
+          + '  vec2 sB = cB.xy / max(1e-4, abs(cB.w)) * uWireRes;\n'
+          + '  vec2 dv = sB - sA;\n'
+          + '  float dl = length(dv);\n'
+          + '  vec2 nrm = dl > 1e-4 ? vec2(dv.y, -dv.x) / dl : vec2(0.0, 1.0);\n'
+          + '  float pxPerM = uWireRes.y * projectionMatrix[1][1] * 0.5 / max(0.05, -mvPosition.z);\n'
+          + '  float trueHalf = aSide.y * pxPerM;\n'
+          + '  float halfPx = max(trueHalf, 0.80);\n'
+          + '  vWire = vec3(aSide.x, halfPx, clamp(trueHalf / halfPx, 0.30, 1.0));\n'
+          + '  gl_Position.xy += nrm * aSide.x * (halfPx * 2.0 / uWireRes) * gl_Position.w;\n'
+          + '}');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vWire;')
+        .replace('#include <alphamap_fragment>',
+          '#include <alphamap_fragment>\n'
+          // Soft edge one texel wide however far away the run is, and the
+          // coverage term gives back the ink the width floor took away.
+          + 'diffuseColor.a *= vWire.z * clamp((1.0 - abs(vWire.x)) * vWire.y * 1.7, 0.0, 1.0);');
+    };
+    m.customProgramCacheKey = () => 'levelWireRibbon';
+    this._wireMat = m;
+    return m;
+  }
+
+  /** Stage a polyline as a ribbon. Points are consumed, not retained. */
+  _addWire(points, radius = 0.028, tint = null, matrix = null) {
+    if (points.length < 2) return;
+    if (!this._wires) this._wires = { pos: [], next: [], side: [], col: [], idx: [], n: 0 };
+    const W = this._wires;
+    if (matrix) for (const p of points) p.applyMatrix4(matrix);
+    const c = tint || _col.setHex(0x211d18);
+    const base = W.n;
+    for (let i = 0; i < points.length; i++) {
+      const p = points[i];
+      // The last vertex has no successor, so mirror the previous segment: the
+      // ribbon keeps its orientation instead of collapsing at the end cap.
+      const q = i < points.length - 1 ? points[i + 1]
+        : _v.copy(p).multiplyScalar(2).sub(points[i - 1]);
+      for (const s of [-1, 1]) {
+        W.pos.push(p.x, p.y, p.z);
+        W.next.push(q.x, q.y, q.z);
+        W.side.push(s, radius);
+        W.col.push(c.r, c.g, c.b);
+      }
+      W.n += 2;
+    }
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = base + i * 2;
+      W.idx.push(a, a + 1, a + 2, a + 2, a + 1, a + 3);
+    }
+  }
+
+  /** Sample a sagging span. Parabolic, which is a catenary to within a pixel. */
+  _catenary(a, b, sag, segs = 10) {
+    const pts = [];
+    for (let i = 0; i <= segs; i++) {
+      const t = i / segs;
+      const p = a.clone().lerp(b, t);
+      p.y -= sag * 4 * t * (1 - t);
+      pts.push(p);
+    }
+    return pts;
+  }
+
+  /** Every wire in the level as one mesh — and therefore one draw call. */
+  _flushWires() {
+    const W = this._wires;
+    if (!W || !W.n) return;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(W.pos), 3));
+    geo.setAttribute('aNext', new THREE.BufferAttribute(new Float32Array(W.next), 3));
+    geo.setAttribute('aSide', new THREE.BufferAttribute(new Float32Array(W.side), 2));
+    geo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(W.col), 3));
+    geo.setIndex(W.n > 65535 ? new THREE.BufferAttribute(new Uint32Array(W.idx), 1)
+      : new THREE.BufferAttribute(new Uint16Array(W.idx), 1));
+    geo.computeBoundingSphere();
+    // The ribbon grows in screen space beyond the vertices it was built from,
+    // so pad the bound or a close-up run culls itself out of the frame.
+    if (geo.boundingSphere) geo.boundingSphere.radius += 3;
+    const mesh = new THREE.Mesh(geo, this._wireMaterial());
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    mesh.renderOrder = 2;
+    mesh.userData.noCollide = true;
+    mesh.name = 'cables';
+    this.root.add(mesh);
+    this._wires = null;
+  }
+
+  /**
    * Sagging power and telephone lines. They cost almost nothing and they do
    * more for a street's sense of enclosure than another building would: every
    * frame gets a set of dark curves crossing the sky.
    */
   _buildCables() {
     const rnd = mulberry32(this.seed + 1234);
-    const add = (a, b, sag, r = 0.03) => {
-      const mid = a.clone().lerp(b, 0.5).setY(Math.min(a.y, b.y) - sag);
-      const curve = new THREE.CatmullRomCurve3([a, mid, b]);
-      this._stage('cable', new THREE.TubeGeometry(curve, 9, r, 3, false));
-    };
     const V = (x, y, z) => new THREE.Vector3(x, y, z);
+    const power = new THREE.Color(0x1e1a15);
+    const phone = new THREE.Color(0x35302a);
+    const add = (a, b, sag, r = 0.028, c = power, segs = 10) =>
+      this._addWire(this._catenary(a, b, sag, segs), r, c);
 
-    // Cross-street spans between the two rows.
+    // Cross-street spans between the two rows. Sag varies per run, not per
+    // bundle: real spans of the same length droop by roughly the same amount.
     for (let x = -84; x < 92; x += 11 + rnd() * 7) {
       if (Math.abs(x) < PLAZA - 4) continue;
       const y = 7.4 + rnd() * 3.2;
+      const sag = 1.4 + rnd() * 1.5;
       for (let k = 0; k < 2 + ((rnd() * 2) | 0); k++) {
-        add(V(x + k * 0.35, y, -ROAD_HALF - 3.4), V(x + k * 0.35, y - 0.4, ROAD_HALF + 3.4), 1.5 + rnd() * 1.2);
+        add(V(x + k * 0.35, y, -ROAD_HALF - 3.4), V(x + k * 0.35, y - 0.4, ROAD_HALF + 3.4),
+          sag + k * 0.12, 0.026 + rnd() * 0.012);
       }
     }
     // Lines running with the street, hopping pole to pole.
@@ -1981,7 +2791,12 @@ export class Level {
       while (px < 88) {
         const nx = px + 16 + rnd() * 8;
         const ny = 6.4 + rnd() * 1.6;
-        add(V(px, py, side * (ROAD_HALF + 1.0)), V(nx, ny, side * (ROAD_HALF + 1.0)), 1.1 + rnd() * 0.9, 0.024);
+        const sag = 1.0 + rnd() * 1.1;
+        for (let k = 0; k < 3; k++) {
+          add(V(px, py - k * 0.28, side * (ROAD_HALF + 1.0 + k * 0.1)),
+            V(nx, ny - k * 0.28, side * (ROAD_HALF + 1.0 + k * 0.1)),
+            sag + k * 0.1, 0.019 + rnd() * 0.008, k ? phone : power, 12);
+        }
         px = nx; py = ny;
       }
     }
@@ -1990,24 +2805,23 @@ export class Level {
     for (const [x, z0, z1] of alleys) {
       for (let i = 0; i < 6; i++) {
         const z = lerp(z0, z1, (i + 0.5) / 6);
-        const y = 4.2 + rnd() * 3.6;
-        add(V(x - 2.6, y, z), V(x + 2.6, y - 0.3, z + (rnd() - 0.5) * 1.5), 0.5 + rnd() * 0.7, 0.022);
-        // Laundry strung across the alley on some of the lower lines.
-        if (y < 6 && rnd() < 0.55) {
-          for (let k = 0; k < 3; k++) {
-            const t = 0.25 + k * 0.25;
-            const px = lerp(x - 2.6, x + 2.6, t);
-            const hh = 0.4 + rnd() * 0.5, ww = 0.35 + rnd() * 0.3;
-            const g = boxGeo(ww, hh, 0.02, 1.3);
-            g.applyMatrix4(mat(px, y - 0.5 - hh / 2, z, (rnd() - 0.5) * 0.4));
-            this._stage('fabric', g, null, _col.setHSL(rnd(), 0.3, 0.6 + rnd() * 0.2).clone());
-          }
+        const y = 3.5 + rnd() * 3.8;
+        const a = V(x - 2.6, y, z);
+        const b = V(x + 2.6, y - 0.3, z + (rnd() - 0.5) * 1.5);
+        const sag = 0.45 + rnd() * 0.6;
+        if (y < 6.3 && rnd() < 0.85) {
+          // Washing line: heavier cord, and the sheets hang off the actual
+          // curve rather than floating in the air near it.
+          add(a, b, sag, 0.016, new THREE.Color(0x8d8272), 12);
+          this._washingRun(a, b, sag, rnd);
+        } else {
+          add(a, b, sag, 0.022, phone);
         }
       }
     }
     // Plaza banner run across the open space, a big readable diagonal.
-    add(V(-PLAZA + 3, 9.5, -PLAZA + 4), V(PLAZA - 4, 8.8, -6), 2.4, 0.03);
-    add(V(-PLAZA + 3, 8.2, 8), V(PLAZA - 4, 9.2, PLAZA - 5), 2.2, 0.03);
+    add(V(-PLAZA + 3, 9.5, -PLAZA + 4), V(PLAZA - 4, 8.8, -6), 2.4, 0.03, power, 14);
+    add(V(-PLAZA + 3, 8.2, 8), V(PLAZA - 4, 9.2, PLAZA - 5), 2.2, 0.03, power, 14);
   }
 
   // --- navigation and poses -------------------------------------------------
@@ -2082,6 +2896,12 @@ export class Level {
   raycastEntities() { return null; }
 
   update() {
+    // The cable ribbons size themselves in pixels, so they need the live
+    // drawing-buffer size; it changes on every resize and on quality changes.
+    if (this._wireRes) {
+      this.engine.renderer.getDrawingBufferSize(_size);
+      if (_size.x > 0) this._wireRes.value.copy(_size);
+    }
     if (!this._poseFov) return;
     const player = this.engine.game?.player;
     if (player && player.fovBase !== this._poseFov) player.fovBase = this._poseFov;
