@@ -33,12 +33,22 @@ export class Lighting {
     this.hemi = new THREE.HemisphereLight(sky.ambientColor.clone(), new THREE.Color(0.16, 0.14, 0.12), 0.85);
     engine.scene.add(this.hemi);
 
-    // Viewmodel gets its own miniature rig so the weapon reads well regardless
-    // of where the player is standing.
-    this.viewKey = new THREE.DirectionalLight(0xffffff, 2.4);
-    this.viewKey.position.set(-0.6, 1.0, 0.8);
+    // Viewmodel gets its own miniature three-point rig so the weapon always
+    // reads, whatever the player is standing in. Viewmodel geometry is tiny and
+    // almost edge-on to the camera, so it needs far more light than the world
+    // to land at the same apparent brightness — a world-lit gun silhouettes.
+    this.viewKey = new THREE.DirectionalLight(0xfff2df, 3.8);
+    this.viewKey.position.set(-0.7, 1.0, 0.9);
     engine.viewScene.add(this.viewKey);
-    this.viewFill = new THREE.HemisphereLight(0x9fb6d0, 0x2a2622, 1.1);
+    this.viewKey.target.position.set(0, 0, -1);
+    engine.viewScene.add(this.viewKey.target);
+
+    // Rim from behind-right separates the barrel from the background.
+    this.viewRim = new THREE.DirectionalLight(0xbcd2ff, 1.3);
+    this.viewRim.position.set(0.9, 0.4, -1.0);
+    engine.viewScene.add(this.viewRim);
+
+    this.viewFill = new THREE.HemisphereLight(0x9fb6d0, 0x2a2622, 2.4);
     engine.viewScene.add(this.viewFill);
 
     this.locals = [];
@@ -93,6 +103,13 @@ export class Lighting {
     this.sun.color.copy(sky.sunColor);
     this.hemi.color.copy(sky.ambientColor);
 
+    // Swing the viewmodel key to follow the world sun so the weapon's shading
+    // agrees with the scene instead of looking pasted on top of it.
+    _sunView.copy(sky.sunDirection).applyQuaternion(cam.quaternion.clone().invert());
+    this.viewKey.position.set(_sunView.x * 0.8 - 0.35, Math.max(0.35, _sunView.y), _sunView.z * 0.8 + 0.55);
+    this.viewKey.color.copy(sky.sunColor);
+    this.viewFill.color.copy(sky.ambientColor);
+
     for (let i = this.flashes.length - 1; i >= 0; i--) {
       const f = this.flashes[i];
       f.t += dt;
@@ -111,3 +128,4 @@ export class Lighting {
 
 const _fwd = new THREE.Vector3();
 const _center = new THREE.Vector3();
+const _sunView = new THREE.Vector3();
