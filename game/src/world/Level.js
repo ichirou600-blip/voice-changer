@@ -659,7 +659,7 @@ export class Level {
 
     // Non-uniform grid: |t|^1.85 concentrates resolution on the playable core
     // and lets the outer ring stretch away cheaply toward the fog.
-    const NX = 156, NZ = 118;
+    const NX = 120, NZ = 92;
     const warp = (t, half) => Math.sign(t) * Math.pow(Math.abs(t), 1.85) * half;
     const pos = new Float32Array((NX + 1) * (NZ + 1) * 3);
     const uv = new Float32Array((NX + 1) * (NZ + 1) * 2);
@@ -866,6 +866,13 @@ export class Level {
       const kind = spec.face?.[id] || 'plain';
       if (kind === 'none') continue;
       const s = sides[id];
+      // A blank return wall is one box instead of the several hundred a
+      // fenestrated elevation costs. Party walls and the flanks of the skyline
+      // filler blocks are never seen closely enough to be worth more.
+      if (kind === 'blank') {
+        this._box(spec.mat, s.pw, H, WALL_T, 0, H / 2, -WALL_T / 2, s.m);
+        continue;
+      }
       let breach = null;
       if (spec.breach && spec.breach.side === id) {
         const b = spec.breach;
@@ -962,7 +969,7 @@ export class Level {
           const ow = balcony ? 1.05 : alley ? 0.95 : 1.35;
           const oh = balcony ? 2.15 : alley ? 1.15 : 1.62;
           const oy = y0 + (balcony ? 0.12 : 1.02);
-          const chance = alley ? 0.62 : spec.simple ? 0.52 : 0.84;
+          const chance = alley ? 0.62 : spec.simple ? 0.34 : 0.84;
           if (r < chance || balcony) {
             const ox = bx + (bw - ow) / 2;
             openings.push({ x: ox, y: oy, w: ow, h: oh });
@@ -1019,9 +1026,9 @@ export class Level {
       this._box('concrete', o.w + 0.34, 0.1, 0.26, cx, o.y - 0.05, 0.03, m, null, 0.9);
       this._box('concrete', o.w + 0.4, 0.2, 0.22, cx, o.y + o.h + 0.1, 0.0, m, null, 0.9);
       // Frame set back inside the reveal so the recess is visible from an angle.
+      // Only the jambs are modelled: the sill and lintel already read as the
+      // horizontal members, so two boxes buy what four would.
       const fz = -0.16;
-      this._box('wood', o.w, 0.07, 0.07, cx, o.y + 0.05, fz, m, null, 2.2);
-      this._box('wood', o.w, 0.07, 0.07, cx, o.y + o.h - 0.05, fz, m, null, 2.2);
       this._box('wood', 0.07, o.h, 0.07, cx - o.w / 2 + 0.04, o.y + o.h / 2, fz, m, null, 2.2);
       this._box('wood', 0.07, o.h, 0.07, cx + o.w / 2 - 0.04, o.y + o.h / 2, fz, m, null, 2.2);
       const state = rnd();
@@ -1032,8 +1039,8 @@ export class Level {
         this._box('wood', 0.06, o.h - 0.1, 0.05, cx, o.y + o.h / 2, fz, m, null, 2.2);
       } else if (state < 0.6) {
         // Boarded up with scavenged timber.
-        for (let i = 0; i < 3; i++) {
-          this._box('wood', o.w + 0.1, 0.2, 0.05, cx, o.y + 0.3 + i * (o.h - 0.6) / 2,
+        for (let i = 0; i < 2; i++) {
+          this._box('wood', o.w + 0.1, 0.22, 0.05, cx, o.y + 0.4 + i * (o.h - 0.8),
             fz + 0.04, m, null, 1.6);
         }
       } else if (state < 0.76) {
@@ -1042,7 +1049,7 @@ export class Level {
       if (o.t === 'balcony') this._balcony(spec, o, m, rnd, cx);
       else if (ctx.street && rnd() < 0.24) this._acUnit(o, m, rnd, cx);
       else if (ctx.alley && rnd() < 0.35) this._acUnit(o, m, rnd, cx);
-      if (rnd() < 0.18) this._laundry(o, m, rnd, cx);
+      if (rnd() < 0.09) this._laundry(o, m, rnd, cx);
       return;
     }
 
@@ -1050,12 +1057,15 @@ export class Level {
       this._box('concrete', o.w + 0.5, 0.26, 0.34, cx, o.y + o.h + 0.13, 0.05, m, null, 0.8);
       const st = rnd();
       if (st < 0.4) {
-        // Roller shutter, part-down. Corrugation comes from stacked slats.
+        // Roller shutter, part-down: one panel plus a handful of proud slats,
+        // which corrugates the silhouette without modelling every rib.
         const drop = 0.35 + rnd() * 0.6;
         const hh = o.h * drop;
-        for (let y = 0; y < hh; y += 0.12) {
-          this._box('rust', o.w, 0.11, 0.06, cx, o.y + o.h - y - 0.055, 0.02, m, null, 1.4);
+        this._box('rust', o.w, hh, 0.06, cx, o.y + o.h - hh / 2, 0.02, m, null, 1.4);
+        for (let y = 0.2; y < hh - 0.1; y += 0.42) {
+          this._box('rust', o.w, 0.07, 0.04, cx, o.y + o.h - y, 0.06, m, null, 1.4);
         }
+        this._box('rust', o.w + 0.08, 0.12, 0.1, cx, o.y + o.h - hh, 0.04, m, null, 1.4);
       } else {
         if (!ctx.seeThrough) this._box('dark', o.w, o.h, 0.06, cx, o.y + o.h / 2, -WALL_T - 0.02, m, null, 0.4);
         if (st < 0.7) {
@@ -1103,7 +1113,7 @@ export class Level {
       this._box('rust', 0.05, 0.05, dp, cx - bw / 2, o.y + yy, dp / 2, m, null, 2.0);
       this._box('rust', 0.05, 0.05, dp, cx + bw / 2, o.y + yy, dp / 2, m, null, 2.0);
     }
-    const n = Math.max(4, Math.round(bw / 0.22));
+    const n = Math.max(4, Math.round(bw / 0.34));
     for (let i = 0; i <= n; i++) {
       this._box('rust', 0.035, rail, 0.035, cx - bw / 2 + (i / n) * bw, o.y + rail / 2, dp, m, null, 3.0);
     }
@@ -1143,7 +1153,7 @@ export class Level {
         new THREE.Vector3(cx - o.w / 2 - 0.2, o.y + o.h - 0.1, 0.25),
         new THREE.Vector3(cx, o.y + o.h - 0.22, 0.55),
         new THREE.Vector3(cx + o.w / 2 + 0.2, o.y + o.h - 0.1, 0.25),
-      ]), 8, 0.018, 4, false), m);
+      ]), 6, 0.018, 3, false), m);
     for (let i = 0; i < n; i++) {
       const t = (i + 0.5) / n;
       const px = cx - o.w / 2 + t * o.w;
@@ -1411,7 +1421,7 @@ export class Level {
    */
   _rubblePile(x, z, radius, height, rnd) {
     const base = this._groundY(x, z);
-    const count = Math.round(radius * radius * 1.5);
+    const count = Math.round(radius * radius * 0.9);
     for (let i = 0; i < count; i++) {
       const a = rnd() * Math.PI * 2;
       const r = Math.pow(rnd(), 0.6) * radius;
@@ -1815,7 +1825,7 @@ export class Level {
       case 'brickChunk': return { geo: rockGeo(0.38, rnd), mat: 'brick', cast: true };
       case 'debris': return { geo: boxGeo(0.34, 0.05, 0.26, 1.6), mat: 'concreteDark', cast: false };
       case 'sandbag': {
-        const g = new THREE.SphereGeometry(0.5, 7, 5);
+        const g = new THREE.SphereGeometry(0.5, 6, 4);
         g.scale(1.05, 0.42, 0.62);
         const uv = g.attributes.uv;
         for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 1.4, uv.getY(i) * 0.9);
@@ -1868,7 +1878,7 @@ export class Level {
 
     // Loose ground clutter across the playable core.
     const free = (x, z) => this._wallDistance(x, z) > 0.6 && Math.hypot(x * 0.55, z) < 92;
-    for (let i = 0; i < 900; i++) {
+    for (let i = 0; i < 520; i++) {
       const x = (rnd() * 2 - 1) * 95, z = (rnd() * 2 - 1) * 46;
       if (!free(x, z)) continue;
       const s = 0.5 + rnd() * 1.3;
@@ -1876,7 +1886,7 @@ export class Level {
         mat(x, this._groundY(x, z) + 0.025, z, rnd() * 6.28, 0, (rnd() - 0.5) * 0.2).scale(_v.set(s, 1, s)),
         _col.setHSL(0.09, 0.06 + rnd() * 0.1, 0.42 + rnd() * 0.45).clone());
     }
-    for (let i = 0; i < 260; i++) {
+    for (let i = 0; i < 170; i++) {
       const x = (rnd() * 2 - 1) * 80, z = (rnd() * 2 - 1) * 40;
       if (!free(x, z)) continue;
       const s = 0.28 + rnd() * 0.7;
@@ -1952,7 +1962,7 @@ export class Level {
     const add = (a, b, sag, r = 0.03) => {
       const mid = a.clone().lerp(b, 0.5).setY(Math.min(a.y, b.y) - sag);
       const curve = new THREE.CatmullRomCurve3([a, mid, b]);
-      this._stage('cable', new THREE.TubeGeometry(curve, 12, r, 4, false));
+      this._stage('cable', new THREE.TubeGeometry(curve, 9, r, 3, false));
     };
     const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
