@@ -381,16 +381,29 @@ function boxProjectUV(geometry, scale = 14) {
   return geometry;
 }
 
-/** Picatinny rail: a base plus evenly spaced recoil slots, merged to one mesh. */
-function picatinnyRail(length, material, slotPitch = 0.0102) {
+/**
+ * Picatinny rail: a solid base, a continuous ribbed top, and narrow recoil
+ * grooves cut into it.
+ *
+ * The previous build spaced 5 mm teeth on a 10 mm pitch, which is the real MIL-
+ * STD-1913 geometry and still read as a bicycle chain — because at viewmodel
+ * scale each tooth covers a dozen screen pixels and the 5 mm of *background*
+ * between them covers a dozen more. So the pitch is halved and the groove
+ * narrowed to a fifth of it: the rail resolves as one ribbed bar with a texture
+ * of slots, which is what a rail looks like to an eye rather than to a caliper.
+ * The base is also tall enough now that the grooves never cut through to sky.
+ */
+function picatinnyRail(length, material, slotPitch = 0.0051) {
   const parts = [];
-  const base = new THREE.BoxGeometry(0.021, 0.0055, length);
-  parts.push(base);
-  const slots = Math.max(1, Math.floor(length / slotPitch));
+  parts.push(new THREE.BoxGeometry(0.021, 0.0082, length));
+  // The ribbed top is one continuous bar; the grooves are the gaps between the
+  // ribs, so there is never a hole through the rail.
+  const slots = Math.max(1, Math.round(length / slotPitch));
+  const rib = slotPitch - 0.0011;
   for (let i = 0; i < slots; i++) {
     const z = -length / 2 + slotPitch * (i + 0.5);
-    const tooth = new THREE.BoxGeometry(0.0212, 0.0042, 0.0052);
-    tooth.translate(0, 0.0047, z);
+    const tooth = new THREE.BoxGeometry(0.0212, 0.0040, rib);
+    tooth.translate(0, 0.0058, z);
     parts.push(tooth);
   }
   const merged = mergeGeometries(parts);
@@ -431,73 +444,159 @@ function mergeGeometries(geometries) {
 /**
  * A gloved first-person hand. Nothing reads "console shooter" faster than hands
  * on the weapon; a floating gun reads as a tech demo no matter how good it is.
- * Built as a palm block plus four curled fingers and an opposed thumb, posed by
- * the caller via `curl` so the same builder serves the grip and the handguard.
+ * Built as a wedge palm, a thenar pad, four scalloped knuckles under a hard
+ * guard, four three-segment fingers and a two-segment opposed thumb — because
+ * the version this replaces resolved, at the size the weapon actually occupies
+ * on screen, to four smooth stacked rings. Fingers are what make a hand read;
+ * everything else is the wrist it hangs off. `curl`, `wrap` and `trigger` pose
+ * it, so the same builder serves the pistol grip and the handguard.
  */
-function glovedHand(material, { curl = 1.0, mirror = false } = {}) {
+function glovedHand(material, plate, { curl = 1.0, mirror = false, wrap = 0, trigger = false } = {}) {
   const hand = new THREE.Group();
+  const s = mirror ? -1 : 1;
 
-  const palm = bevelBox(0.048, 0.082, 0.036, 0.006, material);
-  palm.position.set(0, 0, 0);
+  // Palm: wedge-shaped, thicker at the thumb side, and rolled about Z so the
+  // knuckle line runs diagonally the way a real hand's does. A symmetric block
+  // is the thing that reads as a mitten.
+  const palm = bevelBox(0.046, 0.076, 0.032, 0.005, material);
+  palm.rotation.z = s * 0.10;
   hand.add(palm);
+  // Thenar pad — the muscle at the base of the thumb, and the widest part of a
+  // closed fist in silhouette.
+  const thenar = new THREE.Mesh(new THREE.SphereGeometry(0.017, 10, 8), material);
+  thenar.scale.set(0.9, 1.5, 1.15);
+  thenar.position.set(-s * 0.019, -0.008, 0.004);
+  hand.add(thenar);
 
-  const knuckle = new THREE.Mesh(new THREE.SphereGeometry(0.021, 10, 8), material);
-  knuckle.scale.set(1.15, 0.72, 0.9);
-  knuckle.position.set(0, 0.038, -0.004);
-  hand.add(knuckle);
-
-  // Four fingers, each two segments so the curl reads as a real grip.
+  // Four knuckles as individual domes, not one bar: the scalloped knuckle line
+  // is the single most recognisable thing about a fist at this distance.
   for (let i = 0; i < 4; i++) {
-    const x = (-0.017 + i * 0.0115) * (mirror ? -1 : 1);
-    const scale = 1 - Math.abs(i - 1.2) * 0.07;
-    const root = new THREE.Group();
-    root.position.set(x, 0.036, -0.006);
-    root.rotation.x = -0.35 - curl * 1.05;
+    const t = i / 3;
+    const k = new THREE.Mesh(new THREE.SphereGeometry(0.0092, 8, 6), plate);
+    k.scale.set(1.0, 0.85, 1.25);
+    k.position.set(s * (-0.0165 + i * 0.011), 0.0375 - Math.abs(t - 0.35) * 0.006, -0.008);
+    hand.add(k);
+  }
+  // Knuckle guard across them — the hard plate every shooting glove has.
+  const guard = bevelBox(0.042, 0.017, 0.011, 0.002, plate);
+  guard.position.set(0, 0.036, -0.011);
+  guard.rotation.x = -0.35;
+  hand.add(guard);
 
-    const prox = new THREE.Mesh(new THREE.CapsuleGeometry(0.0072 * scale, 0.024 * scale, 3, 6), material);
+  // Four fingers, three segments each, wrapping around and *under* whatever the
+  // hand is holding. `wrap` splays the curl across the fingers so they close in
+  // sequence instead of all at the same angle, which is what turns four
+  // parallel tubes into a grip.
+  for (let i = 0; i < 4; i++) {
+    const t = i / 3;
+    const scale = 1.03 - Math.abs(t - 0.28) * 0.20;
+    const root = new THREE.Group();
+    root.position.set(s * (-0.0165 + i * 0.011), 0.034, -0.010);
+    // Fingers fan slightly outward from the hand's axis.
+    root.rotation.y = s * (t - 0.4) * 0.16;
+    // The trigger finger is straight, not curled: an index finger folded into
+    // the fist alongside the other three is the tell that a hand was modelled
+    // as a unit rather than as a hand doing something.
+    const c = (trigger && i === 0) ? 0.18 : curl + wrap * (t - 0.4);
+    root.rotation.x = -0.30 - c * 1.05;
+
+    const prox = new THREE.Mesh(new THREE.CapsuleGeometry(0.0080 * scale, 0.026 * scale, 3, 7), material);
     prox.rotation.x = Math.PI / 2;
-    prox.position.z = -0.017 * scale;
+    prox.position.z = -0.018 * scale;
     root.add(prox);
 
-    const distal = new THREE.Group();
-    distal.position.z = -0.032 * scale;
-    distal.rotation.x = -curl * 1.15;
-    const dist = new THREE.Mesh(new THREE.CapsuleGeometry(0.0064 * scale, 0.020 * scale, 3, 6), material);
-    dist.rotation.x = Math.PI / 2;
-    dist.position.z = -0.014 * scale;
-    distal.add(dist);
-    root.add(distal);
+    const mid = new THREE.Group();
+    mid.position.z = -0.035 * scale;
+    mid.rotation.x = -c * 1.05;
+    const midMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.0072 * scale, 0.019 * scale, 3, 7), material);
+    midMesh.rotation.x = Math.PI / 2;
+    midMesh.position.z = -0.013 * scale;
+    mid.add(midMesh);
+    root.add(mid);
+
+    const tip = new THREE.Group();
+    tip.position.z = -0.026 * scale;
+    tip.rotation.x = -c * 0.85;
+    const tipMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.0064 * scale, 0.013 * scale, 3, 7), material);
+    tipMesh.rotation.x = Math.PI / 2;
+    tipMesh.position.z = -0.010 * scale;
+    tip.add(tipMesh);
+    mid.add(tip);
 
     hand.add(root);
   }
 
-  // Thumb, opposed across the grip.
+  // Thumb: two segments, opposed across the grip and rolled over the top of the
+  // fingers, which is what closes the loop of a fist.
   const thumb = new THREE.Group();
-  thumb.position.set((mirror ? 0.024 : -0.024), 0.012, -0.008);
-  thumb.rotation.set(-0.5 - curl * 0.5, (mirror ? -0.7 : 0.7), 0);
-  const thumbMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.0092, 0.030, 3, 6), material);
-  thumbMesh.rotation.x = Math.PI / 2;
-  thumbMesh.position.z = -0.020;
-  thumb.add(thumbMesh);
+  thumb.position.set(-s * 0.021, 0.006, -0.006);
+  thumb.rotation.set(-0.42 - curl * 0.34, -s * (0.62 + curl * 0.22), s * 0.30);
+  const meta = new THREE.Mesh(new THREE.CapsuleGeometry(0.0098, 0.024, 3, 7), material);
+  meta.rotation.x = Math.PI / 2;
+  meta.position.z = -0.017;
+  thumb.add(meta);
+  const distal = new THREE.Group();
+  distal.position.z = -0.031;
+  distal.rotation.x = -curl * 0.75;
+  const distalMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.0086, 0.018, 3, 7), material);
+  distalMesh.rotation.x = Math.PI / 2;
+  distalMesh.position.z = -0.013;
+  distal.add(distalMesh);
+  thumb.add(distal);
   hand.add(thumb);
 
-  // Wrist and forearm cuff — the sleeve stops the hand ending in mid-air.
-  const wrist = new THREE.Mesh(new THREE.CylinderGeometry(0.026, 0.030, 0.052, 12), material);
+  // Wrist and forearm cuff — the sleeve stops the hand ending in mid-air. The
+  // wrist is squashed on one axis because a round wrist is a broom handle.
+  const wrist = new THREE.Mesh(new THREE.CylinderGeometry(0.024, 0.029, 0.050, 12), material);
   wrist.rotation.x = Math.PI / 2;
-  wrist.position.set(0, -0.048, 0.020);
+  wrist.scale.set(1.0, 1.0, 0.78);
+  wrist.position.set(0, -0.046, 0.020);
   wrist.rotation.z = 0.1;
   hand.add(wrist);
 
-  const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.034, 0.033, 0.030, 12), material);
+  const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.033, 0.026, 12), plate);
   cuff.rotation.x = Math.PI / 2;
-  cuff.position.set(0, -0.070, 0.044);
+  cuff.position.set(0, -0.068, 0.042);
   hand.add(cuff);
 
   const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.033, 0.038, 0.20, 12), material);
   sleeve.rotation.x = Math.PI / 2;
-  sleeve.position.set(0, -0.098, 0.155);
+  sleeve.position.set(0, -0.096, 0.153);
   hand.add(sleeve);
 
+  return hand;
+}
+
+// Reference frame of the hand `glovedHand` builds, in its own local space:
+// the held object passes through HAND_HOLD, the four knuckles are spread along
+// +X, and the forearm leaves along HAND_FORE.
+const HAND_HOLD = new THREE.Vector3(0, 0.030, -0.030);
+const HAND_FORE = new THREE.Vector3(0, -0.548, 0.837).normalize();
+const HAND_BINORM = new THREE.Vector3(1, 0, 0).cross(HAND_FORE);
+const HAND_LOCAL = new THREE.Matrix4()
+  .makeBasis(new THREE.Vector3(1, 0, 0), HAND_FORE, HAND_BINORM)
+  .transpose();
+
+/**
+ * Put a hand on something.
+ *
+ * @param hold  Point the held object's axis passes through, in model space.
+ * @param axis  Direction that object runs in — the fingers spread along it.
+ * @param fore  Direction the forearm leaves toward the shoulder.
+ *
+ * Solving from the held geometry instead of from Euler angles is what keeps the
+ * fingers actually closed around the handguard: move the handguard and the hand
+ * follows it, rather than drifting off into space the next time a proportion
+ * changes.
+ */
+function poseHand(hand, hold, axis, fore) {
+  const x = _hx.copy(axis).normalize();
+  const f = _hf.copy(fore);
+  f.addScaledVector(x, -f.dot(x)).normalize();   // forearm, squared to the axis
+  const b = _hb.crossVectors(x, f);
+  _hm.makeBasis(x, f, b).multiply(HAND_LOCAL);
+  hand.quaternion.setFromRotationMatrix(_hm);
+  hand.position.copy(hold).sub(_ho.copy(HAND_HOLD).applyQuaternion(hand.quaternion));
   return hand;
 }
 
@@ -514,19 +613,40 @@ function buildViewmodel(id, textures) {
   g.name = `viewmodel_${id}`;
   const smg = id === 'smg';
 
-  // Gunmetal is deliberately rougher than a real bare-steel value: the tiled
-  // normal detail aliases into specular fireflies under the strong viewmodel key
-  // otherwise, and a matte parkerised finish is the correct look anyway.
-  const body = textures.material('gunMetal', { metalness: 0.88, roughness: 0.58 });
-  // At viewmodel scale a tiled normal map lands several texels per screen pixel,
-  // which aliases into rainbow speckle once the grade pass adds chromatic
-  // aberration and sharpening on top. Machined metal barely needs surface normal
-  // detail this close, so keep the map for micro-break-up but scale it right down.
-  body.normalScale.set(0.18, 0.18);
-  const polymer = new THREE.MeshStandardMaterial({ color: 0x22241f, roughness: 0.72, metalness: 0.04 });
-  const darkPolymer = new THREE.MeshStandardMaterial({ color: 0x141614, roughness: 0.62, metalness: 0.05 });
-  const rubber = new THREE.MeshStandardMaterial({ color: 0x0e0f0e, roughness: 0.92, metalness: 0.0 });
-  const glove = new THREE.MeshStandardMaterial({ color: 0x2b2a26, roughness: 0.86, metalness: 0.02 });
+  // Every material on the weapon comes out of the texture library, so every one
+  // of them carries a normal and a roughness map. Hand-rolled flat-colour
+  // MeshStandardMaterials for the furniture were most of why the receiver, the
+  // handguard, the rail and the optic all resolved to the same slate blue-grey:
+  // with no roughness break there is nothing for the key to model, and with no
+  // albedo separation the only thing left distinguishing them was the sky
+  // reflection they all shared.
+  //
+  // `map: null` on the non-metals is deliberate. The gunMetal albedo is a 0.03
+  // parkerised near-black, which is right for a receiver and wrong for anything
+  // else — dropping it lets the material colour carry the value ladder while the
+  // normal and ORM maps still do their job. The ladder, darkest first:
+  // buttpad 0x0e -> mag/optic 0x1a -> receiver (parkerised map) -> handguard and
+  // stock 0x3a -> glove 0x5b -> rail 0x93. Six steps, and the rail and the glove
+  // are the two the eye lands on.
+  const v2 = (s) => new THREE.Vector2(s, s);
+  const kit = (opts) => textures.material('gunMetal', opts);
+
+  // Parkerised receiver. Rougher than bare steel but well short of the 0.58 it
+  // used to run at: under a 3.4-intensity key, 0.58 spreads the lobe so wide
+  // that a metalness-0.9 surface returns no highlight at all, which is exactly
+  // the "zero specular anywhere" the review found.
+  const body = kit({ metalness: 0.90, roughness: 0.38, normalScale: v2(0.20) });
+  // Hard-anodised aluminium: the brightest, glossiest thing on the weapon, and
+  // the one part guaranteed to carry a specular highlight.
+  const rail = kit({ map: null, color: 0x86837c, metalness: 0.94, roughness: 0.28, normalScale: v2(0.30) });
+  // Reinforced polymer furniture — matte, non-metallic, and a clear step lighter
+  // than the receiver so the handguard separates from the gun it wraps.
+  const polymer = kit({ map: null, color: 0x3a3e35, metalness: 0.03, roughness: 0.62, normalScale: v2(0.85) });
+  const darkPolymer = kit({ map: null, color: 0x1a1c19, metalness: 0.04, roughness: 0.50, normalScale: v2(0.75) });
+  const rubber = kit({ map: null, color: 0x0e100e, metalness: 0.0, roughness: 0.92, normalScale: v2(1.15) });
+  // Coyote-brown nomex. Gloves the same value as the weapon are gloves nobody
+  // sees; this is the warmest, lightest surface in the frame on purpose.
+  const glove = kit({ map: null, color: 0x5b513c, metalness: 0.02, roughness: 0.74, normalScale: v2(1.0) });
 
   const barrelLen = smg ? 0.20 : 0.30;
   const SIGHT_Y = 0.058;   // optical axis height above the receiver centreline
@@ -581,35 +701,79 @@ function buildViewmodel(id, textures) {
   g.add(magRelease);
 
   // --- top rail + optic ----------------------------------------------------
-  const rail = picatinnyRail(0.215, body);
-  rail.position.set(0, 0.041, -0.02);
-  g.add(rail);
+  const topRail = picatinnyRail(0.215, rail);
+  topRail.position.set(0, 0.041, -0.02);
+  g.add(topRail);
 
-  // Red-dot sight: housing, hood, tinted glass and an emissive reticle dot.
+  // Red-dot sight. The old build put an opaque additive disc *in front* of the
+  // glass, which is why it read as an orange sticker: the reticle has to sit
+  // behind the lens, at the focal plane, so the glass tints and reflects over
+  // the top of it. So: housing, hood, a transmissive coated lens, and behind it
+  // a 2 MOA dot inside a ring — a shape, not a blob — plus a soft bloom card
+  // that gives the emitter the glow a real illuminated reticle has.
   const optic = new THREE.Group();
   optic.position.set(0, SIGHT_Y - 0.004, -0.010);
   const opticBase = bevelBox(0.026, 0.016, 0.048, 0.0018, darkPolymer);
-  opticBase.position.y = -0.010;
+  opticBase.position.y = -0.019;
   optic.add(opticBase);
-  const hood = new THREE.Mesh(new THREE.CylinderGeometry(0.0165, 0.0165, 0.042, 16, 1, true), darkPolymer);
+  // The mount clamp — a hard bright edge where the optic meets the rail.
+  const opticClamp = bevelBox(0.030, 0.007, 0.014, 0.0012, rail);
+  opticClamp.position.set(0, -0.026, -0.014);
+  optic.add(opticClamp);
+  const hood = new THREE.Mesh(new THREE.CylinderGeometry(0.0170, 0.0170, 0.044, 20, 1, true), darkPolymer);
   hood.rotation.x = Math.PI / 2;
   optic.add(hood);
-  const lensMat = new THREE.MeshPhysicalMaterial({
-    color: 0x1a2a24, roughness: 0.06, metalness: 0.0,
-    transmission: 0.55, thickness: 0.004, ior: 1.5,
-    transparent: true, opacity: 0.62,
-    // A real coated optic throws a cyan-green sheen back at the shooter.
-    iridescence: 0.6, iridescenceIOR: 1.9,
-  });
-  const lens = new THREE.Mesh(new THREE.CircleGeometry(0.0148, 20), lensMat);
-  lens.position.z = 0.014;
-  optic.add(lens);
-  const reticle = new THREE.Mesh(
-    new THREE.CircleGeometry(0.0016, 10),
-    new THREE.MeshBasicMaterial({ color: 0xff2a12, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false }),
+
+  // The tube interior, so a glance down the side of the optic sees a dark bore
+  // rather than the back faces of the hood.
+  const bore = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0158, 0.0158, 0.040, 20, 1, true),
+    kit({ map: null, color: 0x08090a, roughness: 0.95, metalness: 0.0, side: THREE.BackSide }),
   );
-  reticle.position.z = 0.0155;
+  bore.rotation.x = Math.PI / 2;
+  optic.add(bore);
+
+  const reticleMat = new THREE.MeshBasicMaterial({
+    color: 0xff5522, transparent: true, opacity: 1,
+    blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+  });
+  const reticle = new THREE.Group();
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.00085, 10), reticleMat);
+  reticle.add(dot);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.0043, 0.0054, 28), reticleMat);
+  reticle.add(ring);
+  // Bloom card: the emitter's halo, and what stops the dot reading as a decal.
+  const halo = new THREE.Mesh(
+    new THREE.CircleGeometry(0.0058, 16),
+    new THREE.MeshBasicMaterial({
+      color: 0xff4a18, transparent: true, opacity: 0.16,
+      blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false,
+    }),
+  );
+  halo.position.z = -0.0004;
+  reticle.add(halo);
+  reticle.position.z = 0.0075;
   optic.add(reticle);
+
+  // Glass last, so it composites over the reticle behind it.
+  const lensMat = new THREE.MeshPhysicalMaterial({
+    color: 0x223a33, roughness: 0.03, metalness: 0.0,
+    transmission: 0.86, thickness: 0.003, ior: 1.52,
+    transparent: true, opacity: 0.5, depthWrite: false,
+    // A real coated optic throws a cyan-green sheen back at the shooter.
+    iridescence: 0.9, iridescenceIOR: 2.1, iridescenceThicknessRange: [180, 480],
+    clearcoat: 1.0, clearcoatRoughness: 0.02,
+  });
+  const ocular = new THREE.Mesh(new THREE.CircleGeometry(0.0158, 24), lensMat);
+  ocular.position.z = 0.0165;          // the shooter's side: +Z is behind the gun
+  ocular.renderOrder = 2;
+  optic.add(ocular);
+  // Objective glass, so the optic is a tube with two surfaces and not a cup.
+  const objective = new THREE.Mesh(new THREE.CircleGeometry(0.0158, 24), lensMat);
+  objective.position.z = -0.0175;
+  objective.rotation.y = Math.PI;
+  objective.renderOrder = 2;
+  optic.add(objective);
   g.add(optic);
 
   // Backup iron sights, folded down beside the optic.
@@ -667,15 +831,17 @@ function buildViewmodel(id, textures) {
       g.add(slot);
     }
   }
-  const hgRail = picatinnyRail(hgLen - 0.02, body);
+  const hgRail = picatinnyRail(hgLen - 0.02, rail);
   hgRail.position.set(0, 0.035, hgZ);
   g.add(hgRail);
 
-  // Angled foregrip — gives the support hand something to actually hold.
-  const foregrip = bevelBox(0.020, 0.044, 0.030, 0.003, darkPolymer);
-  foregrip.position.set(0, -0.014, hgZ - 0.010);
-  foregrip.rotation.x = 0.42;
-  g.add(foregrip);
+  // Handstop, forward of the support hand. The angled foregrip it replaces sat
+  // exactly where the fingers now wrap, so the hand could only ever be posed
+  // beside the weapon instead of around it.
+  const handstop = bevelBox(0.018, 0.020, 0.016, 0.002, darkPolymer);
+  handstop.position.set(0, -0.006, hgZ - hgLen * 0.5 + 0.030);
+  handstop.rotation.x = 0.55;
+  g.add(handstop);
 
   // --- stock, grip, magazine ----------------------------------------------
   const bufferTube = new THREE.Mesh(new THREE.CylinderGeometry(0.0165, 0.0165, 0.155, 12), body);
@@ -735,17 +901,30 @@ function buildViewmodel(id, textures) {
   g.add(slingLoop);
 
   // --- hands ---------------------------------------------------------------
-  // Firing hand wraps the pistol grip; support hand rides the foregrip.
-  const rightHand = glovedHand(glove, { curl: 1.0, mirror: false });
-  rightHand.position.set(0.030, -0.074, 0.078);
-  rightHand.rotation.set(-0.30, -0.22, 0.16);
+  // Firing hand closes on the pistol grip with the trigger finger out; support
+  // hand takes the handguard in a C-clamp. Both are placed by `poseHand`, which
+  // solves the orientation from the axis of the thing being held rather than
+  // from three hand-tuned Euler angles — the old numbers had both hands rotated
+  // as though gripping a bar running left-to-right across the screen, which is
+  // why neither one made contact with anything.
+  const rightHand = glovedHand(glove, darkPolymer, { curl: 1.0, wrap: 0.22, trigger: true });
+  poseHand(
+    rightHand,
+    new THREE.Vector3(0, -0.058, 0.056),        // where the grip passes through the fist
+    new THREE.Vector3(0, -0.955, 0.296),        // down the grip: index at the top
+    new THREE.Vector3(0.34, -0.30, 0.89),       // forearm runs back and right
+  );
   rightHand.scale.setScalar(1.06);
   g.add(rightHand);
 
-  const leftHand = glovedHand(glove, { curl: 0.92, mirror: true });
-  leftHand.position.set(-0.032, -0.028, hgZ - 0.014);
-  leftHand.rotation.set(0.34, 0.30, -0.22);
-  leftHand.scale.setScalar(1.06);
+  const leftHand = glovedHand(glove, darkPolymer, { curl: 0.80, wrap: 0.30, mirror: true });
+  poseHand(
+    leftHand,
+    new THREE.Vector3(0, 0.013, hgZ + 0.018),   // the handguard's own axis
+    new THREE.Vector3(0, 0, -1),                // fingers spread along the barrel
+    new THREE.Vector3(-0.42, -0.52, 0.74),      // forearm runs back and left
+  );
+  leftHand.scale.setScalar(1.04);
   g.add(leftHand);
 
   // --- muzzle flash --------------------------------------------------------
@@ -786,17 +965,25 @@ function buildViewmodel(id, textures) {
   // Viewmodels never cast into the world and must never be frustum-culled:
   // they live in their own scene rendered after a depth clear. Reproject UVs on
   // everything so the shared tiling gunmetal keeps a consistent texel density.
+  // Every kit material now shares one tiled set, so every mesh wearing one needs
+  // the same box projection — the rail, the buttpad and the gloves included, or
+  // their normal detail lands at a texel density nothing else on the model uses.
+  const projected = new Set([body, rail, polymer, darkPolymer, rubber, glove]);
   g.traverse((c) => {
     if (!c.isMesh) return;
     c.castShadow = false;
     c.receiveShadow = false;
     c.frustumCulled = false;
-    if (c.material === body || c.material === polymer || c.material === darkPolymer) {
-      boxProjectUV(c.geometry, 7);
-    }
+    if (projected.has(c.material)) boxProjectUV(c.geometry, 7);
   });
   return g;
 }
+
+const _hx = new THREE.Vector3();
+const _hf = new THREE.Vector3();
+const _hb = new THREE.Vector3();
+const _ho = new THREE.Vector3();
+const _hm = new THREE.Matrix4();
 
 const _dir = new THREE.Vector3();
 const _origin = new THREE.Vector3();

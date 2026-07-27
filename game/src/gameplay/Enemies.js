@@ -267,11 +267,27 @@ export class EnemyManager {
     // A limb's UV wraps once around a much smaller circumference than the
     // torso's, so an albedo tiled the same on both puts 20 cm camo patches on
     // the chest and 5 cm ones on the forearm — which is what makes a print read
-    // as noise rather than as camouflage.
+    // as noise rather than as camouflage. Every cloth part therefore derives its
+    // repeat from the metres it actually covers: `garment` takes the girth and
+    // the run of a part and returns the tiling that lands one camo patch and one
+    // weave cell at the same physical size everywhere on the soldier.
+    //
+    // CAMO_TILE is the sheet period, not the patch size — the fbm inside it runs
+    // at ~2 cycles, so a 0.31 m sheet gives roughly 15 cm blotches, which is what
+    // a real four-colour print measures. Nothing above the collar takes a cloth
+    // sheet at all: the helmet, the skin and the neck are their own materials,
+    // so the print stops where it stops in life.
+    const CAMO_TILE = 0.31;
+    const WEAVE_TILE = 0.15;
+    const garment = (girth, run) => retile(
+      cloth, girth / WEAVE_TILE, run / WEAVE_TILE, girth / CAMO_TILE, run / CAMO_TILE,
+    );
+
     this._sheetCache = {
-      cloth: retile(cloth, 3, 3, 1.15, 1.15),
-      clothLimb: retile(cloth, 2.2, 2.6, 0.55, 0.80),
-      clothFine: retile(cloth, 1.5, 1.5, 0.9, 0.9),
+      clothTorso: garment(1.08, 0.58),   // chest capsule: girth 2πr, run cap-to-cap
+      clothArm: garment(0.37, 0.32),     // upper arm and forearm
+      clothLeg: garment(0.58, 0.44),     // thigh and shin
+      clothFine: garment(0.30, 0.22),    // knee pads, cargo pockets, cuffs
       nylon: retile(nylon, 2, 2),
       nylonFine: retile(nylon, 1, 1),
       rubber: retile(rubber, 2, 2),
@@ -292,11 +308,12 @@ export class EnemyManager {
     if (this._assets) return this._assets;
     const s = this._sheets();
 
-    // Two roughness families, exactly as the surfaces divide: fabric is matte
-    // and close to Lambertian, moulded gear and hard armour hold a broad sheen.
-    // The sheets carry the break-up, these two scalars carry the split.
+    // Fabric is matte and close to Lambertian. Everything else runs 0.55-0.80:
+    // a dielectric at 0.50 under a bright sky probe returns a broad blue sheen
+    // over its whole surface, and that sheen — not the geometry — was what made
+    // the plate carrier, the pouches and the shoulders all read as the same
+    // smooth grey-blue plastic. Nothing on a soldier is that glossy.
     const FABRIC = 0.90;
-    const GEAR = 0.50;
 
     const M = (color, roughness, metalness, sheet, normalScale = 1) => {
       const mat = new THREE.MeshStandardMaterial({
@@ -311,19 +328,21 @@ export class EnemyManager {
       return mat;
     };
 
-    // A deliberate value ladder — sole 0x0d, webbing 0x19, plate 0x27, pouch
-    // 0x3c, helmet 0x42, camo 0x28..0x62, skin 0xb0. Eight steps between the
-    // darkest strap and the face is what keeps the kit legible in silhouette.
+    // A deliberate value ladder — sole 0x0d, gear 0x13, plate 0x1d, webbing
+    // 0x19, gaiter 0x26, pouch 0x30, helmet 0x42, camo 0x1d..0x41, skin 0xb0.
+    // Eight steps between the darkest strap and the face is what keeps the kit
+    // legible in silhouette.
     const m = {
-      camo: M(0xffffff, FABRIC, 0.0, s.cloth),           // albedo is the sheet
-      camoLimb: M(0xffffff, FABRIC, 0.0, s.clothLimb),   // arms and legs
+      camo: M(0xffffff, FABRIC, 0.0, s.clothTorso),      // albedo is the sheet
+      camoArm: M(0xffffff, FABRIC, 0.0, s.clothArm),
+      camoLeg: M(0xffffff, FABRIC, 0.0, s.clothLeg),
       camoWorn: M(0x8f8d84, 0.96, 0.0, s.clothFine),     // pads, cargo pockets
       gaiter: M(0x26271f, FABRIC, 0.0, s.nylonFine, 0.7),
-      plate: M(0x1d1f19, GEAR, 0.06, s.nylon),
-      pouch: M(0x303227, 0.62, 0.02, s.nylon),
-      webbing: M(0x191a15, 0.55, 0.02, s.nylonFine),
-      helmet: M(0x42452f, 0.58, 0.05, s.nylonFine, 0.55),
-      gear: M(0x131412, 0.42, 0.35, s.nylonFine, 0.5),
+      plate: M(0x1d1f19, 0.70, 0.03, s.nylon),
+      pouch: M(0x303227, 0.76, 0.02, s.nylon),
+      webbing: M(0x191a15, 0.70, 0.02, s.nylonFine),
+      helmet: M(0x42452f, 0.66, 0.04, s.nylonFine, 0.55),
+      gear: M(0x131412, 0.55, 0.12, s.nylonFine, 0.5),
       skin: M(0xb08466, 0.62, 0.0, s.nylonFine, 0.22),
       glove: M(0x232420, 0.66, 0.03, s.rubber),
       boot: M(0x2a2823, 0.60, 0.04, s.rubber),
@@ -371,7 +390,8 @@ export class EnemyManager {
     // --- torso ----------------------------------------------------------------
     const torso = new GeoBag();
     torso.add(m.camo, P.chest);
-    torso.add(m.gaiter, P.cyl, [0, 0.168, 0.004], null, [0.200, 0.078, 0.178]);
+    torso.add(m.camo, P.sphere, [0, 0.196, -0.012], null, [0.330, 0.190, 0.235]);
+    torso.add(m.gaiter, P.cyl, [0, 0.192, 0.004], null, [0.176, 0.080, 0.160]);
 
     // Plate carrier. The hard, bevelled slab standing off the soft body is the
     // strongest "kitted up" cue there is, so it is built as a chest plate, an
@@ -406,12 +426,17 @@ export class EnemyManager {
 
     // --- head -----------------------------------------------------------------
     const head = new GeoBag();
-    head.add(m.gaiter, P.cyl, [0, -0.082, 0], null, [0.118, 0.092, 0.118]);
-    head.add(m.skin, P.sphere, [0, 0, 0.004], null, [0.185, 0.205, 0.196]);
+    // A neck, not a head sat on a collar. The skull is lifted clear of the chest
+    // capsule and the gap bridged by a dark column, because the single strongest
+    // "mannequin" tell is a head that starts where the torso stops. Nothing here
+    // is camo: the print stops at the collar, which is where it stops in life.
+    head.add(m.gaiter, P.cyl, [0, -0.118, -0.004], null, [0.104, 0.150, 0.106]);
+    head.add(m.skin, P.cyl, [0, -0.086, -0.004], null, [0.092, 0.090, 0.094]);
+    head.add(m.skin, P.sphere, [0, 0, 0.004], null, [0.176, 0.196, 0.188]);
     // Lower face is a neck gaiter, not a blank chin. It puts a hard dark value
     // under the cheekbones, which is what lets a head read as a face at range
     // without modelling features nobody can resolve anyway.
-    head.add(m.gaiter, P.sphere, [0, -0.042, 0.010], null, [0.182, 0.150, 0.194]);
+    head.add(m.gaiter, P.sphere, [0, -0.040, 0.010], null, [0.174, 0.146, 0.186]);
 
     head.add(m.helmet, P.helmetShell, [0, 0.010, -0.006], null, [1.02, 1.0, 1.08]);
     // The brim. A hemisphere reads as a bowl; the lip is what reads as a helmet,
@@ -433,14 +458,14 @@ export class EnemyManager {
 
     // --- limb segments --------------------------------------------------------
     const thigh = new GeoBag();
-    thigh.add(m.camoLimb, P.thigh, [0, -0.210, 0]);
+    thigh.add(m.camoLeg, P.thigh, [0, -0.210, 0]);
     for (const sx of [-1, 1]) {
       thigh.add(m.camoWorn, P.box, [sx * 0.082, -0.238, 0.006], [0, 0, sx * 0.04], [0.038, 0.135, 0.132]);
       thigh.add(m.webbing, P.box, [sx * 0.090, -0.176, 0.006], null, [0.020, 0.028, 0.126]);
     }
 
     const knee = new GeoBag();
-    knee.add(m.camoLimb, P.shin, [0, -0.200, 0]);
+    knee.add(m.camoLeg, P.shin, [0, -0.200, 0]);
     knee.add(m.camoWorn, P.sphere, [0, -0.022, 0.036], null, [0.156, 0.132, 0.098]);
     knee.add(m.gear, P.box, [0, -0.026, 0.058], [0.10, 0, 0], [0.108, 0.088, 0.022]);
     // Boot: ankle cuff, leather upper, proud rubber sole. The sole is what gives
@@ -453,12 +478,18 @@ export class EnemyManager {
     knee.add(m.sole, P.box, [0, -0.424, 0.152], [0.22, 0, 0], [0.104, 0.032, 0.058]);
 
     const upperArm = new GeoBag();
-    upperArm.add(m.plate, P.sphere, [0, 0.010, 0], null, [0.206, 0.172, 0.206]);
-    upperArm.add(m.camoLimb, P.upperArm, [0, -0.155, 0]);
+    // The deltoid, not a pauldron. A hard armour ball at the arm root reads as a
+    // second, smoother object bolted to a camo sleeve — two of them and the
+    // soldier is wearing plate. This is the same cloth as the arm, barely wider
+    // than the capsule it caps, so it closes the shoulder joint instead of
+    // announcing it, and its outer edge stays under the plate carrier's yoke.
+    upperArm.add(m.camoArm, P.sphere, [0, -0.014, 0], null, [0.146, 0.166, 0.150]);
+    upperArm.add(m.camoArm, P.upperArm, [0, -0.155, 0]);
+    // Rolled sleeve cuff: the one hard line that gives the arm a joint.
     upperArm.add(m.camoWorn, P.cyl, [0, -0.262, 0], null, [0.126, 0.046, 0.126]);
 
     const elbow = new GeoBag();
-    elbow.add(m.camoLimb, P.foreArm, [0, -0.155, 0]);
+    elbow.add(m.camoArm, P.foreArm, [0, -0.155, 0]);
     elbow.add(m.camoWorn, P.sphere, [0, -0.012, 0.028], null, [0.122, 0.100, 0.076]);
     // Glove: palm, knuckle plate, thumb, fingers. A bare box reads as a mitten.
     elbow.add(m.glove, P.box, [0, -0.308, 0.010], null, [0.068, 0.098, 0.058]);
@@ -466,16 +497,35 @@ export class EnemyManager {
     elbow.add(m.glove, P.box, [0.036, -0.292, 0.026], [0, 0, 0.40], [0.030, 0.058, 0.034]);
     elbow.add(m.glove, P.box, [0, -0.356, 0.014], [0.10, 0, 0], [0.062, 0.048, 0.052]);
 
-    // --- slung rifle ----------------------------------------------------------
+    // --- carried rifle --------------------------------------------------------
+    // Held in both hands rather than slung, so it is modelled around the two
+    // points the hands take: GRIP_LOCAL on the pistol grip and SUPPORT_LOCAL
+    // under the handguard. Furniture is the dark polymer, only the receiver,
+    // barrel and rail are metal — a rifle that is one material at one value is
+    // the thing that reads as a prop.
     const rifle = new GeoBag();
-    rifle.add(m.gunmetal, P.box, [0, 0, 0], null, [0.046, 0.072, 0.230]);
-    rifle.add(m.gunmetal, P.box, [0, -0.004, -0.185], null, [0.042, 0.056, 0.160]);
-    rifle.add(m.gunmetal, P.cyl, [0, 0.010, -0.320], [Math.PI / 2, 0, 0], [0.022, 0.190, 0.022]);
-    rifle.add(m.gunmetal, P.box, [0, -0.086, -0.010], [0.16, 0, 0], [0.028, 0.120, 0.050]);
-    rifle.add(m.gunmetal, P.box, [0, -0.052, 0.058], [-0.22, 0, 0], [0.026, 0.072, 0.045]);
-    rifle.add(m.gunmetal, P.box, [0, -0.002, 0.190], null, [0.038, 0.060, 0.150]);
-    rifle.add(m.gear, P.box, [0, 0.048, -0.030], null, [0.030, 0.034, 0.110]);
-    rifle.add(m.gear, P.box, [0, 0.040, 0.078], null, [0.024, 0.016, 0.140]);
+    rifle.add(m.gunmetal, P.box, [0, 0, 0.005], null, [0.044, 0.070, 0.225]);
+    rifle.add(m.gear, P.box, [0, -0.040, 0.032], null, [0.040, 0.036, 0.146]);
+    rifle.add(m.gear, P.cyl, [0, 0.004, -0.185], [Math.PI / 2, 0, 0], [0.044, 0.170, 0.044]);
+    rifle.add(m.gunmetal, P.box, [0, 0.040, -0.185], null, [0.024, 0.014, 0.166]);
+    rifle.add(m.gunmetal, P.cyl, [0, 0.008, -0.330], [Math.PI / 2, 0, 0], [0.019, 0.150, 0.019]);
+    rifle.add(m.gunmetal, P.cyl, [0, 0.008, -0.418], [Math.PI / 2, 0, 0], [0.028, 0.042, 0.028]);
+    rifle.add(m.gear, P.box, [0, -0.088, -0.012], [0.18, 0, 0], [0.030, 0.132, 0.052]);
+    rifle.add(m.gear, P.box, [0, -0.062, 0.062], [-0.32, 0, 0], [0.028, 0.086, 0.046]);
+    rifle.add(m.gunmetal, P.box, [0, -0.036, 0.026], null, [0.020, 0.008, 0.054]);
+    rifle.add(m.gunmetal, P.cyl, [0, 0.004, 0.168], [Math.PI / 2, 0, 0], [0.030, 0.108, 0.030]);
+    rifle.add(m.gear, P.box, [0, 0.000, 0.222], null, [0.036, 0.062, 0.110]);
+    rifle.add(m.sole, P.box, [0, 0.000, 0.274], null, [0.040, 0.070, 0.014]);
+    // Optic: the one bright, hard-edged object on the weapon, and the detail
+    // that says "modern" from across a street.
+    rifle.add(m.gunmetal, P.box, [0, 0.040, 0.020], null, [0.024, 0.014, 0.092]);
+    rifle.add(m.gear, P.box, [0, 0.056, 0.022], null, [0.028, 0.022, 0.058]);
+    rifle.add(m.gear, P.cyl, [0, 0.076, 0.022], [Math.PI / 2, 0, 0], [0.032, 0.056, 0.032]);
+    rifle.add(m.lens, P.cyl, [0, 0.076, 0.049], [Math.PI / 2, 0, 0], [0.025, 0.005, 0.025]);
+    // Two-point sling: hangs off the weapon rather than being painted on the
+    // chest, so the strap actually connects to the thing it is carrying.
+    rifle.add(m.webbing, P.box, [0.020, -0.010, -0.150], [0, 0, 0.10], [0.012, 0.030, 0.026]);
+    rifle.add(m.webbing, P.box, [0.020, -0.004, 0.150], [0, 0, -0.10], [0.012, 0.026, 0.024]);
 
     this._assets = {
       m,
@@ -514,9 +564,9 @@ export class EnemyManager {
     const hips = node(rig.hips);
     hips.position.y = 0.92;
     const torso = node(rig.torso);
-    torso.position.y = 1.22;
+    torso.position.y = TORSO_Y;
     const head = node(rig.head);
-    head.position.y = 1.62;
+    head.position.y = HEAD_Y;
     group.add(hips, torso, head);
 
     // Each limb is a group pivoting at the joint, so the locomotion code can
@@ -536,9 +586,9 @@ export class EnemyManager {
 
     const makeArm = (side) => {
       const arm = node(rig.upperArm);
-      arm.position.set(side * 0.223, 1.36, 0);
+      arm.position.set(side * SHOULDER_X, SHOULDER_Y, 0);
       const elbow = node(rig.elbow);
-      elbow.position.y = -0.305;
+      elbow.position.y = -UPPER_LEN;
       arm.add(elbow);
       arm.userData.elbow = elbow;
       return arm;
@@ -547,17 +597,19 @@ export class EnemyManager {
     const armR = makeArm(1);
     group.add(armL, armR);
 
-    // Slung across the chest, muzzle down and across the body: the pose reads as
-    // a carried weapon from any angle, and the diagonal breaks the torso block.
-    const rifle = node(rig.rifle);
-    rifle.position.set(0.118, -0.090, 0.196);
-    rifle.rotation.set(-0.45, 0.30, 0);
-    torso.add(rifle);
+    // The weapon is posed first and the arms are solved onto it, not the other
+    // way round — which is the whole reason the hands are on the grip and the
+    // handguard instead of hanging at the hips beside a floating rifle. It hangs
+    // off the root rather than the torso so it shares a frame with the shoulder
+    // pivots; parented to a bobbing chest it would drift out of the hands by the
+    // full gait amplitude every step.
+    const weapon = node(rig.rifle);
+    group.add(weapon);
 
     this.root.add(group);
 
-    return {
-      group, head, torso, hips, legL, legR, armL, armR,
+    const enemy = {
+      group, head, torso, hips, legL, legR, armL, armR, weapon,
       position: group.position,
       velocity: new THREE.Vector3(),
       yaw: this.rnd() * Math.PI * 2,
@@ -572,6 +624,8 @@ export class EnemyManager {
       lastSeen: new THREE.Vector3(),
       hasLos: false,
       walkPhase: this.rnd() * 10,
+      walkAmp: 0,
+      aim: 0,
       deathTime: 0,
       hitFlash: 0,
       // Hitbox stack: cheap spheres tested in order of value to the shooter.
@@ -587,6 +641,56 @@ export class EnemyManager {
       ],
       takeDamage: null, // wired below
     };
+
+    // Snap the hands onto the weapon before the first frame is ever drawn: the
+    // rig is built in a T-pose and one frame of that is one frame too many.
+    this._poseWeapon(enemy, 1);
+    return enemy;
+  }
+
+  /**
+   * Pose the rifle, then solve both arms onto it.
+   *
+   * Two-bone IK per arm against the grip and the handguard. Driving the weapon
+   * and following with the arms — rather than animating shoulders and hoping the
+   * gun ends up somewhere near a hand — is what makes the contact survive the
+   * gait cycle, the carry-to-aim transition and the death collapse.
+   *
+   * @param {number} dt Frame time; pass >= 1 to snap the aim blend.
+   */
+  _poseWeapon(e, dt) {
+    const wantAim = e.state === STATE.ENGAGE || (e.state === STATE.ALERT && e.alertness > 0.45);
+    e.aim = dt >= 1 ? (wantAim ? 1 : 0) : damp(e.aim, wantAim ? 1 : 0, 5.5, dt);
+    const a = e.aim * e.aim * (3 - 2 * e.aim);
+
+    // Blading the stance is not decoration: with square shoulders the support
+    // hand cannot reach a shouldered handguard without the arm going dead
+    // straight. The chest turns, the support shoulder comes forward, the firing
+    // shoulder drops back, and the head counter-rotates to stay on the sights.
+    e.armL.position.set(-SHOULDER_X, SHOULDER_Y, -0.105 * a);
+    e.armR.position.set(SHOULDER_X, SHOULDER_Y, 0.055 * a);
+    e.torso.rotation.y = -0.20 * a;
+    e.head.rotation.y = 0.15 * a;
+
+    const w = e.weapon;
+    w.position.lerpVectors(POSE_CARRY.pos, POSE_AIM.pos, a);
+    _qa.setFromEuler(POSE_CARRY.rot);
+    _qb.setFromEuler(POSE_AIM.rot);
+    w.quaternion.slerpQuaternions(_qa, _qb, a);
+
+    // Gait: the weapon rides the walk rather than being welded to the ribcage.
+    if (e.walkAmp > 0) {
+      const s = Math.sin(e.walkPhase);
+      w.position.y += Math.abs(Math.cos(e.walkPhase)) * 0.022 * e.walkAmp;
+      w.position.x += s * 0.014 * e.walkAmp;
+      w.rotateZ(s * 0.05 * e.walkAmp);
+    }
+
+    w.updateMatrix();
+    _ikT.copy(GRIP_LOCAL).applyMatrix4(w.matrix);
+    solveArm(e.armR, e.armR.userData.elbow, _ikT, POLE_R);
+    _ikT.copy(SUPPORT_LOCAL).applyMatrix4(w.matrix);
+    solveArm(e.armL, e.armL.userData.elbow, _ikT, POLE_L);
   }
 
   raycastEntities(origin, dir, maxDist, owner) {
@@ -786,21 +890,18 @@ export class EnemyManager {
     e.group.rotation.y = e.yaw;
 
     // Procedural locomotion so movement reads as walking rather than sliding.
+    // The legs still swing from the hip joints; the arms do not swing, because
+    // they are holding a rifle — the gait reaches them through the weapon.
     const speed = Math.hypot(e.velocity.x, e.velocity.z);
     e.walkPhase += dt * (2.2 + speed * 1.9);
-    const amp = clamp(speed / 3.4, 0, 1);
+    const amp = e.walkAmp = clamp(speed / 3.4, 0, 1);
     const s = Math.sin(e.walkPhase), c = Math.cos(e.walkPhase);
     e.legL.rotation.x = s * 0.62 * amp;
     e.legR.rotation.x = -s * 0.62 * amp;
-    e.armL.rotation.x = -s * 0.45 * amp;
-    e.armR.rotation.x = s * 0.45 * amp;
-    e.torso.position.y = 1.22 + Math.abs(c) * 0.028 * amp;
-    e.head.position.y = 1.62 + Math.abs(c) * 0.028 * amp;
-    // Weapon-ready pose when engaging.
-    if (e.state === STATE.ENGAGE) {
-      e.armL.rotation.x = damp(e.armL.rotation.x, -1.35, 9, dt);
-      e.armR.rotation.x = damp(e.armR.rotation.x, -1.35, 9, dt);
-    }
+    e.torso.position.y = TORSO_Y + Math.abs(c) * 0.028 * amp;
+    e.head.position.y = HEAD_Y + Math.abs(c) * 0.028 * amp;
+
+    this._poseWeapon(e, dt);
   }
 
   _updateDeath(e, dt) {
@@ -822,6 +923,80 @@ export class EnemyManager {
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Skeleton proportions and the two carry poses
+// ---------------------------------------------------------------------------
+// Everything here is in the soldier's local space, Y up, facing -Z.
+
+const TORSO_Y = 1.22;
+const HEAD_Y = 1.636;
+// 39 cm between the shoulder pivots, not 45: the wider stance the rig used
+// before put the support hand out of reach of a shouldered handguard, and stood
+// the deltoids proud of the plate carrier's yoke.
+const SHOULDER_X = 0.196;
+const SHOULDER_Y = 1.375;
+const UPPER_LEN = 0.305;   // shoulder pivot -> elbow pivot
+const FORE_LEN = 0.308;    // elbow pivot -> centre of the glove
+
+// The two points on the weapon the hands take.
+const GRIP_LOCAL = new THREE.Vector3(0, -0.062, 0.062);
+const SUPPORT_LOCAL = new THREE.Vector3(0, -0.026, -0.150);
+
+// Patrol carry: muzzle down and across the body, stock outboard of the right
+// ribs. Shouldered: stock into the pocket, sights on the eye line.
+const POSE_CARRY = {
+  pos: new THREE.Vector3(0.085, 1.23, -0.29),
+  rot: new THREE.Euler(-0.28, 0.40, 0.16),
+};
+const POSE_AIM = {
+  pos: new THREE.Vector3(0.095, 1.42, -0.40),
+  rot: new THREE.Euler(-0.02, 0.10, 0.03),
+};
+
+// Where the elbows are pushed. Without a pole the solver is free to spin the
+// arm about the shoulder-to-hand line and picks something anatomically absurd.
+const POLE_R = new THREE.Vector3(0.45, -0.82, 0.35).normalize();
+const POLE_L = new THREE.Vector3(-0.55, -0.80, 0.25).normalize();
+
+/**
+ * Two-bone analytic IK, solved entirely in the parent's space.
+ *
+ * The upper arm hangs down local -Y from `arm`, the forearm down local -Y from
+ * `elbow`, and the elbow hinges about its local X — so the bend plane is the
+ * arm's local YZ, whose normal is the arm's local X. That is the whole trick:
+ * pick the shoulder's basis so its X *is* the bend-plane normal, and the elbow
+ * reduces to a single angle with no residual twist to clean up.
+ *
+ * Exact, not iterative: no convergence budget, no jitter, and the hand lands on
+ * the target to floating-point precision whenever the target is in reach.
+ */
+function solveArm(arm, elbow, target, pole, l1 = UPPER_LEN, l2 = FORE_LEN) {
+  _ikV.subVectors(target, arm.position);
+  const raw = _ikV.length();
+  if (raw < 1e-5) return;
+  _ikN.copy(_ikV).multiplyScalar(1 / raw);
+  // Clamped rather than left to fail: an out-of-reach target straightens the
+  // arm and points it at the weapon, which still reads, where an unclamped
+  // acos returns NaN and deletes the limb.
+  const d = clamp(raw, Math.abs(l1 - l2) + 0.02, (l1 + l2) * 0.995);
+  const cosA = clamp((l1 * l1 + d * d - l2 * l2) / (2 * l1 * d), -1, 1);
+
+  _ikA.crossVectors(_ikN, pole);
+  if (_ikA.lengthSq() < 1e-8) _ikA.set(1, 0, 0);
+  else _ikA.normalize();
+  // Swinging the shoulder-to-hand line about the bend normal by the triangle's
+  // apex angle lands the upper arm; the elbow follows from the remainder.
+  _ikU.copy(_ikN).applyAxisAngle(_ikA, Math.acos(cosA));
+  _ikE.copy(arm.position).addScaledVector(_ikU, l1);
+  _ikF.subVectors(target, _ikE).normalize();
+
+  _ikY.copy(_ikU).negate();
+  _ikZ.crossVectors(_ikA, _ikY);
+  _ikM.makeBasis(_ikA, _ikY, _ikZ);
+  arm.quaternion.setFromRotationMatrix(_ikM);
+  elbow.rotation.set(Math.atan2(-_ikF.dot(_ikZ), _ikF.dot(_ikU)), 0, 0);
 }
 
 /** Returns the near-hit distance along the ray, or null. */
@@ -858,6 +1033,19 @@ const _scl = new THREE.Vector3();
 const _eul = new THREE.Euler();
 const _quat = new THREE.Quaternion();
 const _mat4 = new THREE.Matrix4();
+
+const _qa = new THREE.Quaternion();
+const _qb = new THREE.Quaternion();
+const _ikT = new THREE.Vector3();
+const _ikV = new THREE.Vector3();
+const _ikN = new THREE.Vector3();
+const _ikA = new THREE.Vector3();
+const _ikU = new THREE.Vector3();
+const _ikE = new THREE.Vector3();
+const _ikF = new THREE.Vector3();
+const _ikY = new THREE.Vector3();
+const _ikZ = new THREE.Vector3();
+const _ikM = new THREE.Matrix4();
 
 const _c = new THREE.Vector3();
 const _eye = new THREE.Vector3();
