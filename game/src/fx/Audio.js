@@ -196,6 +196,22 @@ export class AudioEngine {
   playAt(name, position) {
     if (!this.ready) return;
     if (name === 'flesh_impact') return this.playImpact('flesh', position);
+    if (name === 'shell') {
+      // Brass on concrete: a short, bright, metallic ring with a fast decay.
+      const ctx = this.ctx, t = ctx.currentTime;
+      const panner = this._spatial(position, 2, 22);
+      panner.connect(this.master);
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(2600 + Math.random() * 1800, t);
+      o.frequency.exponentialRampToValueAtTime(1500, t + 0.09);
+      g.gain.setValueAtTime(0.05 + Math.random() * 0.03, t);
+      g.gain.exponentialRampToValueAtTime(0.0003, t + 0.11);
+      o.connect(g); g.connect(panner);
+      o.start(t); o.stop(t + 0.14);
+      return;
+    }
     if (name === 'enemy_shot') {
       const ctx = this.ctx, t = ctx.currentTime;
       const panner = this._spatial(position, 8, 160);
@@ -210,6 +226,79 @@ export class AudioEngine {
       src.connect(f); f.connect(g); g.connect(panner);
       src.start(t); src.stop(t + 0.25);
     }
+  }
+
+  /**
+   * Footstep: a short filtered noise burst whose spectrum is chosen by the
+   * surface underfoot, plus a quieter gear rattle so the player reads as someone
+   * carrying kit rather than a floating camera.
+   */
+  playFootstep(surfaceName = 'concrete', { speed = 3, stance = 0, position = null } = {}) {
+    if (!this.ready) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const dest = position ? this._spatial(position, 3, 40) : this.master;
+    if (position) dest.connect(this.master);
+
+    // Crouched steps are quieter and duller; sprinting steps are louder and
+    // have more high-frequency scuff.
+    const effort = clamp01(speed / 6);
+    const crouch = stance === 1 ? 0.45 : 1;
+
+    const profile = {
+      concrete: { freq: 1500, q: 0.9, type: 'bandpass', gain: 0.16, decay: 0.075 },
+      plaster: { freq: 1300, q: 0.9, type: 'bandpass', gain: 0.14, decay: 0.075 },
+      metal: { freq: 2600, q: 3.0, type: 'bandpass', gain: 0.15, decay: 0.13 },
+      wood: { freq: 700, q: 1.6, type: 'bandpass', gain: 0.15, decay: 0.10 },
+      dirt: { freq: 520, q: 0.7, type: 'lowpass', gain: 0.14, decay: 0.07 },
+      sand: { freq: 2100, q: 0.5, type: 'highpass', gain: 0.11, decay: 0.09 },
+      water: { freq: 900, q: 0.6, type: 'lowpass', gain: 0.18, decay: 0.14 },
+    }[surfaceName] || { freq: 1400, q: 0.9, type: 'bandpass', gain: 0.15, decay: 0.08 };
+
+    const src = ctx.createBufferSource();
+    src.buffer = this._noiseBuffer(0.2);
+    const f = ctx.createBiquadFilter();
+    f.type = profile.type;
+    f.frequency.value = profile.freq * (0.82 + Math.random() * 0.36);
+    f.Q.value = profile.q;
+    const g = ctx.createGain();
+    const level = profile.gain * crouch * (0.55 + effort * 0.6);
+    g.gain.setValueAtTime(level, t);
+    g.gain.exponentialRampToValueAtTime(0.0004, t + profile.decay);
+    src.connect(f); f.connect(g); g.connect(dest);
+    src.start(t); src.stop(t + 0.2);
+
+    // Gear rattle: two short metallic ticks slightly after the heel strike.
+    for (let i = 0; i < 2; i++) {
+      const o = ctx.createOscillator();
+      const og = ctx.createGain();
+      const when = 0.012 + i * 0.021 + Math.random() * 0.012;
+      o.type = 'triangle';
+      o.frequency.setValueAtTime(2200 + Math.random() * 1600, t + when);
+      og.gain.setValueAtTime(0.0001, t + when);
+      og.gain.exponentialRampToValueAtTime(0.016 * crouch * effort, t + when + 0.003);
+      og.gain.exponentialRampToValueAtTime(0.0001, t + when + 0.035);
+      o.connect(og); og.connect(dest);
+      o.start(t + when); o.stop(t + when + 0.05);
+    }
+  }
+
+  /** Landing thump — scales with fall impact, with a knee-flex gear rattle. */
+  playLanding(impact = 0.4, surfaceName = 'concrete') {
+    if (!this.ready) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const k = clamp01(impact);
+
+    const sub = ctx.createOscillator();
+    const sg = ctx.createGain();
+    sub.type = 'sine';
+    sub.frequency.setValueAtTime(120, t);
+    sub.frequency.exponentialRampToValueAtTime(46, t + 0.10);
+    sg.gain.setValueAtTime(0.10 + k * 0.30, t);
+    sg.gain.exponentialRampToValueAtTime(0.0005, t + 0.16 + k * 0.1);
+    sub.connect(sg); sg.connect(this.master);
+    sub.start(t); sub.stop(t + 0.3);
+
+    this.playFootstep(surfaceName, { speed: 4 + k * 6 });
   }
 
   play(name) {
@@ -256,6 +345,8 @@ export class AudioEngine {
     }
   }
 }
+
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
 const _fwd = new THREE.Vector3();
 const _up = new THREE.Vector3();

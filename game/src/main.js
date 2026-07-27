@@ -6,7 +6,7 @@ import { Sky } from './render/Sky.js';
 import { Lighting } from './render/Lighting.js';
 import { RenderPipeline } from './render/PostFX.js';
 import { Level } from './world/Level.js';
-import { PhysicsWorld } from './gameplay/Physics.js';
+import { PhysicsWorld, SURFACE_INFO } from './gameplay/Physics.js';
 import { Player } from './gameplay/Player.js';
 import { WeaponSystem } from './gameplay/Weapons.js';
 import { Ballistics } from './gameplay/Ballistics.js';
@@ -14,6 +14,7 @@ import { EnemyManager } from './gameplay/Enemies.js';
 import { ParticleSystem } from './fx/Particles.js';
 import { DecalManager } from './fx/Decals.js';
 import { AudioEngine } from './fx/Audio.js';
+import { ShellSystem } from './fx/Shells.js';
 import { HUD } from './ui/HUD.js';
 
 const params = new URLSearchParams(location.search);
@@ -78,6 +79,7 @@ async function main() {
   const particles = engine.add(new ParticleSystem(engine, textures));
   const decals = engine.add(new DecalManager(engine, textures));
   const audio = engine.add(new AudioEngine(engine));
+  const shells = engine.add(new ShellSystem(engine, { physics, audio }));
   const player = engine.add(new Player(engine, { physics, level }));
   const ballistics = engine.add(new Ballistics(engine, { physics, particles, decals, audio }));
   const weapons = engine.add(new WeaponSystem(engine, { player, ballistics, particles, audio, textures }));
@@ -101,9 +103,24 @@ async function main() {
   ballistics.onHit = (hit) => { hud.onHit(hit); if (hit.kill) hud.onKill(hit); };
   player.onDamage = (d) => hud.onDamage(d);
 
+  // Footsteps are driven by distance travelled, not a timer, so they stay in
+  // step at every movement speed. The surface under the foot picks the sample.
+  const surfaceUnderfoot = () => {
+    const hit = physics.raycast(
+      new THREE.Vector3(player.position.x, player.position.y + 0.4, player.position.z),
+      new THREE.Vector3(0, -1, 0), 1.4, {},
+    );
+    return hit ? (SURFACE_INFO[hit.surface]?.name || 'concrete') : 'concrete';
+  };
+  player.onStep = (e) => {
+    if (e.type === 'foot') audio.playFootstep(surfaceUnderfoot(), { speed: e.speed, stance: e.stance });
+  };
+  player.onLand = (e) => audio.playLanding(e.impact, surfaceUnderfoot());
+  player.onJump = () => audio.playFootstep(surfaceUnderfoot(), { speed: 5 });
+
   engine.game = {
     textures, sky, lighting, level, physics, player, weapons,
-    ballistics, enemies, particles, decals, audio, hud, input,
+    ballistics, enemies, particles, decals, audio, hud, input, shells,
   };
 
   engine.renderer.compile(engine.scene, engine.camera);
