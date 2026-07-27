@@ -250,7 +250,8 @@ export class Lighting {
     // going to a flat, ambient-occluded black and adds the warm bounce coming
     // back up off the asphalt.
     this.hemi = new THREE.HemisphereLight(
-      sky.ambientColor.clone(), new THREE.Color(0.13, 0.115, 0.10), 0.55,
+      sky.ambientColor.clone(), new THREE.Color(0.13, 0.115, 0.10),
+      sky.ambientIntensity ?? 0.55,
     );
     engine.scene.add(this.hemi);
 
@@ -380,6 +381,11 @@ export class Lighting {
     const sky = this.sky;
     this.sun.color.copy(sky.sunColor);
     this.hemi.color.copy(sky.ambientColor);
+    // Magnitude has to come from the sky's published intensity, not a constant.
+    // ambientColor is clamped into gamut, so a fixed intensity calibrated when
+    // that colour still carried raw radiance leaves the fill ~20x too weak and
+    // crushes every shadowed surface to black.
+    if (sky.ambientIntensity !== undefined) this.hemi.intensity = sky.ambientIntensity;
 
     this._updateCascades();
     this._updateLocals(dt);

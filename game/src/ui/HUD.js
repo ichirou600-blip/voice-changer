@@ -165,14 +165,25 @@ export class HUD {
       const rel = yaw - Math.atan2(
         -Math.sin(this.player.yaw), -Math.cos(this.player.yaw),
       );
-      const a = 1 - d.t / 1.2;
+      // Ease out rather than fading linearly, and taper the arc at both ends so
+      // it reads as a directional wedge rather than a stray stroke floating in
+      // the frame. Radius scales with the smaller screen axis so it sits at a
+      // consistent distance from the crosshair at any aspect ratio.
+      const k = 1 - d.t / 1.2;
+      const a = k * k;
+      const radius = Math.min(w, h) * 0.17;
       ctx.save();
       ctx.translate(cx, cy);
       ctx.rotate(rel);
-      ctx.strokeStyle = `rgba(220,40,30,${a * 0.85})`;
-      ctx.lineWidth = 4;
+      const grad = ctx.createLinearGradient(-radius * 0.4, 0, radius * 0.4, 0);
+      grad.addColorStop(0, `rgba(228,52,38,0)`);
+      grad.addColorStop(0.5, `rgba(228,52,38,${a * 0.92})`);
+      grad.addColorStop(1, `rgba(228,52,38,0)`);
+      ctx.strokeStyle = grad;
+      ctx.lineCap = 'round';
+      ctx.lineWidth = 5 - k * 1.5;
       ctx.beginPath();
-      ctx.arc(0, 0, 108, -Math.PI / 2 - 0.34, -Math.PI / 2 + 0.34);
+      ctx.arc(0, 0, radius, -Math.PI / 2 - 0.30, -Math.PI / 2 + 0.30);
       ctx.stroke();
       ctx.restore();
     }
