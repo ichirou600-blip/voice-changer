@@ -79,6 +79,13 @@ const NORMAL_BIAS = [0.4, 0.85, 1.15, 1.3];
 const SLOPE_BIAS = 1.9;
 // Viewmodel IBL multiplier. See the note where it is applied.
 const VIEW_ENV = 0.6;
+// World IBL multiplier. The probe carries the sky's own neat chromaticity, and
+// at full strength it lands undiluted on every up-facing normal — a rooftop
+// unit's top face measured B-R +23.2 against +14.9 on its sides, making
+// sky-facing surfaces the most cyan things in the frame even after the warm
+// bounce was added. Trimming it also widens the direct-to-indirect ratio,
+// which is the direction the frame needs.
+const WORLD_ENV = 0.78;
 
 let _patched = false;
 
@@ -329,6 +336,7 @@ export class Lighting {
     // counteract. It is dialled back rather than removed because the specular
     // half of it is what puts the sheen on the receiver and the optic body.
     engine.viewScene.environmentIntensity = VIEW_ENV;
+    engine.scene.environmentIntensity = WORLD_ENV;
 
     // Muzzle flashes have to light the weapon too, and the viewmodel lives in
     // its own scene, so it needs its own copy of the flash.
@@ -664,6 +672,8 @@ export class Lighting {
     // Re-asserted every frame: Sky.js reassigns viewScene.environment on every
     // probe re-bake, and a future change there could reset the multiplier.
     this.engine.viewScene.environmentIntensity = VIEW_ENV;
+    // Re-asserted every frame: Sky reassigns .environment on each probe re-bake.
+    this.engine.scene.environmentIntensity = WORLD_ENV;
     // Four broad lights with no shadowing flat-fill the model and erase every
     // form-defining crease, and the weapon ends up one smooth brown lump. The
     // fill is therefore cut to roughly a third of what it was: the key does the

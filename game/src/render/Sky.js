@@ -463,7 +463,13 @@ function aerialDefaults() {
     uAerialSunDir: { value: new THREE.Vector3(0, 1, 0) },
     uAerialHeightFalloff: { value: 0.022 },
     uAerialDensity: { value: 0.0032 },
-    uAerialMaxOpacity: { value: 0.94 },
+    // Ceiling on how much of a distant surface the haze may replace. At 0.94 the
+    // far field converged completely onto the sky basis, so buildings at 90 m
+    // measured the same displayed luminance as the sky above them (156.8 against
+    // 155.4) with half the local contrast — every storey and string course
+    // modelled into them was erased before it reached the camera. Distance
+    // should cost saturation and local contrast, not luminance.
+    uAerialMaxOpacity: { value: 0.62 },
   };
 }
 
@@ -1186,7 +1192,7 @@ export class Sky {
       uAerialSunDir: sd,
       uAerialHeightFalloff: this.fogParams.heightFalloff,
       uAerialDensity: this.fogParams.density,
-      uAerialMaxOpacity: 0.94,
+      uAerialMaxOpacity: 0.62,
     };
     this._syncAerialUniforms();
   }
