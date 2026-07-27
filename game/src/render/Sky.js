@@ -1088,6 +1088,7 @@ export class Sky {
     const dim = (0.25 + 0.75 * smoothstepJS(0.02, 0.42, elevation)) * above;
     this.sunColor.setRGB((tr[0] / peak) * dim, (tr[1] / peak) * dim, (tr[2] / peak) * dim);
 
+
     // --- sky probes ----------------------------------------------------------
     const horiz = Math.hypot(sd[0], sd[2]) || 1e-4;
     const toSun = normalize3([sd[0] / horiz, 0.06, sd[2] / horiz]);
@@ -1121,6 +1122,21 @@ export class Sky {
     // Published for a rig that wants magnitude and hue separated; the colour
     // above already carries the magnitude for one that does not.
     this.ambientIntensity = Math.min(1.8, ambRadiance[1] * Math.PI * 1.1 + 0.15);
+
+    // Publish the key's magnitude from the same integral that drives the fill,
+    // so the sun and the sky are derived the same way instead of one being
+    // physical and the other a hand-set constant.
+    //
+    // This ratio is what decides whether anything in the frame casts a shadow.
+    // With the key pinned at a constant while ambientIntensity tracked the sky,
+    // a rooftop cube measured 1.17:1 between its sun-facing and side faces — an
+    // overcast ratio under a clear morning sun. The constant had been chosen
+    // while the IBL probe was dead, so it was compensating for missing indirect
+    // light; once the probe was fixed the fill doubled and nothing rebalanced
+    // the key. SUN_TO_SKY targets the clear-day direct:indirect irradiance
+    // ratio on a horizontal surface, where real values run 4:1 to 8:1.
+    const SUN_TO_SKY = 5.5;
+    this.sunIntensity = Math.max(0.05, this.ambientIntensity * SUN_TO_SKY * dim);
 
     // --- dome uniforms -------------------------------------------------------
     const u = this.material.uniforms;

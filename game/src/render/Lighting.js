@@ -427,6 +427,10 @@ export class Lighting {
   update(dt) {
     const sky = this.sky;
     this.sun.color.copy(sky.sunColor);
+    // Magnitude from the sky as well, not just chromaticity. A constant key
+    // against a sky-derived fill is what collapsed the direct:indirect ratio to
+    // 1.17:1 and left nothing in the frame casting a readable shadow.
+    if (sky.sunIntensity !== undefined) this.sun.intensity = sky.sunIntensity;
     this.hemi.color.copy(sky.ambientColor);
     // Magnitude has to come from the sky's published intensity, not a constant.
     // ambientColor is clamped into gamut, so a fixed intensity calibrated when

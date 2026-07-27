@@ -1255,7 +1255,12 @@ export class RenderPipeline {
       // makes a render read as a matte print instead of a photograph. Keying up
       // ~0.7 stop puts sunlit diffuse near 0.75 display and leaves the top stop
       // free for speculars to actually clip.
-      exposure: 1.62,
+      // Reverting a mistake: this was lifted to 1.62 to chase a missing top end,
+      // but the scene simply never produced radiance above ~2, so it slid the
+      // whole distribution up instead of widening it. The floor came up, the
+      // ceiling moved a tenth of a stop, and the frame got milkier. The real
+      // cause was the sun-to-sky ratio, now derived in Sky.js.
+      exposure: 1.15,
       tonemap: 'agx',
 
       ao: true,
@@ -1284,19 +1289,24 @@ export class RenderPipeline {
       bloomRadius: 0.85,
       // With nothing in the frame above 1.05 the bloom never fired on world
       // geometry at all. Dropping the knee lets real speculars bloom.
-      bloomThreshold: 0.78,
+      // Back up now that the sun carries real energy: bloom should fire on
+      // speculars, not on bright diffuse.
+      bloomThreshold: 1.0,
       bloomKnee: 0.55,
 
       lut: 1.0,
       // 0.38 cost ~13 luma at the bottom of the frame, deepening the very
       // region that was already reading as a dark band.
-      vignette: 0.20,
+      // 0.38 was crushing the near road; 0.20 removed the frame containment
+      // entirely. Split the difference.
+      vignette: 0.28,
       grain: 0.03,
       chromatic: 0.0011,
       distortion: 0.024,
       saturation: 1.03,
       contrast: 1.02,
-      sharpen: 0.24,
+      // Was ringing a 1-2px light halo along silhouettes.
+      sharpen: 0.15,
       lift: 0.0,
     };
 
