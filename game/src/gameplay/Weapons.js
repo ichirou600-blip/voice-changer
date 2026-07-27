@@ -919,7 +919,9 @@ function buildViewmodel(id, textures) {
     new THREE.Vector3(0, -0.955, 0.296),        // down the grip: index at the top
     new THREE.Vector3(0.34, -0.30, 0.89),       // forearm runs back and right
   );
-  rightHand.scale.setScalar(1.06);
+  // Scaled against the receiver, not against a real hand. At 1.06 the palm and
+  // cuff were wider than the weapon they hold and dominated the lower frame.
+  rightHand.scale.setScalar(0.86);
   g.add(rightHand);
 
   const leftHand = glovedHand(glove, darkPolymer, { curl: 0.80, wrap: 0.30, mirror: true });
@@ -929,7 +931,7 @@ function buildViewmodel(id, textures) {
     new THREE.Vector3(0, 0, -1),                // fingers spread along the barrel
     new THREE.Vector3(-0.42, -0.52, 0.74),      // forearm runs back and left
   );
-  leftHand.scale.setScalar(1.04);
+  leftHand.scale.setScalar(0.86);
   g.add(leftHand);
 
   // --- muzzle flash --------------------------------------------------------
