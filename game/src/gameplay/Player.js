@@ -54,6 +54,10 @@ export class Player {
 
     this.health = 100;
     this.maxHealth = 100;
+    // Presentation mode holds the player still in front of live hostiles, so
+    // without this every hero shot is taken through a full-strength damage
+    // vignette.
+    this.invulnerable = false;
     this.regenDelay = 4.2;
     this.regenRate = 26;
     this.lastDamageAt = -99;
@@ -104,7 +108,7 @@ export class Player {
   }
 
   damage(amount, from) {
-    if (this.dead) return;
+    if (this.dead || this.invulnerable) return;
     this.health = Math.max(0, this.health - amount);
     this.lastDamageAt = this.engine.elapsed;
     const dir = from ? _tmp.subVectors(from, this.position).setY(0).normalize() : null;

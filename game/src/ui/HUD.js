@@ -116,9 +116,13 @@ export class HUD {
 
     // --- damage vignette ----------------------------------------------------
     if (this.damageFlash > 0.001) {
-      const g = ctx.createRadialGradient(cx, cy, Math.min(w, h) * 0.24, cx, cy, Math.max(w, h) * 0.62);
-      g.addColorStop(0, 'rgba(150,10,10,0)');
-      g.addColorStop(1, `rgba(150,10,10,${0.55 * this.damageFlash})`);
+      // Hug the frame edge and stay well short of opaque. A wide, strong radial
+      // wash reads as a red filter over the whole image rather than as damage,
+      // and it swamps everything the player needs to see while being shot at.
+      const g = ctx.createRadialGradient(cx, cy, Math.min(w, h) * 0.42, cx, cy, Math.max(w, h) * 0.72);
+      g.addColorStop(0, 'rgba(146,12,10,0)');
+      g.addColorStop(0.55, `rgba(146,12,10,${0.12 * this.damageFlash})`);
+      g.addColorStop(1, `rgba(146,12,10,${0.34 * this.damageFlash})`);
       ctx.fillStyle = g;
       ctx.fillRect(0, 0, w, h);
     }

@@ -130,6 +130,10 @@ async function main() {
   if (boot.capture) {
     // Deterministic, input-free presentation mode for the visual critic.
     hud.setVisible(params.get('hud') !== '0');
+    // The camera is parked in front of live hostiles, so without this the shot
+    // is composed through a full-strength damage vignette and a draining health
+    // bar. Presentation mode only; `?capture=1` is never the playable path.
+    player.invulnerable = params.get('invuln') !== '0';
     applyPose(boot.pose);
   } else {
     hud.showStartPrompt(() => input.requestLock());
