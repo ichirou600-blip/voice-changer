@@ -221,28 +221,7 @@ function smoothstepJS(a, b, x) {
   return t * t * (3 - 2 * t);
 }
 
-/**
- * Narkowicz ACES approximation, matching what THREE.ACESFilmicToneMapping does
- * to the dome at the end of the frame.
- *
- * The dome is HDR and gets tonemapped on the way to the screen, so its raw
- * radiance is fine. But the fog colour, the hemisphere fill and the aerial
- * perspective basis colours are consumed as *material* colours: fog and aerial
- * perspective mix toward them in linear space, before any tonemap, and a
- * hemisphere light multiplies its colour by a separate intensity. Handing those
- * consumers raw radiance — which measures 12 to 17 here against sunlit surfaces
- * around 1.5 — mixes every distant surface toward roughly ten times white and
- * flattens all shading, which is what turns the whole frame into milk.
- *
- * These consumers want the sky's *appearance*, not its radiance, so they get
- * the same curve the dome will get.
- */
-function tonemapACES(c) {
-  return c.map((x) => {
-    const v = Math.max(0, x);
-    return Math.min(1, (v * (2.51 * v + 0.03)) / (v * (2.43 * v + 0.59) + 0.14));
-  });
-}
+const clampRGB = (c, hi) => c.map((x) => Math.min(hi, Math.max(0, x)));
 
 function normalize3(v) {
   const l = Math.hypot(v[0], v[1], v[2]) || 1;
@@ -938,7 +917,7 @@ export class Sky {
             vec4 big = texture2D(tClouds, uv * 0.207 + vec2(0.31, 0.62));
             float alpha = c.a * mix(0.35, 1.15, big.a) * uCloudStrength;
 
-            vec3 lit = uSunLight * (c.r * (0.30 + 2.2 * hg(mu, 0.62)) + c.b * 4.0 * hg(mu, 0.88))
+            vec3 lit = uSunLight * (c.r * (0.55 + 1.1 * hg(mu, 0.62)) + c.b * 4.0 * hg(mu, 0.88))
                      + uSkyLight * mix(c.g, 0.55 + 0.45 * c.g, horizonLift);
 
             // Clouds sit in the same air as everything else: the further away,
@@ -1107,12 +1086,18 @@ export class Sky {
     // Weighted average of the probes. The sky is the dominant fill light in any
     // exterior, and getting its colour right is what stops shadowed surfaces
     // reading as flat grey.
+    // Weighted average of the probes, then radiance -> irradiance: a hemisphere
+    // of uniform radiance L delivers pi*L onto a surface facing it, and that
+    // irradiance is what a HemisphereLight's colour actually represents.
+    // Clamped rather than normalised so the fill still dims into the evening
+    // instead of staying at full strength in a different hue.
     const ambRadiance = [0, 1, 2].map((c) =>
       zenith[c] * 0.42 + upSun[c] * 0.26 + hSun[c] * 0.18 + hAway[c] * 0.14);
-    const amb = tonemapACES(ambRadiance);
+    const amb = clampRGB(ambRadiance.map((x) => x * 3.0), 1.0);
     this.ambientColor.setRGB(amb[0], amb[1], amb[2]);
-    // Magnitude lives on the light's intensity, not smuggled into its colour.
-    this.ambientIntensity = Math.min(2.4, 0.35 + ambRadiance[1] * 0.10);
+    // Published for a rig that wants magnitude and hue separated; the colour
+    // above already carries the magnitude for one that does not.
+    this.ambientIntensity = Math.min(1.8, ambRadiance[1] * Math.PI * 1.1 + 0.15);
 
     // --- dome uniforms -------------------------------------------------------
     const u = this.material.uniforms;
@@ -1123,28 +1108,41 @@ export class Sky {
     // rather than a white hole across a third of the frame.
     const discScale = this.exposure.sunDisc * (0.35 + 0.65 * above);
     u.uSunDisc.value.setRGB(tr[0] * discScale, tr[1] * discScale, tr[2] * discScale);
-    // Cloud illumination uses the beam itself, not the normalised key colour.
-    const cloudSun = 2.1 * above;
+    // Cloud illumination uses the beam itself, not the normalised key colour,
+    // so the deck reddens with the sun. Scaled so a sunlit top lands just above
+    // 1.0 — the brightest thing in frame after the disc itself.
+    const cloudSun = 1.2 * above;
     u.uSunLight.value.setRGB(tr[0] * cloudSun, tr[1] * cloudSun, tr[2] * cloudSun);
-    u.uSkyLight.value.setRGB(zenith[0] * 2.6, zenith[1] * 2.6, zenith[2] * 2.6);
+    // Sky fill on the cloud, again radiance -> irradiance over the hemisphere.
+    u.uSkyLight.value.setRGB(zenith[0] * Math.PI, zenith[1] * Math.PI, zenith[2] * Math.PI);
 
     // --- aerial perspective --------------------------------------------------
-    const fogRGB = tonemapACES(hAway);
+    // fogParams is a published, human-readable description of the horizon, so
+    // it is clamped into gamut. Nothing in the frame is drawn from it: the
+    // aerial chunk below replaces three's fog maths outright.
+    const fogRGB = clampRGB(hAway, 1.0);
     this.fogParams.color.setRGB(fogRGB[0], fogRGB[1], fogRGB[2]);
     if (this.engine.scene.fog) {
       this.engine.scene.fog.color.copy(this.fogParams.color);
       this.engine.scene.fog.density = this.fogParams.density;
     }
+
+    // The aerial basis, by contrast, stays in raw radiance. The haze mix runs
+    // inside the material shader — in linear HDR, before the output pass
+    // tonemaps — so for a distant surface to converge to the dome behind it,
+    // it has to converge to the dome's *radiance*. Tonemapping these first
+    // would push every hazed surface below the sky it is meant to melt into.
+    // The ceiling is a guard against a sunset horizon, not a normalisation.
+    const zenithHDR = clampRGB(zenith, 3.0);
+    const hAwayHDR = clampRGB(hAway, 3.0);
+    const hSunHDR = clampRGB(hSun, 3.0);
     // The forward lobe is the one thing three basis colours cannot express: the
     // bright bloom of haze immediately around the sun.
-    const zenithLDR = tonemapACES(zenith);
-    const hAwayLDR = tonemapACES(hAway);
-    const hSunLDR = tonemapACES(hSun);
-    const inscatter = [0, 1, 2].map((c) => Math.max(0, hSunLDR[c] - hAwayLDR[c]) * 1.6);
+    const inscatter = [0, 1, 2].map((c) => Math.max(0, hSunHDR[c] - hAwayHDR[c]) * 1.6);
     this._aerial = {
-      uAerialZenith: zenithLDR,
-      uAerialHorizon: hAwayLDR,
-      uAerialSunHorizon: hSunLDR,
+      uAerialZenith: zenithHDR,
+      uAerialHorizon: hAwayHDR,
+      uAerialSunHorizon: hSunHDR,
       uAerialInscatter: inscatter,
       uAerialSunDir: sd,
       uAerialHeightFalloff: this.fogParams.heightFalloff,
