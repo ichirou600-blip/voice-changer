@@ -401,7 +401,7 @@ function picatinnyRail(length, material, slotPitch = 0.0102) {
 /** Minimal geometry merge — avoids depending on an addon path across versions. */
 function mergeGeometries(geometries) {
   const out = new THREE.BufferGeometry();
-  let vertexCount = 0, indexCount = 0;
+  let vertexCount = 0;
   for (const g of geometries) {
     const nonIndexed = g.index ? g.toNonIndexed() : g;
     if (g.index) { g.userData._tmp = nonIndexed; }
@@ -421,7 +421,6 @@ function mergeGeometries(geometries) {
     uo += p.count * 2;
     if (g.userData._tmp) { g.userData._tmp.dispose(); delete g.userData._tmp; }
   }
-  void indexCount;
   out.setAttribute('position', new THREE.BufferAttribute(position, 3));
   out.setAttribute('normal', new THREE.BufferAttribute(normal, 3));
   out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));

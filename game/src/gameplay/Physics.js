@@ -318,11 +318,11 @@ export class PhysicsWorld {
         const segTop = _p.set(px, py + half, pz);
         const segBot = _q.set(px, py - half, pz);
         const cp = closestPointSegmentTriangle(segBot, segTop, _v0, _v1, _v2, _n, _cpOut);
-        const dx = px - cp.px, dyv = py + THREE.MathUtils.clamp(cp.segT * 2 - 1, -1, 1) * 0 - cp.py, dz = pz - cp.pz;
-        // Vector from the closest triangle point to the closest segment point.
+        // Vector from the closest triangle point to the closest segment point:
+        // its length is the penetration test and its direction is the push-out.
         const sx = cp.sx - cp.px, sy = cp.sy - cp.py, sz = cp.sz - cp.pz;
         const dist = Math.hypot(sx, sy, sz);
-        if (dist >= radius || dist < 1e-7) { void dx; void dyv; void dz; continue; }
+        if (dist >= radius || dist < 1e-7) continue;
 
         const depth = radius - dist;
         const nx = sx / dist, ny = sy / dist, nz = sz / dist;
