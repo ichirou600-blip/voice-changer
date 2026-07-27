@@ -1249,7 +1249,13 @@ export class RenderPipeline {
     this.tier = TIERS[quality] || TIERS.high;
 
     this.params = {
-      exposure: 1.0,
+      // Measured across five captures, the brightest non-HUD pixel was luma
+      // 176/255 and sunlit plaster topped out at 126: the whole image sat
+      // between 0.10 and 0.69 with nothing in the top two stops, which is what
+      // makes a render read as a matte print instead of a photograph. Keying up
+      // ~0.7 stop puts sunlit diffuse near 0.75 display and leaves the top stop
+      // free for speculars to actually clip.
+      exposure: 1.62,
       tonemap: 'agx',
 
       ao: true,
@@ -1276,11 +1282,15 @@ export class RenderPipeline {
       bloom: true,
       bloomStrength: 0.24,
       bloomRadius: 0.85,
-      bloomThreshold: 1.05,
+      // With nothing in the frame above 1.05 the bloom never fired on world
+      // geometry at all. Dropping the knee lets real speculars bloom.
+      bloomThreshold: 0.78,
       bloomKnee: 0.55,
 
       lut: 1.0,
-      vignette: 0.38,
+      // 0.38 cost ~13 luma at the bottom of the frame, deepening the very
+      // region that was already reading as a dark band.
+      vignette: 0.20,
       grain: 0.03,
       chromatic: 0.0011,
       distortion: 0.024,

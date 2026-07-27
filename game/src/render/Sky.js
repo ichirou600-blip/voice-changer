@@ -1209,6 +1209,21 @@ export class Sky {
   }
 
   /** Render the dome into a PMREM cube so it drives IBL for every material. */
+  /**
+   * Convolve the dome into the IBL probe that supplies most of the indirect
+   * term for every PBR surface in the game.
+   *
+   * Returns the probe's mean radiance so the caller can tell a good bake from a
+   * dead one. That check is not paranoia: this used to be called exactly once,
+   * from setTimeOfDay() inside the constructor, which runs before the level
+   * exists and can catch the sky LUT render targets cold. When it did, every
+   * ambient-lit surface in the game permanently lost the bulk of its fill and
+   * only the deliberately-weak hemisphere light remained — a roughly threefold
+   * collapse of the shadow half of the frame, varying from boot to boot. The
+   * giveaway was that goldenHour, the one camera pose that sets a time of day
+   * and therefore triggers a second bake after the world is up, was also the
+   * one pose that never showed it.
+   */
   refreshEnvironment() {
     const rt = this.pmrem.fromScene(this._envScene, 0, 0.1, 1000);
     if (this._envRT) this._envRT.dispose();
@@ -1216,9 +1231,60 @@ export class Sky {
     this.environment = rt.texture;
     this.engine.scene.environment = this.environment;
     this.engine.viewScene.environment = this.environment;
+    this._envMean = this._measureEnvironment(rt);
+    return this._envMean;
+  }
+
+  /** Mean luminance of the probe, read back through an 8-bit blit. */
+  _measureEnvironment(rt) {
+    const r = this.engine.renderer;
+    let probe = null;
+    const prevTarget = r.getRenderTarget();
+    try {
+      probe = new THREE.WebGLRenderTarget(8, 8, {
+        type: THREE.UnsignedByteType, depthBuffer: false, stencilBuffer: false,
+      });
+      const quad = new THREE.Mesh(
+        this._quadGeometry,
+        new THREE.MeshBasicMaterial({ map: rt.texture, toneMapped: false }),
+      );
+      const scene = new THREE.Scene();
+      scene.add(quad);
+      const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+      const prevAutoClear = r.autoClear;
+      r.autoClear = false;
+      r.setRenderTarget(probe);
+      r.clear(true, false, false);
+      r.render(scene, cam);
+      const buf = new Uint8Array(8 * 8 * 4);
+      r.readRenderTargetPixels(probe, 0, 0, 8, 8, buf);
+      r.autoClear = prevAutoClear;
+      quad.material.dispose();
+      let sum = 0;
+      for (let i = 0; i < buf.length; i += 4) sum += (buf[i] + buf[i + 1] + buf[i + 2]) / 3;
+      return sum / (8 * 8) / 255;
+    } catch {
+      return null;
+    } finally {
+      r.setRenderTarget(prevTarget);
+      probe?.dispose();
+    }
   }
 
   update(dt) {
+    // Re-bake the probe once the world is actually up. The constructor's bake
+    // can land before the sky LUTs have resolved, and a cold probe silently
+    // removes most of the indirect light from every shadowed surface for the
+    // rest of the session. Re-baking on an early frame costs one convolution
+    // and removes the whole failure mode; if the result still looks dead, keep
+    // retrying for a few frames rather than shipping the frame with no fill.
+    if (this._envSettleFrames === undefined) this._envSettleFrames = 0;
+    if (this._envSettleFrames < 8) {
+      this._envSettleFrames++;
+      const stale = this._envMean === null || this._envMean === undefined || this._envMean < 0.02;
+      if (this._envSettleFrames === 3 || stale) this.refreshEnvironment();
+    }
+
     // Real cumulus drift at 10-20 m/s; the cirrus deck runs faster and across
     // the low layer, which reads as wind shear rather than a scrolling texture.
     const u = this.material.uniforms;
