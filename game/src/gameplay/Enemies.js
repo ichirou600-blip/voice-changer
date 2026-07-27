@@ -49,33 +49,209 @@ export class EnemyManager {
     }
   }
 
+  /**
+   * Materials and geometry are built once and shared by every soldier. Eight
+   * fully-detailed characters would otherwise mean eight copies of ~40 buffers,
+   * and the GPU would see no instancing benefit at all.
+   */
+  _shared() {
+    if (this._assets) return this._assets;
+    const M = (color, roughness, metalness = 0.02) =>
+      new THREE.MeshStandardMaterial({ color, roughness, metalness });
+
+    const a = {
+      fatigue: M(0x4a4c3c, 0.90),          // uniform cloth
+      fatigueDark: M(0x35372b, 0.92),      // knee/elbow pads, shadowed panels
+      plate: M(0x2b2d24, 0.72, 0.05),      // plate carrier shell
+      pouch: M(0x3a3c30, 0.86),
+      webbing: M(0x24261e, 0.88),
+      skin: M(0x9c7355, 0.58),
+      glove: M(0x1e1f1c, 0.82),
+      boot: M(0x181816, 0.74),
+      helmet: M(0x33362c, 0.62, 0.08),
+      gear: M(0x141513, 0.55, 0.30),       // NVG mount, buckles, optics housing
+      lens: new THREE.MeshStandardMaterial({
+        color: 0x101a18, roughness: 0.12, metalness: 0.1,
+        emissive: 0x0a1512, emissiveIntensity: 0.3,
+      }),
+      gunmetal: M(0x1a1c1b, 0.52, 0.85),
+    };
+
+    const g = {
+      // Limb segments are tapered capsules; real limbs are not cylinders and the
+      // taper is most of what stops a character reading as a balloon animal.
+      thigh: new THREE.CapsuleGeometry(0.093, 0.24, 4, 10),
+      shin: new THREE.CapsuleGeometry(0.072, 0.26, 4, 10),
+      boot: new THREE.BoxGeometry(0.108, 0.088, 0.235),
+      upperArm: new THREE.CapsuleGeometry(0.058, 0.19, 4, 9),
+      foreArm: new THREE.CapsuleGeometry(0.050, 0.20, 4, 9),
+      hand: new THREE.BoxGeometry(0.070, 0.098, 0.052),
+      chest: new THREE.CapsuleGeometry(0.185, 0.24, 5, 12),
+      pelvis: new THREE.CapsuleGeometry(0.163, 0.13, 5, 10),
+      plateFront: new THREE.BoxGeometry(0.315, 0.345, 0.098),
+      shoulder: new THREE.SphereGeometry(0.093, 10, 8),
+      neck: new THREE.CylinderGeometry(0.055, 0.062, 0.075, 8),
+      skull: new THREE.SphereGeometry(0.098, 14, 12),
+      jaw: new THREE.BoxGeometry(0.118, 0.082, 0.115),
+      helmetShell: new THREE.SphereGeometry(0.126, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.62),
+      pouch: new THREE.BoxGeometry(0.088, 0.098, 0.062),
+      mag: new THREE.BoxGeometry(0.030, 0.098, 0.056),
+      nvgMount: new THREE.BoxGeometry(0.052, 0.040, 0.030),
+      goggle: new THREE.BoxGeometry(0.148, 0.048, 0.036),
+      headsetCup: new THREE.CylinderGeometry(0.046, 0.046, 0.032, 10),
+      rifleBody: new THREE.BoxGeometry(0.045, 0.070, 0.330),
+      rifleBarrel: new THREE.CylinderGeometry(0.011, 0.012, 0.230, 8),
+      rifleMag: new THREE.BoxGeometry(0.028, 0.115, 0.048),
+      rifleStock: new THREE.BoxGeometry(0.038, 0.058, 0.135),
+      strap: new THREE.BoxGeometry(0.062, 0.235, 0.030),
+    };
+
+    this._assets = { m: a, g };
+    return this._assets;
+  }
+
   _makeEnemy(position) {
+    const { m, g } = this._shared();
     const group = new THREE.Group();
     group.position.copy(position);
 
-    const cloth = new THREE.MeshStandardMaterial({ color: 0x40453a, roughness: 0.88, metalness: 0.02 });
-    const vest = new THREE.MeshStandardMaterial({ color: 0x22251f, roughness: 0.72, metalness: 0.06 });
-    const skin = new THREE.MeshStandardMaterial({ color: 0x9c7355, roughness: 0.62, metalness: 0 });
+    const part = (geo, mat, x, y, z) => {
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(x, y, z);
+      return mesh;
+    };
 
-    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.20, 0.42, 6, 12), vest);
-    torso.position.y = 1.15;
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.115, 16, 12), skin);
-    head.position.y = 1.62;
-    const hips = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.18, 6, 10), cloth);
-    hips.position.y = 0.86;
-
-    const legL = new THREE.Mesh(new THREE.CapsuleGeometry(0.085, 0.52, 4, 8), cloth);
-    legL.position.set(-0.10, 0.44, 0);
-    const legR = legL.clone(); legR.position.x = 0.10;
-    const armL = new THREE.Mesh(new THREE.CapsuleGeometry(0.065, 0.42, 4, 8), cloth);
-    armL.position.set(-0.28, 1.20, 0);
-    const armR = armL.clone(); armR.position.x = 0.28;
-
-    for (const m of [torso, head, hips, legL, legR, armL, armR]) {
-      m.castShadow = true; m.receiveShadow = true;
-      m.userData.noCollide = true;
-      group.add(m);
+    // --- pelvis --------------------------------------------------------------
+    const hips = new THREE.Group();
+    hips.position.y = 0.92;
+    hips.add(part(g.pelvis, m.fatigue, 0, 0, 0));
+    // Duty belt with pouches around the hips.
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 1.5 + Math.PI * 0.25;
+      const p = part(g.pouch, m.pouch, Math.cos(a) * 0.155, -0.03, Math.sin(a) * 0.115);
+      p.rotation.y = -a;
+      p.scale.setScalar(0.78);
+      hips.add(p);
     }
+    group.add(hips);
+
+    // --- torso ---------------------------------------------------------------
+    const torso = new THREE.Group();
+    torso.position.y = 1.22;
+    torso.add(part(g.chest, m.fatigue, 0, 0, 0));
+
+    // Plate carrier: front and rear plates plus shoulder straps. The hard,
+    // squared-off silhouette against the soft body is what reads as "kitted up".
+    const front = part(g.plateFront, m.plate, 0, 0.012, 0.088);
+    front.scale.set(1, 1, 0.55);
+    torso.add(front);
+    const rear = part(g.plateFront, m.plate, 0, 0.012, -0.088);
+    rear.scale.set(1, 1, 0.55);
+    torso.add(rear);
+    for (const sx of [-1, 1]) {
+      torso.add(part(g.strap, m.webbing, sx * 0.098, 0.145, 0));
+    }
+    // Magazine pouches across the chest rig.
+    for (let i = 0; i < 3; i++) {
+      torso.add(part(g.mag, m.pouch, -0.078 + i * 0.078, -0.055, 0.128));
+    }
+    // Radio on the left shoulder with a stub antenna.
+    const radio = part(g.pouch, m.gear, -0.135, 0.075, 0.062);
+    radio.scale.set(0.7, 0.9, 0.7);
+    torso.add(radio);
+    const antenna = part(new THREE.CylinderGeometry(0.004, 0.003, 0.24, 5), m.gear, -0.135, 0.20, 0.062);
+    antenna.rotation.z = 0.18;
+    torso.add(antenna);
+    group.add(torso);
+
+    // --- head ----------------------------------------------------------------
+    const head = new THREE.Group();
+    head.position.y = 1.62;
+    head.add(part(g.neck, m.skin, 0, -0.075, 0));
+    head.add(part(g.skull, m.skin, 0, 0, 0));
+    const jaw = part(g.jaw, m.skin, 0, -0.048, 0.022);
+    jaw.scale.set(0.92, 1, 0.92);
+    head.add(jaw);
+
+    const helmet = part(g.helmetShell, m.helmet, 0, 0.012, -0.004);
+    helmet.scale.set(1.03, 1.1, 1.06);
+    head.add(helmet);
+    // NVG mount on the brow and the counterweight pouch at the rear — the two
+    // details that instantly date a helmet as modern military.
+    head.add(part(g.nvgMount, m.gear, 0, 0.072, 0.098));
+    const counterweight = part(g.pouch, m.webbing, 0, 0.030, -0.115);
+    counterweight.scale.set(0.9, 0.6, 0.6);
+    head.add(counterweight);
+    head.add(part(g.goggle, m.lens, 0, 0.038, 0.092));
+    for (const sx of [-1, 1]) {
+      const cup = part(g.headsetCup, m.gear, sx * 0.106, -0.005, 0);
+      cup.rotation.z = Math.PI / 2;
+      head.add(cup);
+    }
+    group.add(head);
+
+    // --- limbs ---------------------------------------------------------------
+    // Each limb is a group pivoting at the joint, so the locomotion code can
+    // rotate it directly and the child segments follow.
+    const makeLeg = (side) => {
+      const leg = new THREE.Group();
+      leg.position.set(side * 0.098, 0.88, 0);
+      leg.add(part(g.thigh, m.fatigue, 0, -0.21, 0));
+      const knee = new THREE.Group();
+      knee.position.y = -0.42;
+      knee.add(part(g.shin, m.fatigue, 0, -0.20, 0));
+      const kneePad = part(new THREE.SphereGeometry(0.078, 8, 6), m.fatigueDark, 0, -0.02, 0.038);
+      kneePad.scale.set(1, 0.85, 0.62);
+      knee.add(kneePad);
+      const boot = part(g.boot, m.boot, 0, -0.40, 0.038);
+      knee.add(boot);
+      leg.add(knee);
+      leg.userData.knee = knee;
+      return leg;
+    };
+    const legL = makeLeg(-1);
+    const legR = makeLeg(1);
+    group.add(legL, legR);
+
+    const makeArm = (side) => {
+      const arm = new THREE.Group();
+      arm.position.set(side * 0.223, 1.36, 0);
+      arm.add(part(g.shoulder, m.plate, 0, 0.012, 0));
+      arm.add(part(g.upperArm, m.fatigue, 0, -0.155, 0));
+      const elbow = new THREE.Group();
+      elbow.position.y = -0.305;
+      elbow.add(part(g.foreArm, m.fatigue, 0, -0.155, 0));
+      const elbowPad = part(new THREE.SphereGeometry(0.062, 8, 6), m.fatigueDark, 0, -0.01, 0.030);
+      elbowPad.scale.set(1, 0.8, 0.6);
+      elbow.add(elbowPad);
+      elbow.add(part(g.hand, m.glove, 0, -0.315, 0.012));
+      arm.add(elbow);
+      arm.userData.elbow = elbow;
+      return arm;
+    };
+    const armL = makeArm(-1);
+    const armR = makeArm(1);
+    group.add(armL, armR);
+
+    // --- carried rifle -------------------------------------------------------
+    // Parented to the torso so it tracks the body, posed across the chest.
+    const rifle = new THREE.Group();
+    rifle.add(part(g.rifleBody, m.gunmetal, 0, 0, 0));
+    const barrel = part(g.rifleBarrel, m.gunmetal, 0, 0.012, -0.28);
+    barrel.rotation.x = Math.PI / 2;
+    rifle.add(barrel);
+    rifle.add(part(g.rifleMag, m.gunmetal, 0, -0.085, -0.02));
+    rifle.add(part(g.rifleStock, m.gunmetal, 0, -0.004, 0.225));
+    rifle.position.set(0.16, -0.10, 0.135);
+    rifle.rotation.set(0.08, -0.30, -0.22);
+    torso.add(rifle);
+
+    group.traverse((c) => {
+      if (!c.isMesh) return;
+      c.castShadow = true;
+      c.receiveShadow = true;
+      c.userData.noCollide = true;
+    });
     this.root.add(group);
 
     return {
@@ -97,13 +273,15 @@ export class EnemyManager {
       deathTime: 0,
       hitFlash: 0,
       // Hitbox stack: cheap spheres tested in order of value to the shooter.
+      // Limb spheres hang off the knee/elbow joints rather than the hip/shoulder
+      // pivots, so they actually sit over the limb mass as it swings.
       hitboxes: [
-        { part: 'head', node: head, radius: 0.135, mult: 1 },
-        { part: 'torso', node: torso, radius: 0.30, mult: 1 },
-        { part: 'limb', node: legL, radius: 0.16, mult: 1 },
-        { part: 'limb', node: legR, radius: 0.16, mult: 1 },
-        { part: 'limb', node: armL, radius: 0.13, mult: 1 },
-        { part: 'limb', node: armR, radius: 0.13, mult: 1 },
+        { part: 'head', node: head, radius: 0.145, mult: 1 },
+        { part: 'torso', node: torso, radius: 0.32, mult: 1 },
+        { part: 'limb', node: legL.userData.knee, radius: 0.20, mult: 1 },
+        { part: 'limb', node: legR.userData.knee, radius: 0.20, mult: 1 },
+        { part: 'limb', node: armL.userData.elbow, radius: 0.17, mult: 1 },
+        { part: 'limb', node: armR.userData.elbow, radius: 0.17, mult: 1 },
       ],
       takeDamage: null, // wired below
     };
@@ -314,7 +492,7 @@ export class EnemyManager {
     e.legR.rotation.x = -s * 0.62 * amp;
     e.armL.rotation.x = -s * 0.45 * amp;
     e.armR.rotation.x = s * 0.45 * amp;
-    e.torso.position.y = 1.15 + Math.abs(c) * 0.028 * amp;
+    e.torso.position.y = 1.22 + Math.abs(c) * 0.028 * amp;
     e.head.position.y = 1.62 + Math.abs(c) * 0.028 * amp;
     // Weapon-ready pose when engaging.
     if (e.state === STATE.ENGAGE) {
