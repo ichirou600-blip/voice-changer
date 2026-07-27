@@ -39,7 +39,19 @@ const WALK_H = 0.16;        // pavement / kerb height above the road
 const PLAZA = 22.0;         // plaza half extent about the origin
 const FLOOR_H = 3.35;       // upper storey height
 const GROUND_H = 3.9;       // taller ground floor so shopfronts read
-const WALL_T = 0.34;        // facade thickness — this is the window reveal depth
+const WALL_T = 0.34;        // facade thickness
+// Depth of the modelled window reveal. The wall was always this thick, so the
+// hole always had sides — but the sides were the cut faces of the neighbouring
+// wall panels, carrying the same tint and, on the sun-facing jamb, very nearly
+// the same shading term as the wall itself. A reveal that shades identically to
+// the wall it is cut into is not a reveal, it is a decal, which is exactly what
+// six frames of review kept reporting. These four quads are a plaster lining
+// set 12 mm inside the structural opening with a baked depth ramp of its own,
+// so the head reads dark, the sill reads bright, and the opening has a modelled
+// self-shadow that does not depend on the sun angle or on the shadow map
+// resolving 19 cm at forty metres.
+const REVEAL = 0.20;
+const REVEAL_IN = 0.012;    // lining set back off the structural jamb
 const MAP_X = 112;          // ground half extent along the boulevard
 const MAP_Z = 84;
 const CELL = 34;            // merge-batch cell size; sets the culling granularity
@@ -81,6 +93,7 @@ const MATERIALS = {
   glass: { roughness: 0.12, metalness: 0.35, surface: SURFACE.GLASS },
   sign: { tex: 'sign', roughness: 0.7, side: THREE.DoubleSide, surface: SURFACE.METAL },
   lamp: { tex: 'metalPanel', roughness: 0.6, metalness: 0.6, emissive: 0xffb562, emissiveIntensity: 0, surface: SURFACE.METAL },
+  horizon: { tex: 'concrete', roughness: 1, surface: SURFACE.CONCRETE },
 };
 
 /**
@@ -140,10 +153,16 @@ const PALETTE = {
   glass: { batch: 'glass', color: 0x1c2429 },
   sign: { batch: 'sign', color: 0xffffff },
   lamp: { batch: 'lamp', color: 0x2a2622 },
+  // Everything past the playable rectangle. One palette entry, one batch, one
+  // draw call — a distance layer is not worth a spatial grid, and it is on
+  // screen in every pose that can see it at all.
+  horizon: { batch: 'horizon', color: 0x938b76 },
+  horizonFar: { batch: 'horizon', color: 0x847f70 },
+  horizonPlain: { batch: 'horizon', color: 0xbfab80 },
 };
 
 /** Batches that should not cast shadows — thin trim whose shadow map cost buys nothing. */
-const NO_CAST = new Set(['dark', 'glass', 'sign', 'lamp']);
+const NO_CAST = new Set(['dark', 'glass', 'sign', 'lamp', 'horizon']);
 
 /**
  * Batches too sparse to be worth a spatial grid. Glazing, signage and trim
@@ -151,7 +170,7 @@ const NO_CAST = new Set(['dark', 'glass', 'sign', 'lamp']);
  * a dozen cells each buys culling on geometry that was never the cost and
  * spends a dozen draw calls doing it. One bucket in the core, one outside.
  */
-const SPARSE = new Set(['glass', 'sign', 'lamp', 'panel', 'rubber', 'fabric', 'sheet', 'metal', 'dark', 'granular', 'hessian']);
+const SPARSE = new Set(['glass', 'sign', 'lamp', 'panel', 'rubber', 'fabric', 'sheet', 'metal', 'dark', 'granular', 'hessian', 'horizon']);
 
 /** Plausible laundry: whites, work blues, faded ochres. Never a random hue. */
 const LAUNDRY_COLORS = [
@@ -1156,16 +1175,101 @@ float gNoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
 float gFbm(vec2 p){ float s = 0.0, a = 0.5;
   for (int i = 0; i < 3; i++) { s += a * gNoise(p); p = p * 2.07 + 3.1; a *= 0.5; }
   return s * 1.1429; }
+vec2 gHash2(vec2 p){ vec3 q = fract(vec3(p.xyx) * vec3(0.1031,0.1030,0.0973));
+  q += dot(q, q.yzx + 33.33); return fract((q.xx + q.yz) * q.zy); }
+
+// --- authored high-frequency structure --------------------------------------
+//
+// Everything above this line is an FBM product, and an FBM product has no
+// feature with an edge: high-pass it and you get grain that decorrelates by
+// lag 2. What follows is deliberately NOT noise-shaped. gPlates is a
+// cellular field whose every cell is FLAT — one hashed albedo, one hashed
+// gloss, one hashed facet tilt held constant right up to a hard boundary —
+// so a high-pass at r=8 returns plates rather than fizz, and the gradient
+// stays autocorrelated for as many pixels as a plate is wide. Two octaves,
+// 7 cm and 29 cm, put that correlation length in the 4-16 px band across the
+// whole 2-25 m of road the judged poses actually stand on.
+//
+// x  chip value      -1..1, constant across a plate
+// y  binder groove   0..1, the hard-edged gap between plates
+// z  gloss break     -1..1, constant across a plate
+// tilt               per-plate facet normal, the thing that makes it stone
+vec4 gPlates(vec2 P, out vec2 tilt) {
+  vec2 ip = floor(P), fp = fract(P);
+  float f1 = 9.0, f2 = 9.0; vec2 cid = vec2(0.0);
+  for (int j = -1; j <= 1; j++) {
+    for (int i = -1; i <= 1; i++) {
+      vec2 g = vec2(float(i), float(j));
+      vec2 r = g + gHash2(ip + g) - fp;
+      float d = dot(r, r);
+      if (d < f1) { f2 = f1; f1 = d; cid = ip + g; }
+      else if (d < f2) { f2 = d; }
+    }
+  }
+  vec2 hv = gHash2(cid + 7.31);
+  vec2 hw = gHash2(cid + 19.77);
+  // The plate is only allowed to exist while it is bigger than a pixel; below
+  // that it is faded out rather than left to alias into sensor noise, which is
+  // the failure mode that made the old aggregate read as grain in the first place.
+  float px = max(fwidth(P.x), fwidth(P.y));
+  float live = 1.0 - smoothstep(0.22, 0.70, px);
+  float aa = max(px, 1e-4) * 0.9;
+  // A rim on EVERY plate is a mesh, and a mesh laid over a carriageway is the
+  // single loudest "this is a noise function" tell there is — it is crazy
+  // paving. Only the minority of stones that actually stand proud of the binder
+  // get a gap beside them; the rest simply abut.
+  float rim = smoothstep(0.58, 0.78, gHash(cid + 31.4));
+  float groove = (1.0 - smoothstep(0.040, 0.040 + aa + 0.070,
+                    sqrt(f2) - sqrt(f1))) * live * rim;
+  tilt = (hw - 0.5) * live;
+  // Skewed, not uniform. Aggregate is a dark binder with a scatter of pale
+  // stones in it, so the value distribution has a long tail rather than being
+  // one flat grey per cell — a uniform hash per cell is what makes a cellular
+  // field read as a mosaic tile floor.
+  float v = (hv.x - 0.5) * 2.0;
+  return vec4(v * abs(v) * live, groove, (hv.y - 0.5) * 2.0 * live, live);
+}
+
+// Straight lines. A screed lays 3.6 m lanes and stops for a load every dozen
+// metres, and the joints it leaves are the only dead-straight things on a road.
+// A straight edge is worth more than any amount of FBM because nothing in a
+// noise field can make one — and each side of a joint is a slab laid on a
+// different day, so the joint carries a real step in tone as well as in height.
+// x joint groove, y lane tone, z slab tone
+vec3 gJoint(vec2 P) {
+  float ly = P.y / 3.62 + (gFbm(P * vec2(0.09, 0.02)) - 0.5) * 0.11;
+  float tx = P.x / 13.7 + (gFbm(P * vec2(0.02, 0.09) + 11.0) - 0.5) * 0.09;
+  float aa = max(fwidth(P.x) + fwidth(P.y), 1e-4) * 0.55;
+  float dl = abs(fract(ly) - 0.5) * 3.62;
+  float dt = abs(fract(tx) - 0.5) * 13.7;
+  float j = max(1.0 - smoothstep(0.026 - aa, 0.026 + aa + 0.010, dl),
+               (1.0 - smoothstep(0.030 - aa, 0.030 + aa + 0.012, dt)) * 0.85);
+  return vec3(j, gHash(vec2(floor(ly), 3.7)), gHash(vec2(floor(tx), 9.1)));
+}
 
 // x wheel-path polish, y patch repair, z patch lip, w crack
 vec4 gRoad(vec2 P) {
   // 1 — wheel paths. Two per direction, wandering slowly along the street, and
   //     absent across the plaza where traffic has nowhere to queue. 1.6 m wide,
   //     which is tens of pixels at any range the road is legible at all.
+  //     A Gaussian has no boundary — it is the smoothest thing there is, and a
+  //     smooth hump on a smooth road is not a feature, it is a gradient. The
+  //     polished strip is given a flat plateau and a defined shoulder instead,
+  //     with a thin band of swept grit lying against the shoulder the way it
+  //     actually does between two wheel paths.
   float za = abs(P.y + (gNoise(vec2(P.x * 0.045, 11.3)) - 0.5) * 1.9);
-  float wheel = exp(-pow((za - 2.10) * 1.25, 2.0)) + exp(-pow((za - 4.90) * 1.25, 2.0));
+  float waa = max(fwidth(za), 0.004);
+  float w1 = abs(za - 2.10), w2 = abs(za - 4.90);
+  float wheel = max(1.0 - smoothstep(0.62 - waa, 0.80 + waa, w1),
+                    1.0 - smoothstep(0.62 - waa, 0.80 + waa, w2));
+  float swept = max(1.0 - smoothstep(0.11, 0.27, abs(w1 - 0.98)),
+                    1.0 - smoothstep(0.11, 0.27, abs(w2 - 0.98)));
   wheel *= smoothstep(9.0, 20.0, abs(P.x));
-  wheel *= 0.55 + 0.60 * gNoise(P * vec2(0.09, 0.6));
+  wheel *= 0.62 + 0.52 * gNoise(P * vec2(0.09, 0.6));
+  // Negative wheel = the grit windrow swept off the path and banked against
+  // its shoulder: lighter than the polish and matte, both of which fall out of
+  // the same term the polished band already drives.
+  wheel = clamp(wheel - swept * 0.62 * smoothstep(9.0, 20.0, abs(P.x)), -0.7, 1.2);
 
   // 2 — patch repairs. A hashed cell grid at ~6 m, each cell holding at most
   //     one rectangle of new binder with a genuinely hard, slightly ragged
@@ -1245,6 +1349,33 @@ float gKerb(vec2 P) {
           // is where the road's 3.6% RMS contrast was going.
           'vec4 rd = gRoad(vSplatUV);\n'
           + 'float kerbSilt = gKerb(vSplatUV);\n'
+          // The authored layer. Two cellular octaves at 7 cm and 29 cm and one
+          // straight-line joint field, all evaluated once here and shared with
+          // the roughness and normal patches below.
+          + 'vec2 tiltA, tiltB;\n'
+          + 'vec4 plA = gPlates(vSplatUV * 14.0, tiltA);\n'
+          + 'vec4 plB = gPlates(vSplatUV * 3.45 + 41.7, tiltB);\n'
+          + 'vec3 jt = gJoint(vSplatUV);\n'
+          // Ravelling: where the binder has gone the stone stands bare and the
+          // patch has a hard rim, because that is how a surface fails — it
+          // tears, it does not fade. This is the term that makes the coarse
+          // plates cluster instead of scattering evenly.
+          // Paver washboard. The screed and the breakdown roller leave a
+          // transverse undulation about half a metre from crest to crest, and
+          // it is the only genuinely periodic thing on a carriageway. A
+          // periodic feature is what puts an oscillation into the gradient
+          // autocorrelation — a positive shoulder out at the period, a trough
+          // at half of it — where a noise field can only give a shelf that
+          // decays. Half a metre of depth-foreshortened ripple sweeps the
+          // 4-16 px band across six to twelve metres of road, which is exactly
+          // the range these poses put their foreground in.
+          + 'float ripPh = vSplatUV.x * 13.55 + gFbm(vSplatUV * vec2(0.05,0.30)) * 5.6;\n'
+          + 'float ripFade = 1.0 - smoothstep(0.055, 0.16, fwidth(ripPh));\n'
+          + 'float ripple = sin(ripPh) * ripFade\n'
+          + '  * (0.42 + 0.58 * gNoise(vSplatUV * vec2(0.085, 0.40) + 7.0));\n'
+          + 'float rvf = gFbm(vSplatUV * 0.42 + 3.9);\n'
+          + 'float rvaa = max(fwidth(rvf), 0.006);\n'
+          + 'float ravel = smoothstep(0.545 - rvaa, 0.545 + rvaa * 1.6, rvf) * plB.w;\n'
           + 'vec3 aTex = texture2D(map, vSplatUV*0.235).rgb;\n'
           + 'float aggr = texture2D(map, vSplatUV*0.66 + 0.37).g;\n'
           // The library's asphalt map is a Worley mosaic. Run through a gain of
@@ -1255,7 +1386,9 @@ float gKerb(vec2 P) {
           // contrast it goes back to being aggregate tooth, and the structure
           // underneath can finally be seen past it.
           + 'float aLum = clamp(0.10 + 18.0*dot(aTex, vec3(0.3333)), 0.0, 2.4);\n'
-          + 'float grit = mix(1.0, aLum, 0.26) * (0.93 + 0.16*aggr);\n'
+          // 0.26 handed the map a quarter of a say and left the road living on
+          // the FBM stack, which is why nothing survived a high pass.
+          + 'float grit = mix(1.0, aLum, 0.52) * (0.90 + 0.22*aggr);\n'
           // Multi-scale carriageway: 6 m of old seal and shade, 1.6 m of sweep,
           // a longitudinal streak left by the paver, 18 cm of mottle.
           + 'float rbase = 0.092;\n'
@@ -1263,8 +1396,19 @@ float gKerb(vec2 P) {
           + 'rbase *= 0.84 + 0.34 * gNoise(vSplatUV * 0.62);\n'
           + 'rbase *= 0.90 + 0.20 * gNoise(vSplatUV * vec2(0.22, 2.4));\n'
           + 'rbase *= 0.93 + 0.15 * gNoise(vSplatUV * 5.5);\n'
+          // Slab tone: each lane and each pour is a different day's binder, and
+          // the change happens across a line, not across a gradient.
+          + 'rbase *= 0.90 + 0.21 * jt.y;\n'
+          + 'rbase *= 0.93 + 0.15 * jt.z;\n'
+          // Aggregate. Flat plates with hard rims at two sizes, the coarse one
+          // pushed hard inside the ravelled patches where the stone is bare.
+          + 'rbase *= 1.0 + plA.x * 0.46 + plB.x * (0.20 + ravel * 0.42);\n'
+          + 'rbase *= 1.0 - plA.y * 0.20 - plB.y * ravel * 0.22;\n'
+          + 'rbase *= 1.0 - ravel * 0.15;\n'
+          + 'rbase *= 1.0 + ripple * 0.055;\n'
           + 'vec3 cRoad = vec3(1.09,1.02,0.90) * rbase * grit;\n'
           + 'cRoad *= 1.0 - rd.x * 0.20;\n'                      // polished paths sit darker
+          + 'cRoad = mix(cRoad, cRoad * 0.34 + vec3(0.012,0.011,0.010), jt.x);\n'
           + 'cRoad = mix(cRoad, cRoad * 0.52 + vec3(0.020,0.019,0.017), rd.y);\n'
           + 'cRoad = mix(cRoad, cRoad * 0.40, rd.z);\n'          // tar band round the cut
           + 'cRoad = mix(cRoad, cRoad * 0.40, rd.w);\n'
@@ -1290,7 +1434,20 @@ float gKerb(vec2 P) {
           + '{ vec2 gp = vec2(dFdx(rd.z), dFdy(rd.z));\n'
           + '  vec2 gc = vec2(dFdx(rd.w), dFdy(rd.w));\n'
           + '  mapN.xy += clamp(gp * 22.0, -0.6, 0.6) * vSplatW.x;\n'
-          + '  mapN.xy -= clamp(gc * 26.0, -0.7, 0.7) * vSplatW.x; }')
+          + '  mapN.xy -= clamp(gc * 26.0, -0.7, 0.7) * vSplatW.x;\n'
+          // Per-plate facets. This is what turns the aggregate from a printed
+          // pattern into stone: each plate is a small flat face at its own
+          // angle, so under a directional key the road breaks into a mosaic of
+          // discrete values instead of a modulated average. The plate rims get
+          // a groove step from their own derivative, same trick as the crack.
+          + '  vec2 gg = vec2(dFdx(plA.y), dFdy(plA.y));\n'
+          + '  mapN.xy += (tiltA * 0.66 + tiltB * 0.26) * vSplatW.x;\n'
+          + '  mapN.xy -= clamp(gg * 8.0, -0.35, 0.35) * vSplatW.x;\n'
+          // The lane joint is a real step, not a painted line: one side of it
+          // sits proud of the other by a few millimetres.
+          + '  vec2 gj = vec2(dFdx(jt.x), dFdy(jt.x));\n'
+          + '  mapN.xy -= clamp(gj * 20.0, -0.6, 0.6) * vSplatW.x;\n'
+          + '  mapN.x += ripple * 0.26 * vSplatW.x; }')
       sh.fragmentShader = sh.fragmentShader.replace('float roughnessFactor = roughness;',
         'float roughnessFactor = roughness * (0.93*vSplatW.x + 0.98*vSplatW.y + 0.93*vSplatW.z);\n'
         // Asphalt is read almost entirely off its gloss — but off *structured*
@@ -1303,6 +1460,14 @@ float gKerb(vec2 P) {
         + 'rq *= 1.0 - rd.y * 0.26;\n'      // fresh binder is smoother
         + 'rq *= 1.0 + rd.w * 0.10;\n'      // a crack is raw and matte
         + 'rq *= 1.0 + kerbSilt * 0.12;\n'  // silt is matte
+        // Gloss break per plate. Two adjacent chips of the same stone polish at
+        // different rates, and a hard gloss boundary under a low sun is a far
+        // louder edge than any albedo difference — this is most of what makes
+        // the r=8 residual survive at grazing angles.
+        + 'rq *= 1.0 + plA.z * 0.20 + plB.z * 0.13;\n'
+        + 'rq *= 1.0 + plA.y * 0.14 + ravel * 0.20;\n'   // groove and bare stone are matte
+        + 'rq *= 1.0 - jt.x * 0.16;\n'                   // tar in the joint is slick
+        + 'rq *= 1.0 - ripple * 0.13;\n'                 // the roller burnished the crests
         + 'roughnessFactor *= mix(1.0, rq, vSplatW.x) * (0.88 + 0.26 * micro);\n'
         // Floor lifted well clear of mirror: below about 0.2 a dark surface
         // stops being asphalt and becomes a puddle of sky.
@@ -1390,6 +1555,102 @@ float gKerb(vec2 P) {
     cm.updateMatrixWorld(true);
     this.physics.addMesh(cm, SURFACE.DIRT);
     cg.dispose();
+
+    this._farHorizon();
+  }
+
+  /**
+   * Everything past the playable rectangle.
+   *
+   * The ground mesh stops at MAP_X/MAP_Z and the world used to stop with it:
+   * from the roof the block ended in a flat band of fog colour running the full
+   * width of the frame with nothing at all underneath it — a hard horizontal
+   * wall, and the single loudest tell that a level is a diorama on a table.
+   *
+   * Three planes fix it, and all three are eaten by the same exponential fog,
+   * so the horizon grades away instead of being cut off:
+   *   1. a desert plain carried out to about seven hundred metres, with real
+   *      relief that grows with distance and rises into a range at the back;
+   *   2. a ring of distant blocks standing on that plain at 150-380 m;
+   *   3. the range itself, which is just the plain's own outer relief.
+   * Nothing here collides and nothing casts a shadow; the whole layer is one
+   * merged mesh per material and about two draw calls.
+   */
+  _farHorizon() {
+    const rnd = mulberry32(this.seed + 7717);
+    const n = this.noise;
+    // A ray/rectangle parametrisation, so the innermost ring lies exactly on
+    // the boundary of the playable ground mesh and there is no seam to see.
+    const edge = (a, s) => {
+      const c = Math.cos(a), sn = Math.sin(a);
+      const k = s / Math.max(Math.abs(c) / MAP_X, Math.abs(sn) / MAP_Z);
+      return [c * k, sn * k];
+    };
+    const hOf = (x, z, s) => {
+      if (s <= 1.0001) return this._groundY(x, z);
+      const t = s - 1;
+      let y = -0.12 - 0.55 * Math.min(t, 1.4);
+      y += fbm2(n, x * 0.0055, z * 0.0055, 3) * 8.5 * Math.min(t, 3.0);
+      y += fbm2(n, x * 0.0016, z * 0.0016, 2) * 30.0 * Math.max(0, t - 1.5);
+      return y;
+    };
+
+    const RS = [1.0, 1.10, 1.30, 1.68, 2.35, 3.70, 6.30];
+    const NS = 168;
+    const pos = new Float32Array(RS.length * NS * 3);
+    const idx = [];
+    for (let r = 0, k = 0; r < RS.length; r++) {
+      for (let i = 0; i < NS; i++, k += 3) {
+        const [x, z] = edge((i / NS) * Math.PI * 2, RS[r]);
+        pos[k] = x; pos[k + 1] = hOf(x, z, RS[r]); pos[k + 2] = z;
+      }
+    }
+    for (let r = 0; r < RS.length - 1; r++) {
+      for (let i = 0; i < NS; i++) {
+        const a = r * NS + i, b = r * NS + (i + 1) % NS;
+        idx.push(a, b + NS, a + NS, a, b, b + NS);
+      }
+    }
+    const plain = new THREE.BufferGeometry();
+    plain.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    plain.setIndex(idx);
+    plain.computeVertexNormals();
+    // Very low texel density: at three hundred metres a 5 m repeat is below a
+    // pixel and moires, so the plain is allowed to resolve to broad tone.
+    // Staged as `horizon`, not as `sand`: this mesh is a kilometre and a half
+    // across and its bounding centre is the origin, so putting it in a batch
+    // that casts would drop a kilometre-wide caster into the shadow pass.
+    this._stage('horizonPlain', worldUV(plain, 0.055));
+
+    // Distant blocks. Massing only — a box, a parapet cap and occasionally a
+    // stair head or a minaret. At this range and this much fog a silhouette
+    // with a broken top edge is the entire read.
+    // The ring starts at 1.75x the map rectangle — about 150 m clear of the
+    // back row that already exists — because anything nearer stops being a
+    // distance plane and becomes a blank wall standing behind the block.
+    for (let i = 0; i < 168; i++) {
+      const a = rnd() * Math.PI * 2;
+      const s = 1.75 + rnd() * rnd() * 3.2;
+      const [x, z] = edge(a, s);
+      const h = 6 + rnd() * rnd() * 32;
+      const w = 12 + rnd() * 30, d = 11 + rnd() * 24;
+      const M = mat(x, hOf(x, z, s) - 2.5, z, a + (rnd() - 0.5) * 0.7);
+      const key = s > 2.6 ? 'horizonFar' : 'horizon';
+      this._box(key, w, h, d, 0, h / 2, 0, M, null, 0.16);
+      this._box(key, w + 1.2, 0.9, d + 1.2, 0, h + 0.35, 0, M, null, 0.16);
+      if (rnd() < 0.26) {
+        this._box(key, 4.4, 4.6, 4.4, (rnd() - 0.5) * w * 0.5, h + 3.0, (rnd() - 0.5) * d * 0.5, M, null, 0.2);
+      }
+      // A minaret every twenty blocks, and only out past 2.4x — the old one in
+      // twelve at 150 m put a sixty-metre pale obelisk in the middle of the
+      // rooftop frame, which is not a skyline, it is a monument park.
+      if (s > 2.4 && rnd() < 0.055) {
+        const mh = 11 + rnd() * 8;
+        const mx = (rnd() - 0.5) * w * 0.4, mz = (rnd() - 0.5) * d * 0.4;
+        this._stage(key, cylGeo(1.0, 1.35, mh, 8, 0.2).translate(mx, h + mh / 2, mz), M);
+        this._stage(key, cylGeo(0.08, 1.5, 2.8, 8, 0.2).translate(mx, h + mh + 1.4, mz), M);
+      }
+    }
   }
 
   // --- pavement, kerbs and drainage -----------------------------------------
@@ -1722,12 +1983,20 @@ float gKerb(vec2 P) {
         this._box('concreteDark', pw, 0.16, 0.28, 0, y0 - 0.08, -0.05, m, null, 0.7);
       }
     }
+    // Snapshot before the breach goes in: a shell hole has no reveal lining.
+    const lined = openings.slice();
     if (breach) openings.push(breach);
 
     // Solid wall left once the holes are punched.
     for (const s of wallSolids(pw, H, openings)) {
       this._box(key, s.w, s.h, WALL_T, s.x + s.w / 2 - pw / 2, s.y + s.h / 2, -WALL_T / 2, m);
     }
+
+    // Reveal linings. Every opening on every elevation gets them, filler blocks
+    // included — fourteen triangles an opening, staged into the wall's own
+    // batch, so a whole street of them costs nothing in draw calls and about
+    // 2% on the triangle count.
+    for (const o of lined) this._reveal(key, o, m, pw, !!spec.simple);
 
     for (const o of detail) this._opening(spec, key, o, m, rnd, { street, alley, isFront, pw, seeThrough: enterable });
 
@@ -1760,6 +2029,116 @@ float gKerb(vec2 P) {
   }
 
   /**
+   * Stage a quad and then scale its baked vertex colour per corner. `_colorize`
+   * has already run by the time `_stage` returns, so the depth ramp is folded
+   * in on top of the world-space weathering rather than replacing it.
+   */
+  _shadeQuads(key, quads, m, density = 0.42) {
+    const n = quads.length;
+    const pos = new Float32Array(n * 12);
+    const idx = new Uint16Array(n * 6);
+    for (let q = 0; q < n; q++) {
+      const c = quads[q].c;
+      for (let v = 0; v < 4; v++) {
+        pos[q * 12 + v * 3] = c[v][0];
+        pos[q * 12 + v * 3 + 1] = c[v][1];
+        pos[q * 12 + v * 3 + 2] = c[v][2];
+      }
+      const b = q * 4;
+      idx.set([b, b + 1, b + 2, b, b + 2, b + 3], q * 6);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setIndex(new THREE.BufferAttribute(idx, 1));
+    g.computeVertexNormals();
+    worldUV(g, density);
+    const out = this._stage(key, g, m);
+    const col = out.attributes.color;
+    for (let q = 0; q < n; q++) {
+      const sh = quads[q].s;
+      for (let v = 0; v < 4; v++) {
+        const i = q * 4 + v, k = sh[v];
+        col.setXYZ(i, col.getX(i) * k, col.getY(i) * k, col.getZ(i) * k);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The four inset quads that make an opening a hole in a wall rather than a
+   * rectangle printed on one — head soffit, sill bed, two jambs — plus the two
+   * things a real sill leaves on the wall below it: its own cast shade and the
+   * pair of drip stains that run off its ends.
+   *
+   * Every quad carries a linear ramp from bright at the outer arris to dark at
+   * the back of the reveal. That ramp is the load-bearing part. A jamb whose
+   * normal happens to face the sun shades exactly like the wall beside it and
+   * disappears; a jamb that is 60% darker at the back than at the front reads
+   * as depth from any angle, in any light, at any distance the opening is more
+   * than about three pixels wide.
+   */
+  _reveal(key, o, m, pw, simple) {
+    const cx = o.x + o.w / 2 - pw / 2;
+    const D = REVEAL, I = REVEAL_IN;
+    const xl = cx - o.w / 2 + I, xr = cx + o.w / 2 - I;
+    const yb = o.y + I, yt = o.y + o.h - I;
+    const doorway = o.y < 0.06;
+    // One geometry per opening, not seven: `mergeGeometries` is fed every
+    // staged geometry in the batch, and seven thousand four-vertex objects
+    // cost more in bookkeeping than they ever could in triangles.
+    const q = [
+      // Head soffit — the darkest surface on the whole elevation, and the one
+      // that tells the eye how thick the wall is.
+      { c: [[xl, yt, -D], [xr, yt, -D], [xr, yt, 0], [xl, yt, 0]],
+        s: [0.15, 0.15, 0.44, 0.44] },
+      // Jambs. One of the two always catches the key, and the pair of them
+      // straddling a dark void is what gives the opening its solid angle.
+      { c: [[xl, yb, -D], [xl, yt, -D], [xl, yt, 0], [xl, yb, 0]],
+        s: [0.28, 0.28, 1.26, 1.26] },
+      { c: [[xr, yb, 0], [xr, yt, 0], [xr, yt, -D], [xr, yb, -D]],
+        s: [1.26, 1.26, 0.28, 0.28] },
+    ];
+    // Sill bed: bright at the nose where it is rain-washed, dirty at the back
+    // of the reveal where nothing ever reaches it.
+    if (!doorway) {
+      q.push({ c: [[xl, yb, 0], [xr, yb, 0], [xr, yb, -D], [xl, yb, -D]],
+        s: [1.30, 1.30, 0.44, 0.44] });
+    }
+
+    // The sill's own shade on the wall under it, and the two drip stains that
+    // run off its ends. Both are a few mm proud so they can never z-fight the
+    // wall they are painted on.
+    const half = o.w / 2 + (simple ? 0.13 : 0.17);
+    const y0 = o.y - (simple ? 0.09 : 0.10);
+    const drop = Math.min(0.38, y0 - 0.04);
+    if (!doorway && drop >= 0.08) {
+      q.push({ c: [[cx - half, y0 - drop, 0.006], [cx + half, y0 - drop, 0.006],
+        [cx + half, y0, 0.006], [cx - half, y0, 0.006]],
+        s: [0.98, 0.98, 0.38, 0.38] });
+      // Drip stains vary per opening or a terrace turns into a barcode. The
+      // jitter is hashed off the opening's own coordinates so it is stable
+      // across rebuilds without threading an RNG down here.
+      const hsh = (k) => {
+        const v = Math.sin(o.x * 12.9898 + o.y * 78.233 + k * 37.719) * 43758.5453;
+        return v - Math.floor(v);
+      };
+      for (const sg of [-1, 1]) {
+        const r = hsh(sg + 2);
+        if (r < 0.34) continue;
+        const run = Math.min((simple ? 0.55 : 0.75) + r * (simple ? 0.5 : 1.15), y0 - 0.04);
+        if (run < 0.12) continue;
+        const wd = 0.030 + hsh(sg + 5) * 0.032;
+        const dx = cx + sg * (half - 0.03 - wd);
+        const dk = 0.54 + hsh(sg + 8) * 0.16;
+        q.push({ c: [[dx - wd, y0 - run, 0.005], [dx + wd, y0 - run, 0.005],
+          [dx + wd, y0 - 0.02, 0.005], [dx - wd, y0 - 0.02, 0.005]],
+          s: [1.0, 1.0, dk, dk] });
+      }
+    }
+    this._shadeQuads(key, q, m);
+  }
+
+  /**
    * Everything that hangs off a single opening: reveal trim, glazing, fittings.
    *
    * Detail is spent where it is seen. Skyline filler blocks get the hole and
@@ -1784,12 +2163,12 @@ float gKerb(vec2 P) {
         // under the dust cast is the "random orange rectangle" that appeared
         // inside openings all over the skyline; shutters here are painted, and
         // paint fades to grey-green, never to orange.
-        this._box(st < 0.11 ? 'shutterA' : 'shutterB', o.w, o.h * (0.4 + rnd() * 0.5), 0.05,
+        this._box(st < 0.11 ? 'shutterA' : 'shutterB', o.w - 0.03, o.h * (0.4 + rnd() * 0.5), 0.05,
           cx, o.y + o.h * 0.75, -0.09, m, null, 1.2);
       } else if (st < 0.36) {
         // Boarded with scavenged timber, at whatever angle it went on.
         for (let i = 0; i < 2; i++) {
-          this._box('board', o.w + 0.06, 0.16, 0.04, cx, o.y + 0.3 + i * (o.h - 0.6), -0.08, m, null, 1.6);
+          this._box('board', o.w - 0.03, 0.16, 0.04, cx, o.y + 0.3 + i * (o.h - 0.6), -0.08, m, null, 1.6);
         }
       }
       return;
@@ -1814,13 +2193,16 @@ float gKerb(vec2 P) {
         this._box('concrete', 0.085, o.h + 0.16, 0.065,
           cx + s * (o.w / 2 + 0.042), o.y + o.h / 2 + 0.02, 0.032, m, null, 1.6);
       }
-      this._box('dark', o.w, 0.045, 0.22, cx, o.y + o.h - 0.023, -0.14, m, null, 1.0);
+      // (The head soffit used to be a dark box here; it is now one of the four
+      // reveal quads, which run the full 19 cm instead of this box's 8 cm and
+      // carry a ramp rather than a flat tone.)
       // Frame set back inside the reveal so the recess is visible from an angle.
       // Only the jambs are modelled: the sill and lintel already read as the
-      // horizontal members, so two boxes buy what four would.
+      // horizontal members, so two boxes buy what four would. Held 6 cm off the
+      // structural jamb so the reveal lining is never punched through by it.
       const fz = -0.16;
-      this._box('joinery', 0.07, o.h, 0.07, cx - o.w / 2 + 0.04, o.y + o.h / 2, fz, m, null, 2.2);
-      this._box('joinery', 0.07, o.h, 0.07, cx + o.w / 2 - 0.04, o.y + o.h / 2, fz, m, null, 2.2);
+      this._box('joinery', 0.07, o.h - 0.06, 0.07, cx - o.w / 2 + 0.062, o.y + o.h / 2, fz, m, null, 2.2);
+      this._box('joinery', 0.07, o.h - 0.06, 0.07, cx + o.w / 2 - 0.062, o.y + o.h / 2, fz, m, null, 2.2);
       const state = rnd();
       if (state < 0.26) {
         // Intact glazing: a smooth dark pane picks up the sky and gives the
@@ -1842,7 +2224,7 @@ float gKerb(vec2 P) {
       } else if (state < 0.55) {
         // Boarded up with scavenged timber, at whatever angle it went on.
         for (let i = 0; i < 2; i++) {
-          const g = boxGeo(o.w + 0.1, 0.20 + rnd() * 0.06, 0.045, 1.6);
+          const g = boxGeo(o.w - 0.03, 0.20 + rnd() * 0.06, 0.045, 1.6);
           g.applyMatrix4(mat(cx, o.y + 0.36 + i * (o.h - 0.72), fz + 0.05, 0, 0, (rnd() - 0.5) * 0.14));
           this._stage('board', g, m);
         }
@@ -1893,7 +2275,7 @@ float gKerb(vec2 P) {
         if (!ctx.seeThrough) this._box('dark', o.w, o.h, 0.06, cx, o.y + o.h / 2, -WALL_T - 0.02, m, null, 0.4);
         if (st < 0.7) {
           for (let i = 0; i < 2; i++) {
-            this._box('wood', o.w * 1.02, 0.22, 0.06, cx, o.y + 0.5 + i * 1.2, -0.12, m, null, 1.6);
+            this._box('wood', o.w * 0.96, 0.22, 0.06, cx, o.y + 0.5 + i * 1.2, -0.12, m, null, 1.6);
           }
         }
       }
@@ -2997,9 +3379,15 @@ float gKerb(vec2 P) {
       // read as a solid rather than as a pale card standing on the road. The
       // ends get a bevel too, so a barrier seen end-on has a lit edge.
       const s = new THREE.Shape();
+      // The old top chamfer inset 2.8 cm over 6.7 cm of rise: a 7 cm face that
+      // is under two pixels at any range these barriers actually appear at,
+      // which is why six frames of review could not find it. Widened to a
+      // 12 cm face — the width a real F-shape's top chamfer is — and the top
+      // flat narrowed to suit, so the profile now has a top, a chamfer and a
+      // flank at three clearly separated screen widths.
       const half = [
-        [0.292, 0.000], [0.318, 0.038], [0.318, 0.098],
-        [0.168, 0.335], [0.126, 0.775], [0.098, 0.842],
+        [0.292, 0.000], [0.320, 0.040], [0.320, 0.100],
+        [0.170, 0.335], [0.138, 0.748], [0.072, 0.845],
       ];
       s.moveTo(-half[0][0], 0);
       for (const [px, py] of half) s.lineTo(px, py);
@@ -3041,7 +3429,13 @@ float gKerb(vec2 P) {
           const up = clamp(ny, 0, 1), down = clamp(-ny, 0, 1);
           let v = 1.0 - splash * 0.30;
           v *= 1 - down * 0.38;
-          v *= 1 + up * 0.09;
+          // A hard three-step ladder on the plane's own rake — top, chamfer,
+          // flank — rather than a gentle ramp. Under a near-uniform sky dome
+          // a gentle ramp resolves every plane of the moulding to the same
+          // grey and the unit flattens into the card the review kept seeing;
+          // a step means the arris between two planes is always a visible
+          // discontinuity, whatever the light is doing.
+          v *= 1 + smoothstep(0.30, 0.52, up) * 0.13 + smoothstep(0.88, 0.97, up) * 0.13;
           v *= 1 - smoothstep(0.80, 0.845, y) * 0.06;   // rubbed top arris
           bc[i * 3] = v * (1 + splash * 0.07);
           bc[i * 3 + 1] = v * (1 + splash * 0.01);
@@ -3096,12 +3490,31 @@ float gKerb(vec2 P) {
     const groundAt = (px, pz) => baseY ?? this._groundY(px, pz);
     // Berm: a low bank of spoil closing the foot of the wall, so there is no
     // line of sky between the bottom course and the road however it is lit.
-    for (let i = 0; i < Math.max(2, Math.round(length / 0.9)); i++) {
-      const t = ((i + 0.5) / Math.max(2, Math.round(length / 0.9)) - 0.5) * length;
-      const px = x + cos * t, pz = z - sin * t;
-      const by = groundAt(px, pz);
-      this._stage('sandbagDark', boxGeo(length / Math.max(2, Math.round(length / 0.9)) + 0.12, 0.16, 0.66, 1.6),
-        mat(px, by + 0.03, pz, ry));
+    // The berm used to be a run of flat boxes, which under the bottom course
+    // read as exactly what it was: a green slab with sandbags balanced on it.
+    // Spoil does not have a top face. Each section is now a wedge that slopes
+    // away from the wall on both sides, faceted so the two slopes shade apart,
+    // with the crest jittered along the run so no two sections match.
+    {
+      const nb = Math.max(2, Math.round(length / 0.9));
+      const seg = length / nb + 0.14;
+      for (let i = 0; i < nb; i++) {
+        const t = ((i + 0.5) / nb - 0.5) * length;
+        const px = x + cos * t, pz = z - sin * t;
+        const by = groundAt(px, pz);
+        const hh = 0.15 + rnd() * 0.07;
+        const s = new THREE.Shape();
+        // Half-section of a spoil bank: wide splayed foot, short crest.
+        s.moveTo(-0.40 - rnd() * 0.08, 0);
+        s.lineTo(-0.13, hh * 0.86);
+        s.lineTo(0.06, hh);
+        s.lineTo(0.20, hh * 0.74);
+        s.lineTo(0.38 + rnd() * 0.08, 0);
+        s.closePath();
+        const g = new THREE.ExtrudeGeometry(s, { depth: seg, bevelEnabled: false });
+        g.rotateY(Math.PI / 2).translate(-seg / 2, 0, 0);
+        this._stage('sandbagDark', worldUV(facet(g), 1.5), mat(px, by, pz, ry));
+      }
     }
     for (let c = 0; c < courses; c++) {
       const inset = c * 0.12;
@@ -3356,11 +3769,28 @@ float gKerb(vec2 P) {
         return { geo: g, mat: 'sandbag', cast: true, vcol: true };
       }
       case 'drum': {
-        const body = cylGeo(0.3, 0.3, 0.88, 12, 1.0).translate(0, 0.44, 0);
-        const r1 = cylGeo(0.325, 0.325, 0.06, 12, 1.0).translate(0, 0.26, 0);
-        const r2 = cylGeo(0.325, 0.325, 0.06, 12, 1.0).translate(0, 0.62, 0);
-        const lid = cylGeo(0.31, 0.31, 0.04, 12, 1.0).translate(0, 0.9, 0);
-        return { geo: mergeGeometries([body, r1, r2, lid]), mat: 'rust', cast: true };
+        // A 205 litre drum is not a cylinder. It has two rolled chimes it
+        // stands on, two swaged rolling hoops it is walked on, a slightly
+        // waisted body between them and a bung plate in the lid — and it is
+        // those four horizontal breaks catching the light at different angles
+        // that say "steel drum" rather than "grey tube with rust painted on".
+        const SEG = 16, parts = [];
+        parts.push(cylGeo(0.288, 0.288, 0.86, SEG, 1.0).translate(0, 0.45, 0));
+        // Rolled chimes: the rim at each end stands proud of the body.
+        parts.push(cylGeo(0.305, 0.298, 0.055, SEG, 1.0).translate(0, 0.030, 0));
+        parts.push(cylGeo(0.298, 0.305, 0.055, SEG, 1.0).translate(0, 0.868, 0));
+        // Rolling hoops at the quarter points.
+        parts.push(cylGeo(0.322, 0.322, 0.052, SEG, 1.0).translate(0, 0.285, 0));
+        parts.push(cylGeo(0.322, 0.322, 0.052, SEG, 1.0).translate(0, 0.610, 0));
+        // Chamfered shoulders into the hoops, so they are swaged into the shell
+        // rather than looking like rings slid over it.
+        for (const [y, a, b] of [[0.252, 0.296, 0.320], [0.318, 0.320, 0.296],
+          [0.577, 0.296, 0.320], [0.643, 0.320, 0.296]]) {
+          parts.push(cylGeo(b, a, 0.028, SEG, 1.0).translate(0, y, 0));
+        }
+        parts.push(cylGeo(0.292, 0.292, 0.035, SEG, 1.0).translate(0, 0.905, 0));
+        parts.push(cylGeo(0.062, 0.062, 0.026, 8, 1.4).translate(0.16, 0.925, 0.05));
+        return { geo: mergeGeometries(parts), mat: 'rust', cast: true };
       }
       case 'tyre': {
         const g = new THREE.TorusGeometry(0.33, 0.13, 7, 14);
@@ -3368,10 +3798,33 @@ float gKerb(vec2 P) {
         return { geo: g, mat: 'rubber', cast: true };
       }
       case 'crate': {
-        const parts = [boxGeo(0.72, 0.6, 0.72, 1.5).translate(0, 0.3, 0)];
-        // Corner battens so the silhouette is not a perfect cube.
+        // An unbevelled box has one value per face and a razor silhouette, and
+        // at any distance that is a grey cube. This one is boarded: three
+        // horizontal planks a side with a real 8 mm shadow gap between them, a
+        // chamfer off every arris so the top edges catch a highlight, and
+        // corner battens standing proud so the silhouette is stepped.
+        const parts = [];
+        const S = 0.70, H = 0.60, CH = 0.022;
+        // Core, inset so the boarding stands proud of it.
+        parts.push(boxGeo(S - 0.05, H - 0.04, S - 0.05, 1.5).translate(0, H / 2, 0));
+        // Boarding: three planks per side, each chamfered top and bottom.
+        for (let i = 0; i < 3; i++) {
+          const y = 0.075 + i * 0.185, ph = 0.166;
+          for (const [dx, dz, w, d] of [[0, 1, S, 0.03], [0, -1, S, 0.03],
+            [1, 0, 0.03, S], [-1, 0, 0.03, S]]) {
+            parts.push(boxGeo(w, ph, d, 1.9).translate(dx * (S / 2), y + ph / 2, dz * (S / 2)));
+            parts.push(boxGeo(w - CH * 2 * (1 - Math.abs(dx)), CH, d - CH * 2 * (1 - Math.abs(dz)), 1.9)
+              .translate(dx * (S / 2 - CH * 0.5), y + ph + CH / 2, dz * (S / 2 - CH * 0.5)));
+          }
+        }
+        // Lid boards with a gap, and a chamfered top edge all round.
+        for (let i = 0; i < 3; i++) {
+          parts.push(boxGeo(S - 0.03, 0.028, 0.208, 1.9).translate(0, H - 0.014, -0.226 + i * 0.226));
+        }
+        // Corner battens, chamfered at the head.
         for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
-          parts.push(boxGeo(0.08, 0.64, 0.08, 2.5).translate(sx * 0.36, 0.32, sz * 0.36));
+          parts.push(boxGeo(0.075, H + 0.02, 0.075, 2.5).translate(sx * 0.345, (H + 0.02) / 2, sz * 0.345));
+          parts.push(boxGeo(0.055, 0.022, 0.055, 2.5).translate(sx * 0.345, H + 0.03, sz * 0.345));
         }
         return { geo: mergeGeometries(parts), mat: 'wood', cast: true };
       }
