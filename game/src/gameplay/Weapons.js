@@ -559,9 +559,14 @@ function glovedHand(material, plate, { curl = 1.0, mirror = false, wrap = 0, tri
   cuff.position.set(0, -0.068, 0.042);
   hand.add(cuff);
 
-  const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.033, 0.038, 0.20, 12), material);
+  // Short stub, not a full forearm. poseHand aims the arm axis back toward the
+  // eye, so a 20 cm sleeve runs straight at the near plane and renders as a
+  // beige cylinder across the bottom of the frame — it was the largest object
+  // on screen. Real viewmodels let the arm leave through the frame edge instead
+  // of modelling it toward the lens; this only has to close off the cuff.
+  const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.030, 0.034, 0.075, 12), material);
   sleeve.rotation.x = Math.PI / 2;
-  sleeve.position.set(0, -0.096, 0.153);
+  sleeve.position.set(0, -0.082, 0.088);
   hand.add(sleeve);
 
   return hand;
