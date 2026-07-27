@@ -223,18 +223,165 @@ export class HUD {
       ctx.fillText(k.text, w - pad, 62 + i * 20);
     }
 
+    // --- compass + minimap --------------------------------------------------
+    this._drawCompass(ctx, w);
+    this._drawMinimap(ctx, w, h, pad);
+
     // --- objective / score --------------------------------------------------
     ctx.textAlign = 'left';
     ctx.fillStyle = 'rgba(232,228,220,0.5)';
     ctx.font = '500 11px ui-monospace,Menlo,monospace';
-    ctx.fillText(`HOSTILES  ${this.enemies.alive}`, pad, 60);
-    ctx.fillText(`SCORE  ${this.score}`, pad, 78);
+    ctx.fillText(`SCORE  ${this.score}`, pad, h - pad - 34);
 
     if (this.engine.input?.down('F3')) {
       const s = this.engine.stats;
       ctx.fillStyle = 'rgba(140,255,180,0.8)';
       ctx.fillText(`${s.fps.toFixed(0)} FPS  ${s.frameMs.toFixed(1)}ms  ${s.drawCalls} calls  ${(s.triangles / 1000).toFixed(0)}k tris`, pad, 100);
     }
+  }
+
+  /**
+   * Heading strip across the top of the frame. Cardinal letters and degree ticks
+   * scroll against a fixed centre marker, which is how every modern military
+   * shooter communicates facing without a full 3D compass.
+   */
+  _drawCompass(ctx, w) {
+    const cx = w / 2;
+    const halfWidth = Math.min(300, w * 0.22);
+    const degPerPx = 90 / (halfWidth * 2);   // 90 degrees visible across the strip
+    // Player yaw of 0 looks down -Z, which is north.
+    const heading = ((-this.player.yaw * 180 / Math.PI) % 360 + 360) % 360;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(cx - halfWidth, 0, halfWidth * 2, 54);
+    ctx.clip();
+
+    // Fade the strip out at both ends so it does not terminate on a hard edge.
+    const grad = ctx.createLinearGradient(cx - halfWidth, 0, cx + halfWidth, 0);
+    grad.addColorStop(0, 'rgba(232,228,220,0)');
+    grad.addColorStop(0.18, 'rgba(232,228,220,0.5)');
+    grad.addColorStop(0.82, 'rgba(232,228,220,0.5)');
+    grad.addColorStop(1, 'rgba(232,228,220,0)');
+
+    const CARDINALS = { 0: 'N', 45: 'NE', 90: 'E', 135: 'SE', 180: 'S', 225: 'SW', 270: 'W', 315: 'NW' };
+    for (let d = -50; d <= 50; d += 5) {
+      const deg = Math.round(heading + d);
+      const norm = ((deg % 360) + 360) % 360;
+      const x = cx + d / degPerPx;
+      if (x < cx - halfWidth || x > cx + halfWidth) continue;
+      const label = CARDINALS[norm];
+      const major = norm % 45 === 0;
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = major ? 1.6 : 1;
+      ctx.beginPath();
+      ctx.moveTo(x, 26);
+      ctx.lineTo(x, major ? 36 : 32);
+      ctx.stroke();
+      if (label) {
+        ctx.fillStyle = grad;
+        ctx.textAlign = 'center';
+        ctx.font = `${label.length > 1 ? '500 11px' : '600 14px'} ui-monospace,Menlo,monospace`;
+        ctx.fillText(label, x, 22);
+      }
+    }
+    ctx.restore();
+
+    // Fixed centre marker.
+    ctx.fillStyle = 'rgba(255,236,190,0.95)';
+    ctx.beginPath();
+    ctx.moveTo(cx, 42);
+    ctx.lineTo(cx - 5, 50);
+    ctx.lineTo(cx + 5, 50);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  /**
+   * Top-left tactical map. Rotates with the player so "up" is always forward,
+   * plots nearby level geometry from the physics broadphase and marks hostiles
+   * that are currently aware of the player.
+   */
+  _drawMinimap(ctx, w, h, pad) {
+    const size = 148;
+    const x0 = pad, y0 = pad + 8;
+    const cx = x0 + size / 2, cy = y0 + size / 2;
+    const range = 46;                 // metres from centre to edge
+    const scale = (size / 2) / range;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, size / 2, 0, Math.PI * 2);
+    ctx.clip();
+    ctx.fillStyle = 'rgba(10,13,16,0.46)';
+    ctx.fillRect(x0, y0, size, size);
+
+    const px = this.player.position.x, pz = this.player.position.z;
+    // Rotate so the player's facing points up the screen.
+    const c = Math.cos(this.player.yaw), s = Math.sin(this.player.yaw);
+    const project = (wx, wz) => {
+      const dx = wx - px, dz = wz - pz;
+      return [cx + (dx * c - dz * s) * scale, cy + (dx * s + dz * c) * scale];
+    };
+
+    // Level footprint, sampled from the collision BVH's top-level nodes so the
+    // map reflects the actual world rather than a hand-authored copy of it.
+    const phys = this.engine.game?.physics;
+    if (phys?.nodes) {
+      ctx.fillStyle = 'rgba(150,164,180,0.30)';
+      const nodes = phys.nodes;
+      const count = Math.min(phys.nodeCount || 0, 256);
+      for (let i = 1; i < count; i++) {
+        const o = i * 8;
+        const minX = nodes[o], minZ = nodes[o + 2];
+        const maxX = nodes[o + 3], maxZ = nodes[o + 5];
+        const height = nodes[o + 4] - nodes[o + 1];
+        if (height < 1.6) continue;                       // skip ground/low cover
+        const [ax, ay] = project(minX, minZ);
+        const [bx, by] = project(maxX, maxZ);
+        ctx.fillRect(Math.min(ax, bx), Math.min(ay, by), Math.abs(bx - ax), Math.abs(by - ay));
+      }
+    }
+
+    // Hostiles: solid when they have eyes on the player, hollow when merely alert.
+    for (const e of this.enemies.enemies || []) {
+      if (e.state === 4) continue;                        // STATE.DEAD
+      const [ex, ey] = project(e.position.x, e.position.z);
+      if (Math.hypot(ex - cx, ey - cy) > size / 2 - 4) continue;
+      ctx.beginPath();
+      ctx.arc(ex, ey, 3.4, 0, Math.PI * 2);
+      if (e.hasLos) { ctx.fillStyle = 'rgba(232,86,72,0.95)'; ctx.fill(); }
+      else { ctx.strokeStyle = 'rgba(232,150,72,0.8)'; ctx.lineWidth = 1.4; ctx.stroke(); }
+    }
+    ctx.restore();
+
+    // Player arrow and the field-of-view wedge.
+    ctx.fillStyle = 'rgba(190,236,200,0.16)';
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, size / 2, -Math.PI / 2 - 0.5, -Math.PI / 2 + 0.5);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(232,240,232,0.95)';
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - 6);
+    ctx.lineTo(cx - 4.5, cy + 5);
+    ctx.lineTo(cx + 4.5, cy + 5);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(232,228,220,0.22)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, size / 2, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(232,228,220,0.5)';
+    ctx.font = '500 11px ui-monospace,Menlo,monospace';
+    ctx.fillText(`HOSTILES  ${this.enemies.alive}`, x0, y0 + size + 16);
+    void h;
   }
 
   dispose() {
