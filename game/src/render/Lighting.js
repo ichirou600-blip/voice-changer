@@ -28,7 +28,7 @@ import * as THREE from 'three';
 // cascades barely change between frames anyway.
 const QUALITY = {
   high: {
-    cascades: 4,
+    cascades: 1,
     mapSizes: [2048, 2048, 1536, 1536],
     intervals: [1, 2, 4, 6],
     shadowDistance: 110,

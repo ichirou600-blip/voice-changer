@@ -42,6 +42,7 @@ const GROUND_H = 3.9;       // taller ground floor so shopfronts read
 const WALL_T = 0.34;        // facade thickness — this is the window reveal depth
 const MAP_X = 112;          // ground half extent along the boulevard
 const MAP_Z = 84;
+const CELL = 34;            // merge-batch cell size; sets the culling granularity
 
 /**
  * Facade material palette. Everything derives from the procedural library; the
@@ -314,14 +315,28 @@ export class Level {
     return m;
   }
 
-  /** Stage a world-space geometry into a merge batch. */
+  /**
+   * Stage a world-space geometry into a merge batch.
+   *
+   * Batches are keyed by material *and* by a coarse spatial cell. Merging by
+   * material alone would give the fewest draw calls but each mesh would span
+   * the whole map, so nothing could ever be frustum-culled and both the colour
+   * and the shadow pass would submit the entire city every frame. Cell-sized
+   * batches trade a few dozen extra draw calls for real culling, which on a
+   * software rasteriser is the difference between a frame and a stall.
+   */
   _stage(key, geo, matrix = null, tint = null) {
     if (matrix) geo.applyMatrix4(matrix);
     ensureIndex(geo);
     this._colorize(geo, tint);
-    let b = this._batches.get(key);
-    if (!b) { b = []; this._batches.set(key, b); }
-    b.push(geo);
+    geo.computeBoundingBox();
+    const bb = geo.boundingBox;
+    const ix = Math.floor((bb.min.x + bb.max.x) * 0.5 / CELL);
+    const iz = Math.floor((bb.min.z + bb.max.z) * 0.5 / CELL);
+    const full = `${key}#${ix}_${iz}`;
+    let b = this._batches.get(full);
+    if (!b) { b = { key, geos: [] }; this._batches.set(full, b); }
+    b.geos.push(geo);
     return geo;
   }
 
@@ -366,22 +381,23 @@ export class Level {
     geo.setAttribute('color', new THREE.BufferAttribute(arr, 3));
   }
 
-  /** Merge every batch into one mesh per material and hand it to the scene. */
+  /** Merge every batch into one mesh per material per spatial cell. */
   _flushBatches() {
-    for (const [key, geos] of this._batches) {
+    for (const [full, b] of this._batches) {
+      const geos = b.geos;
       if (!geos.length) continue;
       const merged = geos.length === 1 ? geos[0] : mergeGeometries(geos, false);
-      if (!merged) { console.warn(`Level: batch "${key}" failed to merge`); continue; }
+      if (!merged) { console.warn(`Level: batch "${full}" failed to merge`); continue; }
       if (geos.length > 1) for (const g of geos) g.dispose();
       // aoMap samples the second UV channel; the baked AO is meant to tile with
       // the albedo so the two channels share coordinates.
       merged.setAttribute('uv1', merged.attributes.uv);
       merged.computeBoundingSphere();
-      const mesh = new THREE.Mesh(merged, this._mat(key));
-      mesh.castShadow = !NO_CAST.has(key);
+      const mesh = new THREE.Mesh(merged, this._mat(b.key));
+      mesh.castShadow = !NO_CAST.has(b.key);
       mesh.receiveShadow = true;
       mesh.userData.noCollide = true;   // collision is authored separately
-      mesh.name = `block_${key}`;
+      mesh.name = `block_${full}`;
       this.root.add(mesh);
     }
     this._batches.clear();
