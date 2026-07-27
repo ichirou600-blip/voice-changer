@@ -35,11 +35,17 @@ const KIT_TEX = 128;
  * make fbm seamless across the 0..1 tile, which matters because the same sheet
  * is repeated two or three times around a limb.
  */
-function tileFbm(noise, u, v, freq, octaves) {
-  const a = fbm2(noise, u * freq, v * freq, octaves);
-  const b = fbm2(noise, (u - 1) * freq, v * freq, octaves);
-  const c = fbm2(noise, u * freq, (v - 1) * freq, octaves);
-  const d = fbm2(noise, (u - 1) * freq, (v - 1) * freq, octaves);
+function tileFbm(noise, u, v, freq, octaves, ox = 0, oy = 0) {
+  // `u` and `v` are the cross-fade weights as well as the sample position, so a
+  // decorrelating offset MUST go through ox/oy — folding it into u or v pushes
+  // the weights outside 0..1 and extrapolates the blend, which turns a +/-1
+  // field into a +/-5 one. That is what was driving the wear and overlay layers
+  // of the camo far past their intended amplitude and giving the print its
+  // blotchy, high-contrast, mould-like read.
+  const a = fbm2(noise, u * freq + ox, v * freq + oy, octaves);
+  const b = fbm2(noise, (u - 1) * freq + ox, v * freq + oy, octaves);
+  const c = fbm2(noise, u * freq + ox, (v - 1) * freq + oy, octaves);
+  const d = fbm2(noise, (u - 1) * freq + ox, (v - 1) * freq + oy, octaves);
   return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
 }
 
@@ -235,16 +241,34 @@ export class EnemyManager {
       const fuzz = tileFbm(nz, u, v, 40, 2) * 0.10;
       const hgt = 0.5 + rib * 0.16 + grid + fuzz;
 
-      const n1 = tileFbm(nz, u, v, 1.8, 4);
-      const n2 = tileFbm(nz, u + 0.31, v + 0.77, 3.6, 3);
+      // The print. Four octaves of fbm sliced at three thresholds is a cloud,
+      // not a camouflage pattern: every patch boundary is soft, every patch is
+      // the same size as every other, and the octaves above the third put
+      // pepper inside all of them — which at 6 m integrates to a uniform
+      // high-frequency speckle. The reviewer read that as mould, correctly.
+      //
+      // Real prints are built from a few big shapes with hard, irregular
+      // edges. So: two octaves for the shape, a third used only to *warp* the
+      // sampling position so the boundaries wander instead of being smooth
+      // level sets, and a separate coarse field for the brown overlay. The
+      // fleck layer is kept but pushed to a value step small enough that it
+      // adds grain to a patch rather than competing with it.
+      const wx = tileFbm(nz, u, v, 3.4, 2, 51.0, 23.0) * 0.16;
+      const wy = tileFbm(nz, u, v, 3.4, 2, 94.0, 76.0) * 0.16;
+      const n1 = tileFbm(nz, u, v, 1.5, 2, wx * 12, wy * 12);
+      const n2 = tileFbm(nz, u, v, 2.1, 2, 31.0 + wy * 12, 77.0 + wx * 12);
       let c = MID;
-      if (n1 > 0.10) c = LIGHT;
-      if (n1 < -0.13) c = DARK;
-      if (n2 > 0.26) c = BROWN;
+      if (n1 > 0.06) c = LIGHT;
+      if (n1 < -0.10) c = DARK;
+      if (n2 > 0.22) c = BROWN;
+      // Fleck: the small hard-edged specks a modern print carries inside the
+      // large shapes. Value only, so it never reads as a fifth colour.
+      const fleck = tileFbm(nz, u, v, 9, 1, 117.0, 39.0) > 0.30 ? 0.90 : 1;
       // Sun-bleached high points, dirt in the folds.
-      const wear = 1 + tileFbm(nz, u + 4.2, v + 1.5, 7, 3) * 0.11 + grid * 0.22;
+      const wear = 1 + tileFbm(nz, u, v, 7, 3, 42.0, 15.0) * 0.11 + grid * 0.22;
+      const t = wear * fleck;
       const rough = 1 - Math.abs(fuzz) * 1.2 - (over ? 0 : 0.04);
-      return [hgt, rough, c[0] * wear, c[1] * wear, c[2] * wear];
+      return [hgt, rough, c[0] * t, c[1] * t, c[2] * t];
     }, 1.6, true);
 
     // Cordura webbing: coarse ribs across the strap with a stitch line down it.
@@ -253,7 +277,7 @@ export class EnemyManager {
     const nylon = bakeKit((u, v) => {
       const rib = Math.cos(v * Math.PI * 2 * 26);
       const stitch = Math.abs(((u * 6) % 1) - 0.5) < 0.055 ? 0.24 : 0;
-      const grain = tileFbm(nz, u + 2.1, v + 8.4, 30, 2) * 0.09;
+      const grain = tileFbm(nz, u, v, 30, 2, 21.0, 84.0) * 0.09;
       return [0.5 + rib * 0.13 + stitch + grain, 0.92 + rib * 0.06 - stitch * 0.35];
     }, 1.4);
 
@@ -261,7 +285,7 @@ export class EnemyManager {
     const rubber = bakeKit((u, v) => {
       const w = worley2(u * 18, v * 18, 18, 771);
       const cell = smoothstep(0.02, 0.30, w.f1);
-      return [0.5 + cell * 0.42 + tileFbm(nz, u + 3, v + 3, 34, 2) * 0.06, 1 - cell * 0.16];
+      return [0.5 + cell * 0.42 + tileFbm(nz, u, v, 34, 2, 30.0, 30.0) * 0.06, 1 - cell * 0.16];
     }, 2.2);
 
     // A limb's UV wraps once around a much smaller circumference than the
@@ -277,7 +301,11 @@ export class EnemyManager {
     // a real four-colour print measures. Nothing above the collar takes a cloth
     // sheet at all: the helmet, the skin and the neck are their own materials,
     // so the print stops where it stops in life.
-    const CAMO_TILE = 0.31;
+    // 0.31 m of sheet at two shape octaves lands roughly 20 cm blotches, which
+    // is what a four-colour print measures and — more to the point — is large
+    // enough relative to a 12 cm forearm that the arm carries two or three
+    // patches instead of a field of them.
+    const CAMO_TILE = 0.42;
     const WEAVE_TILE = 0.15;
     const garment = (girth, run) => retile(
       cloth, girth / WEAVE_TILE, run / WEAVE_TILE, girth / CAMO_TILE, run / CAMO_TILE,
@@ -369,6 +397,12 @@ export class EnemyManager {
       upperArm: new THREE.CapsuleGeometry(0.058, 0.19, 4, 9),
       foreArm: new THREE.CapsuleGeometry(0.050, 0.20, 4, 9),
       helmetShell: new THREE.LatheGeometry(HELMET_PROFILE, 22),
+      // A shoulder is not a ball. The sphere this replaces was 15 mm wider than
+      // the arm capsule it sat on, all the way round, so the joint read as two
+      // objects intersecting rather than as a deltoid; a lathe that starts at
+      // the acromion and lands exactly on the sleeve radius closes it.
+      deltoid: new THREE.LatheGeometry(DELTOID_PROFILE, 16),
+      neck: new THREE.LatheGeometry(NECK_PROFILE, 16),
     };
 
     // --- pelvis ---------------------------------------------------------------
@@ -424,15 +458,76 @@ export class EnemyManager {
     torso.add(m.webbing, P.box, [0.005, -0.012, 0.150], [0, 0, 0.62], [0.040, 0.300, 0.020]);
     torso.add(m.webbing, P.box, [0.005, -0.012, -0.150], [0, 0, -0.62], [0.040, 0.290, 0.020]);
 
+    // MOLLE. Four bevelled boxes with pouches glued to them is a chest rig, not
+    // a plate carrier: what makes armour read as armour is the ladder of nylon
+    // loops covering every square centimetre that is not a pouch, plus the
+    // straps and buckles that hold the thing together. All of it is 3-6 mm
+    // proud, which is exactly the scale that puts a broken shadow line across a
+    // flat panel and stops the plates reading as painted boards.
+    const molle = (z, face, rows, cols, w, top, pitch) => {
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const x = (c - (cols - 1) / 2) * w;
+          torso.add(m.webbing, P.box, [x, top - r * pitch, z + face * 0.006],
+            null, [w * 0.86, 0.020, 0.012]);
+          // The vertical stitch that divides each row into loops.
+          torso.add(m.plate, P.box, [x, top - r * pitch, z + face * 0.009],
+            null, [0.006, 0.022, 0.008]);
+        }
+      }
+    };
+    molle(-0.146, -1, 4, 5, 0.062, 0.062, 0.046);            // back plate
+    for (const sx of [-1, 1]) {                              // cummerbund flanks
+      for (let r = 0; r < 2; r++) {
+        for (let c = 0; c < 3; c++) {
+          torso.add(m.webbing, P.box,
+            [sx * 0.202, -0.038 - r * 0.044, (c - 1) * 0.062],
+            [0, 0, sx * 0.06], [0.012, 0.020, 0.054]);
+        }
+      }
+    }
+
+    // Padded shoulder yoke: the strap that actually carries the plates, running
+    // over each shoulder from the back panel to the front, with the quick-
+    // release buckle where it lands on the chest.
+    for (const sx of [-1, 1]) {
+      torso.add(m.plate, P.box, [sx * 0.104, 0.196, 0.006], [0, 0, -sx * 0.14], [0.086, 0.044, 0.220]);
+      torso.add(m.webbing, P.box, [sx * 0.104, 0.208, 0.006], [0, 0, -sx * 0.14], [0.056, 0.024, 0.226]);
+      // Front and rear strap runs down onto the plates.
+      torso.add(m.webbing, P.box, [sx * 0.098, 0.144, 0.116], [-0.42, 0, 0], [0.062, 0.110, 0.020]);
+      torso.add(m.webbing, P.box, [sx * 0.098, 0.140, -0.112], [0.44, 0, 0], [0.062, 0.110, 0.020]);
+      // Buckle and its tail.
+      torso.add(m.gear, P.box, [sx * 0.098, 0.092, 0.148], [-0.16, 0, 0], [0.048, 0.036, 0.016]);
+      torso.add(m.gear, P.box, [sx * 0.098, 0.072, 0.150], [-0.16, 0, 0], [0.030, 0.016, 0.012]);
+      // Elastic retention band across each shoulder strap.
+      torso.add(m.gaiter, P.box, [sx * 0.104, 0.186, 0.070], [0, 0, -sx * 0.14], [0.070, 0.048, 0.014]);
+    }
+    // Cummerbund closure flaps and their side-release buckles.
+    for (const sx of [-1, 1]) {
+      torso.add(m.pouch, P.box, [sx * 0.132, -0.078, 0.126], [0, sx * 0.42, 0], [0.090, 0.140, 0.018]);
+      torso.add(m.gear, P.box, [sx * 0.120, -0.078, 0.142], [0, sx * 0.42, 0], [0.036, 0.048, 0.014]);
+    }
+    // Drag handle across the top of the back plate.
+    torso.add(m.webbing, P.box, [0, 0.152, -0.130], [0.30, 0, 0], [0.140, 0.030, 0.026]);
+    torso.add(m.plate, P.box, [0, 0.130, -0.138], null, [0.150, 0.026, 0.016]);
+    // Elastic retention over the front magazine pouches.
+    for (let i = -1; i <= 1; i++) {
+      torso.add(m.gaiter, P.box, [i * 0.082, -0.052, 0.156], null, [0.084, 0.024, 0.070]);
+    }
+
     // --- head -----------------------------------------------------------------
     const head = new GeoBag();
     // A neck, not a head sat on a collar. The skull is lifted clear of the chest
     // capsule and the gap bridged by a dark column, because the single strongest
     // "mannequin" tell is a head that starts where the torso stops. Nothing here
     // is camo: the print stops at the collar, which is where it stops in life.
-    head.add(m.gaiter, P.cyl, [0, -0.118, -0.004], null, [0.104, 0.150, 0.106]);
-    head.add(m.skin, P.cyl, [0, -0.086, -0.004], null, [0.092, 0.090, 0.094]);
+    head.add(m.skin, P.neck, [0, -0.052, -0.004], null, [1.0, 1.0, 1.06]);
     head.add(m.skin, P.sphere, [0, 0, 0.004], null, [0.176, 0.196, 0.188]);
+    // Uniform collar standing off the trapezius, and the shirt beneath it. The
+    // neck used to be a bare tan cylinder ending on nothing; the collar is the
+    // hard dark ring that makes it a neck coming out of a shirt.
+    head.add(m.camoWorn, P.cyl, [0, -0.152, -0.004], null, [0.218, 0.052, 0.212]);
+    head.add(m.gaiter, P.cyl, [0, -0.130, -0.004], null, [0.186, 0.044, 0.180]);
     // Lower face is a neck gaiter, not a blank chin. It puts a hard dark value
     // under the cheekbones, which is what lets a head read as a face at range
     // without modelling features nobody can resolve anyway.
@@ -468,14 +563,34 @@ export class EnemyManager {
     knee.add(m.camoLeg, P.shin, [0, -0.200, 0]);
     knee.add(m.camoWorn, P.sphere, [0, -0.022, 0.036], null, [0.156, 0.132, 0.098]);
     knee.add(m.gear, P.box, [0, -0.026, 0.058], [0.10, 0, 0], [0.108, 0.088, 0.022]);
-    // Boot: ankle cuff, leather upper, proud rubber sole. The sole is what gives
-    // the foot a horizontal line to sit on the ground with.
-    knee.add(m.boot, P.cyl, [0, -0.322, 0.004], null, [0.148, 0.112, 0.148]);
-    knee.add(m.boot, P.box, [0, -0.394, 0.040], null, [0.108, 0.082, 0.238]);
-    knee.add(m.boot, P.box, [0, -0.368, 0.108], [0.30, 0, 0], [0.100, 0.058, 0.072]);
-    knee.add(m.webbing, P.box, [0, -0.350, 0.070], null, [0.052, 0.068, 0.054]);
-    knee.add(m.sole, P.box, [0, -0.437, 0.044], null, [0.116, 0.028, 0.250]);
-    knee.add(m.sole, P.box, [0, -0.424, 0.152], [0.22, 0, 0], [0.104, 0.032, 0.058]);
+    // Boot. The old one was the shin cylinder in a darker colour with a slab
+    // under it: no ankle, no heel, no laces, and the leg capsule ran straight
+    // through the sole. A boot's silhouette is a shaft, a waist at the ankle, a
+    // wide instep and a heel standing proud at the back — five hard steps, and
+    // every one of them is a place the light changes direction.
+    knee.add(m.camoLeg, P.cyl, [0, -0.296, 0.004], null, [0.172, 0.080, 0.166]);   // bloused trouser
+    knee.add(m.gaiter, P.cyl, [0, -0.334, 0.004], null, [0.156, 0.050, 0.152]);    // padded collar
+    knee.add(m.boot, P.cyl, [0, -0.362, 0.006], null, [0.142, 0.042, 0.140]);      // shaft
+    knee.add(m.boot, P.cyl, [0, -0.388, 0.008], null, [0.124, 0.036, 0.126]);      // ankle waist
+    knee.add(m.boot, P.box, [0, -0.410, 0.044], [0.05, 0, 0], [0.114, 0.062, 0.192]);
+    knee.add(m.boot, P.box, [0, -0.406, 0.128], [0.26, 0, 0], [0.102, 0.050, 0.076]); // toe box
+    knee.add(m.boot, P.sphere, [0, -0.400, -0.042], null, [0.116, 0.092, 0.090]);  // heel counter
+    // Tongue and four lace bars up the instep.
+    knee.add(m.webbing, P.box, [0, -0.376, 0.066], [0.18, 0, 0], [0.058, 0.076, 0.048]);
+    for (let i = 0; i < 4; i++) {
+      knee.add(m.webbing, P.box, [0, -0.352 - i * 0.019, 0.058 + i * 0.014], [0.20, 0, 0], [0.070, 0.008, 0.010]);
+      for (const sx of [-1, 1]) {
+        knee.add(m.gear, P.cyl, [sx * 0.036, -0.352 - i * 0.019, 0.056 + i * 0.014],
+          [Math.PI / 2, 0, 0], [0.011, 0.006, 0.011]);
+      }
+    }
+    // Sole stack: midsole, lugged outsole, a heel block standing proud at the
+    // back and a toe spring at the front. Lowest point stays at -0.452 so the
+    // foot still meets the ground exactly where the locomotion expects it.
+    knee.add(m.sole, P.box, [0, -0.434, 0.044], null, [0.120, 0.020, 0.248]);
+    knee.add(m.sole, P.box, [0, -0.446, 0.032], null, [0.112, 0.012, 0.214]);
+    knee.add(m.sole, P.box, [0, -0.443, -0.054], null, [0.110, 0.018, 0.082]);
+    knee.add(m.sole, P.box, [0, -0.430, 0.150], [0.24, 0, 0], [0.102, 0.026, 0.058]);
 
     const upperArm = new GeoBag();
     // The deltoid, not a pauldron. A hard armour ball at the arm root reads as a
@@ -483,10 +598,16 @@ export class EnemyManager {
     // soldier is wearing plate. This is the same cloth as the arm, barely wider
     // than the capsule it caps, so it closes the shoulder joint instead of
     // announcing it, and its outer edge stays under the plate carrier's yoke.
-    upperArm.add(m.camoArm, P.sphere, [0, -0.014, 0], null, [0.146, 0.166, 0.150]);
+    upperArm.add(m.camoArm, P.deltoid, [0, -0.004, 0], null, [1.0, 1.0, 0.90]);
     upperArm.add(m.camoArm, P.upperArm, [0, -0.155, 0]);
+    // Sleeve seam round the bottom of the deltoid — the stitch line every
+    // combat shirt has, and the one thing that reads the transition as tailored
+    // rather than as a modelling accident.
+    upperArm.add(m.camoWorn, P.torus, [0, -0.152, 0], [Math.PI / 2, 0, 0], [0.118, 0.118, 0.106]);
     // Rolled sleeve cuff: the one hard line that gives the arm a joint.
     upperArm.add(m.camoWorn, P.cyl, [0, -0.262, 0], null, [0.126, 0.046, 0.126]);
+    // Shoulder brassard: unit patch panel on the outer deltoid.
+    upperArm.add(m.camoWorn, P.box, [0, -0.070, -0.058], [0.20, 0, 0], [0.070, 0.062, 0.012]);
 
     const elbow = new GeoBag();
     elbow.add(m.camoArm, P.foreArm, [0, -0.155, 0]);
@@ -1026,6 +1147,23 @@ const HELMET_PROFILE = [
   [0.118, -0.086], [0.139, -0.090], [0.147, -0.080], [0.141, -0.068],
   [0.133, -0.050], [0.132, -0.014], [0.128, 0.030], [0.118, 0.068],
   [0.101, 0.098], [0.076, 0.118], [0.042, 0.128], [0.000, 0.130],
+].map(([r, y]) => new THREE.Vector2(r, y));
+
+// Shoulder cap -> deltoid belly -> sleeve. The last radius is the upper-arm
+// capsule's own 0.058, so the two meet with no step to catch a rim light.
+const DELTOID_PROFILE = [
+  [0.008, 0.076], [0.030, 0.070], [0.050, 0.058], [0.064, 0.040],
+  [0.0715, 0.018], [0.0740, -0.008], [0.0728, -0.036], [0.0692, -0.066],
+  [0.0650, -0.096], [0.0608, -0.126], [0.0580, -0.150],
+].map(([r, y]) => new THREE.Vector2(r, y));
+
+// Jaw line -> throat -> trapezius. A bare cylinder between a sphere head and a
+// capsule chest is the single loudest mannequin cue there is; the flare into
+// the shoulders is what makes the head look attached to the body.
+const NECK_PROFILE = [
+  [0.000, 0.006], [0.040, -0.004], [0.050, -0.022], [0.0475, -0.048],
+  [0.0455, -0.072], [0.0480, -0.094], [0.0570, -0.114], [0.0720, -0.132],
+  [0.0920, -0.148], [0.1140, -0.160], [0.1300, -0.168],
 ].map(([r, y]) => new THREE.Vector2(r, y));
 
 const _pos = new THREE.Vector3();
