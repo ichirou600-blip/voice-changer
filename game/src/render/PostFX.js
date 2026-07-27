@@ -770,7 +770,12 @@ const DOFDownsampleShader = {
     // gently and the near field (the weapon) ramps hard.
     float cocAt(vec2 uv, float focus) {
       float z = gbufDepth(uv);
-      float rel = (z - focus) / max(z, 1e-3);
+      // Normalise against the focus distance, NOT against z. Dividing by z
+      // makes the near term blow up as z shrinks — focus at 60 m gave ground
+      // 5 m out a rel of -11, which saturates to maximum blur and softens the
+      // entire play space. Against focus the same sample is rel -0.92, which
+      // lands under a pixel, and only genuinely close geometry blurs.
+      float rel = (z - focus) / max(focus, 1e-3);
       float c = rel < 0.0 ? rel * uNearScale : rel * uFarScale;
       return clamp(c * uMaxCoc, -uMaxCoc, uMaxCoc);
     }
@@ -870,7 +875,9 @@ const DOFCompositeShader = {
       float f = unpackUnit(texture2D(tFocus, vec2(0.5)).rg);
       float focus = f * f * ${DEPTH_FAR.toFixed(1)};
       float z = gbufDepth(vUv);
-      float rel = (z - focus) / max(z, 1e-3);
+      // Same normalisation as the downsample pass — these two must agree or the
+      // composite blends a blur the CoC pass never actually produced.
+      float rel = (z - focus) / max(focus, 1e-3);
       float coc = clamp((rel < 0.0 ? rel * uNearScale : rel * uFarScale) * uMaxCoc, -uMaxCoc, uMaxCoc);
 
       vec4 blur = texture2D(tBlur, vUv);
