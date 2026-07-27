@@ -25,11 +25,16 @@ import * as THREE from 'three';
  *                           deposits and edge wear are applied here because
  *                           only now do we know the real geometric cavity
  *
+ * The finished targets are then read back once into DataTextures: consumers
+ * clone these sets to get independent tiling, and a clone of a render-target
+ * texture has no entry in the renderer's source cache, so it would come back
+ * blank. See `_publish`.
+ *
  * Everything is seamlessly tileable: every lattice lookup wraps its cell
  * coordinate through mod(cell, period) before hashing, and each fbm octave
- * doubles frequency and period together. The visible repeat that tiling would
- * still produce on a 42x-tiled ground plane is broken up at shading time by the
- * world-space weathering injected in `_patchMaterial`.
+ * doubles frequency and period together. The residual repeat that tiling still
+ * produces is broken at shading time by the world-space weathering `decorate`
+ * injects into the material.
  */
 
 const SIZE = { low: 256, medium: 512, high: 1024 };
@@ -333,71 +338,80 @@ void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out f
 const MATERIALS = {
 
   concrete: {
-    normal: 1.3, relief: 26, grime: 0.58, wear: 0.10, wearMetal: 0.0,
-    grimeColor: [0.058, 0.055, 0.048], wearColor: [0.62, 0.612, 0.590],
+    normal: 1.4, relief: 30, grime: 0.72, wear: 0.14, wearMetal: 0.0,
+    grimeColor: [0.048, 0.046, 0.041], wearColor: [0.60, 0.592, 0.570],
     detail: [11, 0.55], macro: [0.030, 0.20, 0.12], splash: [1.7, 0.60], dust: 0.10,
     glsl: /* glsl */ `
-void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav ) {
+void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav, out float dirt ) {
   // 1 — substrate. Barely-tinted cement: the tint multiplier decides whether
   //     this ends up as pavement, breeze block or a stained precast panel.
-  vec3 cement = vec3( 0.500, 0.494, 0.474 );
+  vec3 cement = vec3( 0.470, 0.464, 0.446 );
 
-  // 2 — large-scale tone: uneven pours, damp patches, decades of washing.
+  // 2 — large-scale tone. Poured concrete is never one colour: separate pours,
+  //     damp that never dried, forty years of unequal washing. This is a wide
+  //     swing on purpose — it is what stops the wall reading as painted card.
   float pour = fbm( uv, vec2( 2.0 ), 4 );
-  float wash = smoothstep( 0.42, 0.80, fbm( uv + 3.1, vec2( 3.0 ), 3 ) );
+  float wash = smoothstep( 0.40, 0.82, fbm( uv + 3.1, vec2( 3.0 ), 3 ) );
+  float soil = smoothstep( 0.30, 0.78, fbm( uv + 19.4, vec2( 4.0 ), 4 ) );
 
   // 3 — mid structure: the shallow ribbing left by timber shuttering, plus the
   //     coarse aggregate sitting just under the skin.
-  vec2 fw = warp( uv, vec2( 6.0 ), 0.010, 2 );
-  float board = smoothstep( 0.0, 0.10, abs( fract( fw.y * 4.0 ) - 0.5 ) );
+  //     The board joint is a hairline, not a plank edge — anything stronger and
+  //     the wall reads as corrugated cladding.
+  vec2 fw = warp( uv, vec2( 6.0 ), 0.020, 2 );
+  float board = smoothstep( 0.0, 0.035, abs( fract( fw.y * 4.0 ) - 0.5 ) );
   float agg = worley( uv, vec2( 22.0 ) ).x;
   float aggBump = smoothstep( 0.52, 0.14, agg );
 
   // 4 — micro: cement grain and trapped air (blowholes).
-  float grain = fbm( uv, vec2( 88.0 ), 4 );
+  float grain = fbm( uv, vec2( 88.0 ), 3 );
   vec3 blow = worley( uv + 7.3, vec2( 54.0 ) );
   float holes = smoothstep( 0.14, 0.0, blow.x ) * step( 0.58, blow.z );
 
   // 5 — damage: a hairline crack network and spalled chips where the skin has
-  //     flaked off and left paler, rougher aggregate exposed. Kept small —
-  //     this map is also tiled at 7 m as the city's dirt layer, and anything
-  //     bigger reads as cracked mud rather than concrete.
-  float crack = smoothstep( 0.90, 0.995, ridged( warp( uv, vec2( 3.0 ), 0.05, 2 ), vec2( 6.0 ), 4 ) );
+  //     flaked off and left paler, rougher aggregate exposed. Kept small — this
+  //     map is also tiled at 7 m as the city's dirt layer, and anything bigger
+  //     reads as cracked mud rather than concrete.
+  float crack = smoothstep( 0.88, 0.99, ridged( warp( uv, vec2( 3.0 ), 0.05, 2 ), vec2( 6.0 ), 4 ) );
   vec3 sp = worley( uv + 11.7, vec2( 14.0 ) );
-  float spall = smoothstep( 0.22, 0.05, sp.x ) * step( 0.80, sp.z );
+  float spall = smoothstep( 0.24, 0.05, sp.x ) * step( 0.74, sp.z );
 
-  height = 0.60 + ( pour - 0.5 ) * 0.10 + ( 1.0 - board ) * -0.05 + aggBump * 0.06
-         + ( grain - 0.5 ) * 0.07 - holes * 0.40 - crack * 0.30 - spall * 0.20;
+  height = 0.60 + ( pour - 0.5 ) * 0.10 + ( board - 1.0 ) * 0.030 + aggBump * 0.06
+         + ( grain - 0.5 ) * 0.07 - holes * 0.40 - crack * 0.32 - spall * 0.22;
 
-  // Analytic cavity: 1 = exposed, 0 = deep recess. Every deposit hangs off this.
-  cav = 1.0 - sat( holes * 0.95 + crack * 0.9 + ( 1.0 - board ) * 0.30 + spall * 0.45 );
+  // Analytic cavity: 1 = exposed, 0 = a recess the sweep is too coarse to see.
+  cav = 1.0 - sat( holes * 0.95 + crack * 0.95 + ( 1.0 - board ) * 0.30 + spall * 0.50 );
 
-  vec3 col = cement * ( 0.86 + pour * 0.30 );
-  col = mix( col, cement * 1.18, wash * 0.40 );
-  col = mix( col, vec3( 0.430, 0.420, 0.400 ), aggBump * 0.40 );
-  col *= 0.94 + grain * 0.12;
-  col = mix( col, vec3( 0.585, 0.566, 0.532 ), spall * 0.85 );
+  vec3 col = cement * ( 0.66 + pour * 0.72 );
+  col = mix( col, cement * 1.26, wash * 0.45 );
+  col = mix( col, vec3( 0.360, 0.352, 0.334 ), aggBump * 0.45 );
+  col *= 0.90 + grain * 0.20;
+  col = mix( col, vec3( 0.615, 0.596, 0.560 ), spall * 0.85 );
+  col = mix( col, col * 0.42, crack * 0.75 );
 
-  rough = 0.86 - wash * 0.05 + ( grain - 0.5 ) * 0.10 + spall * 0.08;
+  rough = 0.86 - wash * 0.06 + ( grain - 0.5 ) * 0.12 + spall * 0.08;
 
   // 6 — deposits. Rain runs down: long vertical smears, seeded per column and
   //     thresholded hard so a few strong runs form instead of a uniform comb.
-  float seed = fbm( vec2( uv.x, 0.37 ), vec2( 17.0, 1.0 ), 3 );
-  float body = runoff( warp( uv, vec2( 3.0, 9.0 ), 0.020, 2 ), 44.0, 3.0, 4 );
-  float streak = smoothstep( 0.62, 0.94, seed * 0.62 + body * 0.55 );
-  col = mix( col, vec3( 0.148, 0.144, 0.132 ), streak * 0.40 );
+  float seed = fbm( vec2( uv.x, 0.37 ), vec2( 9.0, 1.0 ), 3 );
+  float body = runoff( warp( uv, vec2( 3.0, 7.0 ), 0.055, 2 ), 26.0, 2.0, 4 );
+  float streak = smoothstep( 0.56, 0.95, seed * 0.55 + body * 0.62 );
+  col = mix( col, vec3( 0.118, 0.114, 0.104 ), streak * 0.50 );
   rough = mix( rough, 0.74, streak * 0.40 );
-  cav = min( cav, 1.0 - streak * 0.30 );
 
   // Salt bloom pushed out through the cracks — chalky, bright, very matte.
-  float efflor = smoothstep( 0.60, 0.92, fbm( uv + 8.9, vec2( 7.0 ), 4 ) ) * smoothstep( 0.2, 0.8, crack + 0.55 );
-  col = mix( col, vec3( 0.780, 0.775, 0.755 ), efflor * 0.30 );
+  float efflor = smoothstep( 0.58, 0.90, fbm( uv + 8.9, vec2( 7.0 ), 3 ) ) * smoothstep( 0.2, 0.8, crack + 0.5 );
+  col = mix( col, vec3( 0.800, 0.796, 0.775 ), efflor * 0.40 );
   rough = mix( rough, 0.98, efflor * 0.5 );
 
-  // Moss only where water lingers: the recesses, low down the streaks.
-  float moss = smoothstep( 0.66, 0.95, fbm( uv + 2.2, vec2( 5.0, 4.0 ), 4 ) ) * ( 1.0 - cav );
-  col = mix( col, vec3( 0.098, 0.126, 0.062 ), moss * 0.60 );
+  // Moss only where water lingers.
+  float moss = smoothstep( 0.62, 0.94, fbm( uv + 2.2, vec2( 5.0, 4.0 ), 3 ) ) * ( 1.0 - cav * 0.6 );
+  col = mix( col, vec3( 0.076, 0.100, 0.048 ), moss * 0.60 );
   rough = mix( rough, 0.95, moss * 0.6 );
+
+  // Deposit affinity: soot lands where it is already damp and shaded — under
+  // the streaks, in the soiled patches, and along the board joints.
+  dirt = sat( soil * 0.85 + streak * 0.75 + ( 1.0 - board ) * 0.25 + 0.10 );
 
   albedo = col;
   metal = 0.0;
@@ -406,78 +420,77 @@ void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out f
   asphalt: {
     // Road is tiled at ~3 m and Level.js runs its albedo through an affine lift
     // with a gain of 9 to reach tarmac grey. That gain amplifies contrast as
-    // well as level, so this map is authored dark AND deliberately tight: all
-    // of its character has to live in the normal and roughness instead.
-    normal: 0.85, relief: 30, grime: 0.22, wear: 0.20, wearMetal: 0.0,
-    grimeColor: [0.030, 0.029, 0.028], wearColor: [0.098, 0.097, 0.098],
+    // well as level, so the absolute range here is tiny — but the *relative*
+    // range is wide, which is what survives the lift as readable aggregate.
+    normal: 0.95, relief: 34, grime: 0.30, wear: 0.16, wearMetal: 0.0,
+    grimeColor: [0.026, 0.025, 0.025], wearColor: [0.135, 0.134, 0.134],
     detail: [9, 0.60], macro: [0.022, 0.30, 0.16], splash: [0.0, 0.0], dust: 0.20,
     glsl: /* glsl */ `
-void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav ) {
+void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav, out float dirt ) {
   // 1 — bitumen binder.
-  vec3 binder = vec3( 0.055, 0.055, 0.058 );
+  vec3 binder = vec3( 0.042, 0.042, 0.045 );
 
-  // 2 — low-contrast drift only. Anything bolder would repeat 42 times.
+  // 2 — low-contrast drift only. Anything bolder would repeat every 3 metres.
   float drift = fbm( uv, vec2( 3.0 ), 3 );
 
-  // 3 — the aggregate itself: chippings of assorted stone bound in bitumen.
-  //     F2 - F1 gives the binder gaps between stones, which is where the
-  //     surface actually reads as a road rather than as grey noise.
+  // 3 — the aggregate: chippings of assorted stone bound in bitumen. F2 - F1
+  //     gives the binder gap between neighbouring stones, and it is those gaps,
+  //     not the stones, that make a surface read as road rather than as gravel.
   vec3 w = worley( warp( uv, vec2( 8.0 ), 0.006, 2 ), vec2( 46.0 ) );
-  float stone = smoothstep( 0.10, 0.02, w.y - w.x );      // 1 in the gaps
-  float face = 1.0 - stone;
+  float gap = smoothstep( 0.10, 0.02, w.y - w.x );
+  float face = 1.0 - gap;
+  float crown = smoothstep( 0.34, 0.02, w.x );          // centre of each chip
   vec3 w2 = worley( uv + 5.5, vec2( 108.0 ) );
   float fines = smoothstep( 0.08, 0.02, w2.y - w2.x );
 
   // 4 — micro grain over everything.
   float grain = fbm( uv, vec2( 130.0 ), 3 );
 
-  // 5 — damage: a crack network that follows the aggregate boundaries, and
-  //     ravelled patches where chippings have been plucked out entirely.
+  // 5 — damage: a crack network, and ravelled patches where the chippings have
+  //     been plucked out and only binder and dust are left.
   float crack = smoothstep( 0.87, 0.99, ridged( warp( uv, vec2( 4.0 ), 0.05, 2 ), vec2( 7.0 ), 4 ) );
-  float ravel = smoothstep( 0.62, 0.88, fbm( uv + 13.0, vec2( 9.0 ), 4 ) );
+  float ravel = smoothstep( 0.62, 0.88, fbm( uv + 13.0, vec2( 9.0 ), 3 ) );
 
-  height = 0.55 + face * 0.16 - stone * 0.10 - fines * 0.05
+  height = 0.55 + face * 0.16 - gap * 0.10 - fines * 0.05
          + ( grain - 0.5 ) * 0.08 - crack * 0.40 - ravel * 0.10;
 
-  cav = 1.0 - sat( stone * 0.55 + fines * 0.25 + crack * 0.95 + ravel * 0.3 );
+  cav = 1.0 - sat( gap * 0.70 + fines * 0.30 + crack * 0.95 + ravel * 0.35 );
 
-  // Per-stone colour: most chippings are grey granite, some are pale limestone,
-  // a few are iron-stained. That variety is most of the realism.
+  // Per-stone colour: most chippings are grey granite, some pale limestone, a
+  // few iron-stained. Chips run 2-3x the binder so the lift keeps the contrast.
   float tint = w.z;
-  vec3 chip = mix( vec3( 0.086, 0.086, 0.088 ), vec3( 0.128, 0.124, 0.115 ), smoothstep( 0.55, 0.95, tint ) );
-  chip = mix( chip, vec3( 0.092, 0.074, 0.056 ), smoothstep( 0.10, 0.0, tint ) );
+  vec3 chip = mix( vec3( 0.108, 0.108, 0.110 ), vec3( 0.168, 0.162, 0.150 ), smoothstep( 0.55, 0.95, tint ) );
+  chip = mix( chip, vec3( 0.112, 0.086, 0.062 ), smoothstep( 0.10, 0.0, tint ) );
 
-  vec3 col = mix( binder, chip, face * ( 0.35 + 0.55 * smoothstep( 0.35, 0.0, w.x ) ) );
-  col *= 0.94 + drift * 0.13;
-  col *= 0.95 + grain * 0.10;
-  col = mix( col, binder * 0.85, ravel * 0.4 );
+  vec3 col = mix( binder, chip, face * ( 0.30 + 0.70 * crown ) );
+  col *= 0.93 + drift * 0.16;
+  col *= 0.94 + grain * 0.13;
+  col = mix( col, binder * 1.5, ravel * 0.4 );
 
-  // Roughness tells the story here: exposed stone is polished by traffic, the
-  // binder between it stays dead matte.
-  rough = mix( 0.94, 0.62, face * smoothstep( 0.4, 0.0, w.x ) );
-  rough = mix( rough, 0.97, ravel * 0.5 );
-  rough += ( grain - 0.5 ) * 0.06;
+  // Roughness carries most of the story here: stone crowns are polished by
+  // traffic, the binder between them stays dead matte.
+  rough = mix( 0.95, 0.55, face * crown );
+  rough = mix( rough, 0.98, ravel * 0.5 );
+  rough += ( grain - 0.5 ) * 0.07;
 
-  // 6 — deposits: dust and grit sifting into the gaps, and old oil that has
-  //     soaked in and sealed the surface glossy.
-  float grit = ( 1.0 - cav ) * smoothstep( 0.35, 0.75, fbm( uv + 21.0, vec2( 12.0 ), 3 ) );
-  col = mix( col, vec3( 0.098, 0.090, 0.074 ), grit * 0.45 );
-  rough = mix( rough, 0.98, grit * 0.5 );
-
-  float oil = smoothstep( 0.74, 0.95, fbm( uv + 31.7, vec2( 6.0 ), 4 ) );
-  col = mix( col, vec3( 0.032, 0.030, 0.032 ), oil * 0.6 );
+  // 6 — deposits: grit sifting into the gaps, and old oil soaked in glossy.
+  float grit = smoothstep( 0.35, 0.75, fbm( uv + 21.0, vec2( 12.0 ), 3 ) );
+  float oil = smoothstep( 0.74, 0.95, fbm( uv + 31.7, vec2( 6.0 ), 3 ) );
+  col = mix( col, vec3( 0.030, 0.028, 0.030 ), oil * 0.6 );
   rough = mix( rough, 0.30, oil * 0.75 );
+
+  dirt = sat( grit * 0.9 + 0.15 );
 
   albedo = col;
   metal = 0.0;
 }` },
 
   brick: {
-    normal: 2.0, relief: 44, grime: 0.62, wear: 0.14, wearMetal: 0.0,
-    grimeColor: [0.050, 0.046, 0.040], wearColor: [0.56, 0.48, 0.43],
+    normal: 2.2, relief: 60, grime: 0.75, wear: 0.16, wearMetal: 0.0,
+    grimeColor: [0.042, 0.038, 0.033], wearColor: [0.54, 0.46, 0.41],
     detail: [13, 0.45], macro: [0.026, 0.22, 0.10], splash: [1.9, 0.65], dust: 0.09,
     glsl: /* glsl */ `
-void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav ) {
+void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav, out float dirt ) {
   vec2 COURSE = vec2( 10.0, 30.0 );     // bricks across, courses up (even, so
                                         // the running-bond offset also wraps)
 
@@ -488,8 +501,8 @@ void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out f
   float col = floor( fx );
   float lx = fx - col;
 
-  // Per-brick identity. Bricks from the same kiln load still vary enormously,
-  // and that variation is the single most recognisable thing about brickwork.
+  // Per-brick identity. Bricks out of the same kiln load still vary hugely, and
+  // that spread is the single most recognisable thing about brickwork.
   vec2 cell = vec2( col, row );
   vec2 id = hash2( cell, COURSE );
   float id2 = hash1( cell, COURSE );
@@ -499,79 +512,86 @@ void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out f
   float ex = min( lx, 1.0 - lx ) / 0.055;
   float ey = min( ly, 1.0 - ly ) / 0.165;
   float e = min( ex, ey );
-  float mortarSlump = fbm( uv, vec2( 40.0 ), 3 ) * 0.35;
-  float brickFace = smoothstep( 0.70 + mortarSlump, 1.45 + mortarSlump, e );
+  float slump = fbm( uv, vec2( 40.0 ), 3 ) * 0.35;
+  float brickFace = smoothstep( 0.70 + slump, 1.45 + slump, e );
 
-  float grain = fbm( uv, vec2( 110.0 ), 4 );
+  float grain = fbm( uv, vec2( 110.0 ), 3 );
   float coarse = fbm( uv + id.x * 9.0, vec2( 26.0 ), 3 );
 
   // Face detail: shallow pitting, plus chipped arrises on a minority of bricks.
   vec3 pit = worley( uv + id.y * 13.0, vec2( 70.0 ) );
   float pits = smoothstep( 0.13, 0.0, pit.x ) * step( 0.55, pit.z );
-  float chipMask = step( 0.72, id2 ) * smoothstep( 1.9, 0.7, e );
-  float chip = chipMask * smoothstep( 0.45, 0.75, fbm( uv, vec2( 46.0 ), 3 ) );
+  float chip = step( 0.72, id2 ) * smoothstep( 1.9, 0.7, e )
+             * smoothstep( 0.45, 0.75, fbm( uv, vec2( 46.0 ), 3 ) );
 
   // Whole-brick spalling: the face has blown off and the pale core shows.
-  float spall = step( 0.90, id.x ) * smoothstep( 0.40, 0.75, fbm( uv + id.y * 4.0, vec2( 18.0 ), 3 ) ) * brickFace;
+  float spall = step( 0.93, id2 ) * smoothstep( 0.40, 0.75, fbm( uv + id.y * 4.0, vec2( 18.0 ), 3 ) ) * brickFace;
 
   // A crack that prefers to travel through the joints.
   float crack = smoothstep( 0.90, 0.995, ridged( warp( uv, vec2( 3.0, 6.0 ), 0.04, 2 ), vec2( 5.0, 9.0 ), 4 ) );
   crack *= 0.35 + 0.65 * ( 1.0 - brickFace );
 
-  height = mix( 0.30, 0.78, brickFace )
-         + brickFace * ( ( coarse - 0.5 ) * 0.07 - pits * 0.30 - chip * 0.22 - spall * 0.10 )
+  height = mix( 0.26, 0.80, brickFace )
+         + brickFace * ( ( coarse - 0.5 ) * 0.07 - pits * 0.30 - chip * 0.24 - spall * 0.10 )
          + ( 1.0 - brickFace ) * ( grain - 0.5 ) * 0.10
          + ( grain - 0.5 ) * 0.03
          - crack * 0.30;
 
-  cav = 1.0 - sat( ( 1.0 - brickFace ) * 0.85 + pits * 0.7 + chip * 0.5 + crack * 0.9 );
+  cav = 1.0 - sat( ( 1.0 - brickFace ) * 0.95 + pits * 0.7 + chip * 0.55 + crack * 0.9 );
 
-  // Fired-clay palette: dark ironspot through common red to a few pale,
-  // underfired bricks, then break each brick up internally. Only lightly
-  // saturated — Level.js supplies the final clay hue as a tint.
-  float t = id.x;
-  vec3 clay = mix( vec3( 0.235, 0.170, 0.148 ), vec3( 0.420, 0.310, 0.268 ), smoothstep( 0.0, 0.55, t ) );
-  clay = mix( clay, vec3( 0.530, 0.418, 0.362 ), smoothstep( 0.55, 0.90, t ) );
-  clay = mix( clay, vec3( 0.470, 0.420, 0.376 ), smoothstep( 0.90, 1.0, t ) );
-  clay *= 0.88 + coarse * 0.26;
-  clay *= 0.95 + grain * 0.10;
-  clay = mix( clay, clay * 1.30 + vec3( 0.05, 0.045, 0.040 ), spall * 0.8 );
+  // Fired-clay palette: dark ironspot, common red, and a handful of pale
+  // underfired bricks. Only lightly saturated — Level.js supplies the clay hue
+  // as a tint — but with a wide *value* spread, which is what the eye reads.
+  float t = id.x * id.x * ( 3.0 - 2.0 * id.x );   // bias the lottery toward the
+                                                 // common reds; pale outliers
+                                                 // that repeat every tile are
+                                                 // the loudest tiling tell
+  vec3 clay = mix( vec3( 0.115, 0.080, 0.068 ), vec3( 0.340, 0.246, 0.210 ), smoothstep( 0.0, 0.60, t ) );
+  clay = mix( clay, vec3( 0.430, 0.330, 0.282 ), smoothstep( 0.60, 0.94, t ) );
+  clay *= 0.82 + coarse * 0.38;
+  clay *= 0.94 + grain * 0.12;
+  clay = mix( clay, clay * 1.35 + vec3( 0.05, 0.045, 0.040 ), spall * 0.8 );
 
-  vec3 mortar = vec3( 0.545, 0.535, 0.510 ) * ( 0.84 + fbm( uv + 3.7, vec2( 60.0 ), 4 ) * 0.34 );
+  // Mortar is markedly lighter than the brick it beds — that value step is what
+  // makes a wall read as courses instead of as a noisy sheet.
+  vec3 mortar = vec3( 0.620, 0.610, 0.582 ) * ( 0.80 + fbm( uv + 3.7, vec2( 60.0 ), 3 ) * 0.42 );
 
   vec3 colr = mix( mortar, clay, brickFace );
-  rough = mix( 0.95, 0.80 + coarse * 0.12, brickFace );
+  rough = mix( 0.96, 0.78 + coarse * 0.14, brickFace );
   rough = mix( rough, 0.93, spall * 0.6 );
 
-  // Deposits. Soot in the joints, rain streaking down the face, efflorescence
-  // blooming out of the mortar, moss where the wall stays damp.
-  float seed = fbm( vec2( uv.x, 0.61 ), vec2( 15.0, 1.0 ), 3 );
-  float body = runoff( warp( uv, vec2( 3.0, 8.0 ), 0.018, 2 ), 40.0, 3.0, 4 );
-  float streak = smoothstep( 0.60, 0.92, seed * 0.62 + body * 0.55 );
-  colr = mix( colr, vec3( 0.082, 0.070, 0.060 ), streak * 0.38 );
+  // Deposits. Rain streaking down the face, efflorescence blooming out of the
+  // mortar, moss where the wall stays damp.
+  float seed = fbm( vec2( uv.x, 0.61 ), vec2( 8.0, 1.0 ), 3 );
+  float body = runoff( warp( uv, vec2( 3.0, 6.0 ), 0.050, 2 ), 26.0, 2.0, 4 );
+  float streak = smoothstep( 0.56, 0.94, seed * 0.55 + body * 0.62 );
+  colr = mix( colr, vec3( 0.068, 0.058, 0.050 ), streak * 0.45 );
   rough = mix( rough, 0.70, streak * 0.35 );
-  cav = min( cav, 1.0 - streak * 0.25 );
 
-  float efflor = smoothstep( 0.66, 0.94, fbm( uv + 17.3, vec2( 8.0 ), 4 ) ) * ( 1.0 - brickFace * 0.55 );
-  colr = mix( colr, vec3( 0.760, 0.752, 0.728 ), efflor * 0.40 );
+  float efflor = smoothstep( 0.64, 0.94, fbm( uv + 17.3, vec2( 8.0 ), 3 ) ) * ( 1.0 - brickFace * 0.55 );
+  colr = mix( colr, vec3( 0.790, 0.782, 0.756 ), efflor * 0.45 );
   rough = mix( rough, 0.98, efflor * 0.55 );
 
-  float moss = smoothstep( 0.70, 0.96, fbm( uv + 6.6, vec2( 6.0, 5.0 ), 4 ) ) * ( 1.0 - cav );
-  colr = mix( colr, vec3( 0.086, 0.112, 0.056 ), moss * 0.65 );
+  float moss = smoothstep( 0.66, 0.95, fbm( uv + 6.6, vec2( 6.0, 5.0 ), 3 ) ) * ( 1.0 - cav * 0.5 );
+  colr = mix( colr, vec3( 0.070, 0.092, 0.046 ), moss * 0.65 );
   rough = mix( rough, 0.96, moss * 0.6 );
+
+  // Soot goes into the joints first and follows the streaks down the face.
+  dirt = sat( ( 1.0 - brickFace ) * 0.9 + streak * 0.8
+            + smoothstep( 0.35, 0.85, fbm( uv + 29.0, vec2( 3.0 ), 3 ) ) * 0.55 );
 
   albedo = colr;
   metal = 0.0;
 }` },
 
   metalPanel: {
-    normal: 1.5, relief: 34, grime: 0.46, wear: 0.42, wearMetal: 1.0,
-    grimeColor: [0.062, 0.058, 0.052], wearColor: [0.62, 0.628, 0.642],
+    normal: 1.6, relief: 44, grime: 0.55, wear: 0.30, wearMetal: 1.0,
+    grimeColor: [0.050, 0.048, 0.043], wearColor: [0.50, 0.508, 0.520],
     detail: [15, 0.35], macro: [0.030, 0.14, 0.10], splash: [1.5, 0.55], dust: 0.14,
     metalness: 1.0,
     glsl: /* glsl */ `
-void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav ) {
-  // 1 — galvanised steel cladding, painted, screwed to a frame on a 4x4 grid.
+void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav, out float dirt ) {
+  // 1 — painted steel cladding, riveted to a frame on a 4x4 bay grid.
   vec3 steel = vec3( 0.600, 0.608, 0.624 );
   vec3 paint = vec3( 0.310, 0.330, 0.342 );
 
@@ -580,63 +600,68 @@ void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out f
   // 2 — panel seams and the shallow oil-canning dish in the middle of each bay.
   float seamX = min( cellUv.x, 1.0 - cellUv.x );
   float seamY = min( cellUv.y, 1.0 - cellUv.y );
-  float seam = smoothstep( 0.0, 0.030, min( seamX, seamY ) );
+  float seam = smoothstep( 0.004, 0.028, min( seamX, seamY ) );
   float dish = fbm( uv, vec2( 4.0 ), 2 );
 
   // 3 — rivets marching down the vertical seams at a fixed pitch.
-  vec2 rp = fract( uv * vec2( 4.0, 32.0 ) ) - 0.5;
-  float rivet = smoothstep( 0.36, 0.18, length( rp * vec2( 6.0, 1.0 ) ) )
-              * smoothstep( 0.075, 0.030, seamX );
+  vec2 rp = fract( uv * vec2( 4.0, 28.0 ) ) - 0.5;
+  float rivet = smoothstep( 0.40, 0.22, length( rp * vec2( 7.0, 1.0 ) ) )
+              * smoothstep( 0.070, 0.026, seamX );
 
   // 4 — micro: the directional grain of rolled and brushed sheet.
   float brushed = fbm( uv, vec2( 420.0, 6.0 ), 3 );
   float tooth = fbm( uv, vec2( 90.0 ), 3 );
 
-  // 5 — damage: dents, long scratches, and paint failing in flakes.
+  // 5 — damage. Paint fails from the edges inward, so the loss mask is driven
+  //     by a warped field thresholded tightly and then eaten back along a
+  //     higher-frequency fringe: flakes with ragged perimeters, not blobs.
   float dent = smoothstep( 0.62, 0.96, fbm( uv + 9.1, vec2( 7.0 ), 3 ) );
-  float scratch = smoothstep( 0.955, 1.0, ridged( warp( uv, vec2( 5.0 ), 0.06, 2 ), vec2( 14.0, 5.0 ), 3 ) );
-  float flake = smoothstep( 0.50, 0.80, fbm( warp( uv + 2.4, vec2( 6.0 ), 0.03, 2 ), vec2( 11.0 ), 4 ) );
-  flake = sat( flake * 1.3 - ( 1.0 - dent ) * 0.25 );
+  float scratch = smoothstep( 0.965, 1.0, ridged( warp( uv, vec2( 5.0 ), 0.06, 2 ), vec2( 14.0, 5.0 ), 3 ) );
+  float lossField = fbm( warp( uv + 2.4, vec2( 7.0 ), 0.05, 2 ), vec2( 13.0 ), 4 );
+  float fringe = fbm( uv + 6.1, vec2( 60.0 ), 3 );
+  float flake = smoothstep( 0.60, 0.70, lossField * 0.80 + fringe * 0.20 );
 
-  height = 0.62 - ( 1.0 - seam ) * 0.30 + rivet * 0.26 + ( dish - 0.5 ) * 0.07
+  height = 0.62 - ( 1.0 - seam ) * 0.32 + rivet * 0.30 + ( dish - 0.5 ) * 0.07
          - dent * 0.06 + ( brushed - 0.5 ) * 0.02 + ( tooth - 0.5 ) * 0.025
-         - scratch * 0.10 - flake * 0.05;
+         - scratch * 0.10 - flake * 0.06;
 
-  cav = 1.0 - sat( ( 1.0 - seam ) * 0.9 + scratch * 0.6 + flake * 0.25 );
+  cav = 1.0 - sat( ( 1.0 - seam ) * 0.95 + scratch * 0.6 + flake * 0.25 );
 
   // Paint over metal: where the coat survives it is a dielectric, where it has
-  // flaked the bare zinc shows through. That is what metalness has to encode.
-  float bare = sat( flake * 0.85 + scratch );
-  vec3 colr = mix( paint * ( 0.86 + dish * 0.30 ), steel * ( 0.90 + brushed * 0.22 ), bare );
-  colr *= 0.95 + tooth * 0.10;
+  // flaked the bare steel shows through. That is what metalness has to encode.
+  float bare = sat( flake * 0.9 + scratch );
+  vec3 colr = mix( paint * ( 0.78 + dish * 0.45 ), steel * ( 0.88 + brushed * 0.26 ), bare * 0.85 );
+  colr *= 0.88 + tooth * 0.24;
+  colr *= 0.86 + fbm( uv + 41.0, vec2( 5.0 ), 3 ) * 0.34;   // panel-to-panel fade
+  colr = mix( colr, steel * 1.05, rivet * 0.5 );
   metal = bare * 0.95;
 
-  rough = mix( 0.52 + tooth * 0.12, 0.34 + brushed * 0.24, bare );
+  rough = mix( 0.54 + tooth * 0.14, 0.34 + brushed * 0.24, bare );
   rough = mix( rough, 0.28, scratch * 0.6 );
 
-  // 6 — deposits: rust bleeding DOWN from every rivet and seam, then grime.
-  float bleedSrc = sat( rivet * 1.4 + ( 1.0 - seam ) * 0.6 );
+  // 6 — deposits: rust bleeding DOWN from every rivet and seam. The source mask
+  //     is the fixing itself; the smear is a vertically stretched field gated
+  //     by it, so the stain always has somewhere it came from.
+  float source = sat( rivet * 1.6 + ( 1.0 - seam ) * 0.7 + flake * 0.5 );
   float down = runoff( warp( uv, vec2( 4.0, 10.0 ), 0.010, 2 ), 48.0, 4.0, 4 );
-  float bleed = sat( bleedSrc * 0.5 + smoothstep( 0.52, 0.88, down ) * 0.9 * smoothstep( 0.15, 0.6, bleedSrc + 0.35 ) );
-  colr = mix( colr, vec3( 0.290, 0.146, 0.072 ), bleed * 0.55 );
+  float bleed = sat( source * 0.55 + smoothstep( 0.50, 0.86, down ) * smoothstep( 0.05, 0.45, source ) );
+  colr = mix( colr, vec3( 0.245, 0.118, 0.052 ), bleed * 0.60 );
   rough = mix( rough, 0.93, bleed * 0.7 );
-  metal *= 1.0 - bleed * 0.8;
+  metal *= 1.0 - bleed * 0.85;
 
-  float grime = ( 1.0 - cav ) * smoothstep( 0.30, 0.80, fbm( uv + 27.0, vec2( 9.0 ), 3 ) );
-  colr = mix( colr, vec3( 0.080, 0.076, 0.068 ), grime * 0.6 );
-  rough = mix( rough, 0.95, grime * 0.6 );
-  metal *= 1.0 - grime * 0.7;
+  dirt = sat( ( 1.0 - seam ) * 0.9 + bleed * 0.7
+            + smoothstep( 0.35, 0.85, fbm( uv + 27.0, vec2( 6.0 ), 3 ) ) * 0.6 );
 
   albedo = colr;
 }` },
 
   rustMetal: {
-    normal: 1.7, relief: 36, grime: 0.38, wear: 0.46, wearMetal: 1.0,
-    grimeColor: [0.058, 0.050, 0.042], wearColor: [0.590, 0.594, 0.604],
+    normal: 1.8, relief: 46, grime: 0.42, wear: 0.22, wearMetal: 1.0,
+    grimeColor: [0.048, 0.042, 0.036], wearColor: [0.430, 0.436, 0.446],
     detail: [14, 0.50], macro: [0.035, 0.18, 0.12], splash: [1.2, 0.60], dust: 0.16,
     metalness: 1.0,
     glsl: /* glsl */ `
-void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav ) {
+void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav, out float dirt ) {
   // 1 — mild steel that lost its paint years ago.
   vec3 steel = vec3( 0.560, 0.570, 0.588 );
 
@@ -644,178 +669,193 @@ void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out f
   //     than a soft blob, which is what real corrosion looks like.
   vec2 wu = warp( uv, vec2( 3.0 ), 0.08, 3 );
   float front = ridged( wu, vec2( 4.0 ), 4 );
-  float rust = smoothstep( 0.42, 0.72, front * 0.65 + fbm( wu, vec2( 7.0 ), 4 ) * 0.55 );
+  // Biased hard toward "corroded": a drum that has stood outside for years is
+  //     rust with slivers of steel, not steel with patches of rust. Left even,
+  //     the clean islands blow out to near-white under a bright sky.
+  float rust = smoothstep( 0.16, 0.56, front * 0.65 + fbm( wu, vec2( 7.0 ), 3 ) * 0.55 );
 
-  // 3 — three stages of corrosion, each with its own colour and relief:
-  //     thin bloom, thick orange scale, and black pitted iron oxide.
+  // 3 — three stages of corrosion, each with its own colour and relief: thin
+  //     bloom, thick orange scale, and black pitted iron oxide.
   float scale = smoothstep( 0.55, 0.90, rust + fbm( uv + 5.0, vec2( 16.0 ), 3 ) * 0.35 - 0.18 );
-  float deep = smoothstep( 0.80, 1.0, rust ) * smoothstep( 0.45, 0.85, fbm( uv + 12.0, vec2( 10.0 ), 4 ) );
+  float deep = smoothstep( 0.80, 1.0, rust ) * smoothstep( 0.45, 0.85, fbm( uv + 12.0, vec2( 10.0 ), 3 ) );
 
   // 4 — micro: mill scale tooth on the bare steel, granular flake on the rust.
   float mill = fbm( uv, vec2( 140.0 ), 3 );
-  float flake = fbm( uv + 3.3, vec2( 46.0 ), 4 );
+  float flake = fbm( uv + 3.3, vec2( 46.0 ), 3 );
   vec3 pit = worley( uv + 8.8, vec2( 58.0 ) );
   float pits = smoothstep( 0.16, 0.0, pit.x ) * rust;
 
-  // 5 — damage: dents and a seam weld running across the sheet.
+  // 5 — dents, and a seam weld running across the sheet.
   float dent = fbm( uv + 19.0, vec2( 5.0 ), 3 );
   float weld = smoothstep( 0.030, 0.0, abs( fract( uv.y * 2.0 + fbm( uv, vec2( 12.0, 3.0 ), 2 ) * 0.05 ) - 0.5 ) );
 
   height = 0.55 + ( dent - 0.5 ) * 0.10 + ( mill - 0.5 ) * 0.03
          + rust * 0.06 + scale * ( flake - 0.35 ) * 0.30 - pits * 0.34
-         + weld * 0.22 - deep * 0.12;
+         + weld * 0.11 - deep * 0.12;
 
-  cav = 1.0 - sat( pits * 0.85 + deep * 0.55 + scale * 0.20 );
+  cav = 1.0 - sat( pits * 0.85 + deep * 0.60 + scale * 0.22 );
 
-  vec3 bloom = vec3( 0.360, 0.230, 0.150 );
-  vec3 orange = vec3( 0.470, 0.252, 0.108 );
-  vec3 black = vec3( 0.140, 0.104, 0.082 );
+  vec3 bloom = vec3( 0.300, 0.186, 0.116 );
+  vec3 orange = vec3( 0.430, 0.212, 0.086 );
+  vec3 black = vec3( 0.106, 0.076, 0.058 );
 
-  vec3 colr = steel * ( 0.90 + mill * 0.22 );
+  vec3 colr = steel * ( 0.62 + mill * 0.34 );
   colr = mix( colr, bloom, rust );
-  colr = mix( colr, orange * ( 0.78 + flake * 0.48 ), scale );
-  colr = mix( colr, black, deep * 0.85 );
+  colr = mix( colr, orange * ( 0.70 + flake * 0.62 ), scale );
+  colr = mix( colr, black, deep * 0.88 );
   colr = mix( colr, vec3( 0.500, 0.500, 0.510 ), weld * 0.5 * ( 1.0 - rust ) );
 
-  // Rust is an oxide, not a metal — this is the single biggest tell if it is
-  // authored wrong, because metallic rust turns bronze under any sky light.
+  // Rust is an oxide, not a metal — the single biggest tell if authored wrong,
+  // because metallic rust turns bronze under any sky light.
   metal = ( 1.0 - sat( rust * 0.9 + scale * 0.6 ) ) * 0.95;
-  rough = mix( 0.34 + mill * 0.16, 0.93, sat( rust * 0.8 + scale ) );
+  rough = mix( 0.32 + mill * 0.16, 0.93, sat( rust * 0.8 + scale ) );
   rough = mix( rough, 0.99, deep * 0.7 );
 
   // 6 — rust bleeding down out of the corroded patches onto the clean steel.
   float down = runoff( warp( uv, vec2( 4.0, 12.0 ), 0.010, 2 ), 52.0, 4.0, 4 );
   float bleed = smoothstep( 0.55, 0.92, down ) * smoothstep( 0.1, 0.5, rust + 0.28 ) * ( 1.0 - scale );
-  colr = mix( colr, vec3( 0.320, 0.160, 0.070 ), bleed * 0.6 );
+  colr = mix( colr, vec3( 0.290, 0.144, 0.062 ), bleed * 0.6 );
   rough = mix( rough, 0.90, bleed * 0.6 );
   metal *= 1.0 - bleed * 0.75;
+
+  dirt = sat( deep * 0.8 + scale * 0.35 + bleed * 0.5 + 0.12 );
 
   albedo = colr;
 }` },
 
   plaster: {
-    normal: 1.1, relief: 24, grime: 0.56, wear: 0.12, wearMetal: 0.0,
-    grimeColor: [0.070, 0.066, 0.058], wearColor: [0.76, 0.740, 0.700],
+    normal: 1.2, relief: 30, grime: 0.68, wear: 0.14, wearMetal: 0.0,
+    grimeColor: [0.062, 0.058, 0.050], wearColor: [0.80, 0.780, 0.740],
     detail: [12, 0.50], macro: [0.028, 0.22, 0.12], splash: [1.8, 0.68], dust: 0.10,
     glsl: /* glsl */ `
-void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav ) {
+void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav, out float dirt ) {
   // 1 — lime render over masonry. Near-neutral so the five tinted variants
   //     Level.js derives from this one map all land somewhere believable.
-  vec3 render = vec3( 0.700, 0.688, 0.655 );
+  vec3 render = vec3( 0.690, 0.678, 0.646 );
 
-  // 2 — sun-bleached and water-stained tonal patches.
+  // 2 — sun-bleached and water-stained tonal patches, deliberately wide.
   float tone = fbm( uv, vec2( 2.0 ), 4 );
-  float stain = smoothstep( 0.45, 0.85, fbm( uv + 6.2, vec2( 4.0 ), 4 ) );
+  float stain = smoothstep( 0.40, 0.86, fbm( uv + 6.2, vec2( 4.0 ), 3 ) );
 
   // 3 — trowel work: broad swept arcs left by the float, then the stipple.
   vec2 tw = warp( uv, vec2( 3.0 ), 0.10, 3 );
   float trowel = fbm( tw, vec2( 9.0, 6.0 ), 3 );
-  float stipple = fbm( uv, vec2( 64.0 ), 4 );
+  float stipple = fbm( uv, vec2( 64.0 ), 3 );
   float tooth = fbm( uv, vec2( 170.0 ), 2 );
 
   // 4 — damage: shrinkage cracks, then whole patches of render fallen away to
-  //     reveal the brick behind. That sub-layer is the story of the material.
-  float crack = smoothstep( 0.87, 0.99, ridged( warp( uv, vec2( 3.0 ), 0.06, 2 ), vec2( 6.0 ), 4 ) );
+  //     reveal the masonry behind. That sub-layer is the story of the material,
+  //     so the loss threshold is set where it actually fires often enough to see.
+  float crack = smoothstep( 0.85, 0.98, ridged( warp( uv, vec2( 3.0 ), 0.06, 2 ), vec2( 6.0 ), 4 ) );
   float lossField = fbm( warp( uv + 15.0, vec2( 4.0 ), 0.05, 2 ), vec2( 5.0 ), 4 );
-  float loss = smoothstep( 0.66, 0.755, lossField );
-  float lip = smoothstep( 0.755, 0.66, lossField ) * smoothstep( 0.63, 0.70, lossField );
+  // Ragged perimeter: a high-frequency fringe eats into the threshold so the
+  //     patches lose their blobby silhouette.
+  float fringe = fbm( uv + 9.7, vec2( 44.0 ), 3 );
+  float lossMix = lossField * 0.86 + fringe * 0.14;
+  float loss = smoothstep( 0.590, 0.650, lossMix );
+  float lip = smoothstep( 0.650, 0.590, lossMix ) * smoothstep( 0.545, 0.605, lossMix );
 
-  // The exposed substrate: coarse brickwork courses, deliberately low contrast
-  // so it reads as "something structural behind" rather than a second texture.
+  // The exposed substrate: coarse brick courses, low contrast so it reads as
+  // "something structural behind" rather than as a second competing texture.
   float sy = uv.y * 24.0;
   float srow = floor( sy );
   float sx = uv.x * 8.0 + mod( srow, 2.0 ) * 0.5;
-  float joint = smoothstep( 0.92, 0.99, max( abs( fract( sx ) - 0.5 ), abs( fract( sy ) - 0.5 ) * 1.0 ) * 2.0 );
-  vec3 substrate = mix( vec3( 0.290, 0.196, 0.160 ), vec3( 0.380, 0.372, 0.352 ), joint );
-  substrate *= 0.85 + fbm( uv, vec2( 50.0 ), 3 ) * 0.34;
+  float joint = smoothstep( 0.90, 0.99, max( abs( fract( sx ) - 0.5 ), abs( fract( sy ) - 0.5 ) ) * 2.0 );
+  vec3 substrate = mix( vec3( 0.375, 0.268, 0.212 ), vec3( 0.500, 0.488, 0.462 ), joint );
+  substrate *= 0.86 + fbm( uv, vec2( 50.0 ), 3 ) * 0.30;
 
   height = 0.66 + ( tone - 0.5 ) * 0.07 + ( trowel - 0.5 ) * 0.10 + ( stipple - 0.5 ) * 0.10
-         + ( tooth - 0.5 ) * 0.03 - crack * 0.30 - loss * 0.30 + lip * 0.06;
+         + ( tooth - 0.5 ) * 0.03 - crack * 0.32 - loss * 0.34 + lip * 0.07;
 
-  cav = 1.0 - sat( crack * 0.9 + loss * 0.55 + ( 1.0 - stipple ) * 0.18 );
+  cav = 1.0 - sat( crack * 0.95 + loss * 0.28 + ( 1.0 - stipple ) * 0.22 );
 
-  vec3 colr = render * ( 0.84 + tone * 0.34 );
-  colr = mix( colr, render * 0.80, stain * 0.35 );
-  colr *= 0.93 + stipple * 0.14;
+  vec3 colr = render * ( 0.70 + tone * 0.62 );
+  colr = mix( colr, render * 0.66, stain * 0.45 );
+  colr *= 0.92 + stipple * 0.17;
   colr = mix( colr, substrate, loss );
-  colr = mix( colr, render * 1.10, lip * 0.4 );
+  colr = mix( colr, render * 1.12, lip * 0.45 );
+  colr = mix( colr, colr * 0.45, crack * 0.7 );
 
-  rough = mix( 0.92 + ( stipple - 0.5 ) * 0.08, 0.88, loss );
+  rough = mix( 0.92 + ( stipple - 0.5 ) * 0.08, 0.90, loss );
 
-  // 5 — deposits: heavy vertical staining, soot in the cracks, moss low down.
-  float seed = fbm( vec2( uv.x, 0.19 ), vec2( 13.0, 1.0 ), 3 );
-  float body = runoff( warp( uv, vec2( 3.0, 8.0 ), 0.020, 2 ), 38.0, 3.0, 4 );
-  float streak = smoothstep( 0.58, 0.93, seed * 0.60 + body * 0.58 );
-  colr = mix( colr, vec3( 0.205, 0.190, 0.162 ), streak * 0.50 );
+  // 5 — deposits: heavy vertical staining, then moss where it stays damp.
+  float seed = fbm( vec2( uv.x, 0.19 ), vec2( 7.0, 1.0 ), 3 );
+  float body = runoff( warp( uv, vec2( 3.0, 6.0 ), 0.055, 2 ), 24.0, 2.0, 4 );
+  float streak = smoothstep( 0.54, 0.94, seed * 0.52 + body * 0.64 );
+  colr = mix( colr, vec3( 0.185, 0.172, 0.148 ), streak * 0.55 );
   rough = mix( rough, 0.75, streak * 0.40 );
-  cav = min( cav, 1.0 - streak * 0.32 );
 
-  float moss = smoothstep( 0.68, 0.96, fbm( uv + 4.4, vec2( 5.0, 4.0 ), 4 ) ) * ( 1.0 - cav );
-  colr = mix( colr, vec3( 0.092, 0.120, 0.058 ), moss * 0.65 );
+  float moss = smoothstep( 0.64, 0.95, fbm( uv + 4.4, vec2( 5.0, 4.0 ), 3 ) ) * ( 1.0 - cav * 0.55 );
+  colr = mix( colr, vec3( 0.078, 0.102, 0.050 ), moss * 0.65 );
   rough = mix( rough, 0.96, moss * 0.6 );
+
+  dirt = sat( stain * 0.8 + streak * 0.85 + loss * 0.18 + 0.12 );
 
   albedo = colr;
   metal = 0.0;
 }` },
 
   sand: {
-    normal: 1.0, relief: 20, grime: 0.18, wear: 0.08, wearMetal: 0.0,
-    grimeColor: [0.170, 0.148, 0.112], wearColor: [0.72, 0.665, 0.545],
+    normal: 1.1, relief: 26, grime: 0.22, wear: 0.08, wearMetal: 0.0,
+    grimeColor: [0.155, 0.136, 0.104], wearColor: [0.74, 0.690, 0.580],
     detail: [16, 0.55], macro: [0.020, 0.24, 0.10], splash: [0.0, 0.0], dust: 0.12,
     glsl: /* glsl */ `
-void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav ) {
-  // 1 — dry desert sand. Bright and almost perfectly matte; only faintly warm
-  //     so the sandbag and open-ground tints can pull it in either direction.
-  vec3 dry = vec3( 0.660, 0.606, 0.510 );
-  vec3 damp = vec3( 0.360, 0.320, 0.252 );
+void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav, out float dirt ) {
+  // 1 — dry sand. Bright and almost perfectly matte; only faintly warm so the
+  //     sandbag and open-ground tints can pull it in either direction.
+  vec3 dry = vec3( 0.640, 0.588, 0.496 );
+  vec3 damp = vec3( 0.330, 0.294, 0.232 );
 
   // 2 — dunes: a low-frequency drift the ripples ride on.
   float dune = fbm( uv, vec2( 2.0 ), 3 );
 
-  // 3 — wind ripples. A warped sine wave beats layered fbm here because real
-  //     ripples have a crest line, not a noise field.
-  vec2 rw = warp( uv, vec2( 3.0 ), 0.12, 3 );
+  // 3 — wind ripples. A heavily warped sine beats layered fbm here because real
+  //     ripples have a crest line; the warp keeps them from reading as a comb.
+  vec2 rw = warp( uv, vec2( 3.0 ), 0.16, 3 );
   float ripple = sin( ( rw.x * 3.0 + rw.y * 9.0 ) * 6.28318530718 ) * 0.5 + 0.5;
   ripple = pow( ripple, 1.6 );
-  float ripple2 = sin( ( rw.x * 7.0 - rw.y * 4.0 ) * 6.28318530718 ) * 0.5 + 0.5;
+  float cross = sin( ( rw.x * 7.0 - rw.y * 4.0 ) * 6.28318530718 ) * 0.5 + 0.5;
+  ripple = mix( ripple, ripple * ( 0.55 + 0.45 * cross ), 0.5 );
 
-  // 4 — micro: individual grains, plus scattered pebbles and shell fragments.
+  // 4 — micro: individual grains, plus pebbles and shell fragments.
   float grain = fbm( uv, vec2( 230.0 ), 2 );
   vec3 peb = worley( uv + 3.9, vec2( 34.0 ) );
   float pebble = smoothstep( 0.16, 0.05, peb.x ) * step( 0.80, peb.z );
 
   // 5 — scour: wind-swept hollows where the fines have blown out.
-  float scour = smoothstep( 0.58, 0.86, fbm( uv + 22.0, vec2( 6.0 ), 4 ) );
+  float scour = smoothstep( 0.54, 0.86, fbm( uv + 22.0, vec2( 6.0 ), 3 ) );
 
-  height = 0.50 + ( dune - 0.5 ) * 0.22 + ripple * 0.20 + ripple2 * 0.07
+  height = 0.50 + ( dune - 0.5 ) * 0.22 + ripple * 0.20
          + ( grain - 0.5 ) * 0.05 + pebble * 0.18 - scour * 0.10;
 
-  cav = 1.0 - sat( ( 1.0 - ripple ) * 0.35 + scour * 0.35 );
+  cav = 1.0 - sat( ( 1.0 - ripple ) * 0.45 + scour * 0.40 );
 
-  vec3 colr = dry * ( 0.86 + dune * 0.30 );
-  colr = mix( colr, dry * 1.14, ripple * 0.30 );                    // lit crests
-  colr = mix( colr, damp, scour * 0.35 );                           // damp hollows
-  colr = mix( colr, vec3( 0.480, 0.460, 0.420 ), pebble * 0.75 );
-  colr *= 0.94 + grain * 0.12;
+  vec3 colr = dry * ( 0.80 + dune * 0.42 );
+  colr = mix( colr, dry * 1.16, ripple * 0.32 );                    // lit crests
+  colr = mix( colr, damp, scour * 0.40 );                           // damp hollows
+  colr = mix( colr, vec3( 0.470, 0.452, 0.412 ), pebble * 0.75 );
+  colr *= 0.93 + grain * 0.14;
 
   rough = 0.95 - ripple * 0.04 + ( grain - 0.5 ) * 0.05;
   rough = mix( rough, 0.80, pebble * 0.6 );
+
+  dirt = sat( scour * 0.7 + ( 1.0 - ripple ) * 0.35 );
 
   albedo = colr;
   metal = 0.0;
 }` },
 
   gunMetal: {
-    // Weapons.js multiplies this by roughness 0.42 / metalness 0.95, so the map
-    // is authored high and lets that scalar bring it down to gun finish.
+    // Weapons.js multiplies this by roughness 0.58 / metalness 0.88, so the map
+    // is authored high and lets those scalars bring it down to gun finish.
     size: SIZE.medium,
-    normal: 1.0, relief: 22, grime: 0.30, wear: 0.34, wearMetal: 1.0,
-    grimeColor: [0.020, 0.019, 0.018], wearColor: [0.420, 0.428, 0.442],
+    normal: 1.0, relief: 26, grime: 0.30, wear: 0.30, wearMetal: 1.0,
+    grimeColor: [0.018, 0.017, 0.016], wearColor: [0.180, 0.184, 0.192],
     detail: [18, 0.30], macro: [0.0, 0.0, 0.0], splash: [0.0, 0.0], dust: 0.0,
     metalness: 1.0,
     glsl: /* glsl */ `
-void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav ) {
-  // 1 — manganese phosphate over steel. Nearly black, granular, very matte
+void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out float metal, out float cav, out float dirt ) {
+  // 1 — manganese phosphate over steel. Nearly black, granular, and very matte
   //     until it is rubbed, which is the whole character of a used weapon.
   vec3 park = vec3( 0.0295, 0.0300, 0.0315 );
   vec3 steel = vec3( 0.440, 0.446, 0.458 );
@@ -825,32 +865,36 @@ void surface( vec2 uv, out vec3 albedo, out float height, out float rough, out f
   float crystal = smoothstep( 0.55, 0.05, cry.x );
   float micro = fbm( uv, vec2( 260.0 ), 2 );
 
-  // 3 — machining: fine longitudinal tool marks left on the receiver flats.
+  // 3 — machining: fine longitudinal tool marks on the receiver flats.
   float tool = fbm( uv, vec2( 520.0, 8.0 ), 2 );
 
-  // 4 — handling wear. Ridged noise gives the polished areas the streaky,
-  //     directional look of contact wear rather than random patches.
+  // 4 — handling wear. Narrow and sparse: a service weapon is polished along
+  //     the few edges a hand and a sling actually touch, not blotched all over.
   vec2 wu = warp( uv, vec2( 4.0 ), 0.05, 2 );
-  float rub = smoothstep( 0.66, 0.95, ridged( wu, vec2( 6.0, 3.0 ), 4 ) );
+  float rub = smoothstep( 0.80, 0.99, ridged( wu, vec2( 5.0, 3.0 ), 4 ) );
   float scratch = smoothstep( 0.975, 1.0, ridged( warp( uv, vec2( 6.0 ), 0.05, 2 ), vec2( 22.0, 6.0 ), 3 ) );
 
   // 5 — carbon fouling: soot baked into the finish, matte and light-absorbing.
-  float carbon = smoothstep( 0.55, 0.90, fbm( uv + 8.2, vec2( 5.0 ), 4 ) );
+  float carbon = smoothstep( 0.55, 0.90, fbm( uv + 8.2, vec2( 5.0 ), 3 ) );
 
   height = 0.60 + ( crystal - 0.5 ) * 0.10 + ( micro - 0.5 ) * 0.05
-         + ( tool - 0.5 ) * 0.03 + rub * 0.04 - scratch * 0.18;
+         + ( tool - 0.5 ) * 0.03 + rub * 0.03 - scratch * 0.18;
 
   cav = 1.0 - sat( ( 1.0 - crystal ) * 0.30 + scratch * 0.7 );
 
-  float bare = sat( rub * 0.85 + scratch );
-  vec3 colr = mix( park * ( 0.80 + crystal * 0.55 ), steel * ( 0.92 + tool * 0.16 ), bare );
+  float bare = sat( rub * 0.8 + scratch );
+  // Polished phosphate silvers only slightly; almost all of the read is the
+  // roughness drop below. Driving it through albedo gives a magpie finish.
+  vec3 colr = mix( park * ( 0.80 + crystal * 0.55 ), steel * ( 0.92 + tool * 0.16 ), bare * 0.22 );
   colr = mix( colr, park * 0.55, carbon * 0.6 );
 
   metal = mix( 0.88, 1.0, bare );
-  // Authored high: Weapons.js scales this by 0.42 to reach the final finish.
+  // Authored high: Weapons.js scales this down to reach the final finish.
   rough = mix( 0.96 - crystal * 0.10, 0.52 + tool * 0.14, bare );
   rough = mix( rough, 1.0, carbon * 0.35 );
   rough = mix( rough, 0.40, scratch * 0.7 );
+
+  dirt = sat( carbon * 0.9 + 0.10 );
 
   albedo = colr;
 }` },

@@ -1196,8 +1196,9 @@ export class Level {
       while (p < e.span - 0.2) {
         const len = Math.min(e.span - p, 2.4 + rnd() * 5.5);
         const gap = rnd() < (spec.ruin ? 0.5 : 0.16);
-        // Keep the stair landing corner open so the roof is actually reachable.
-        const atStair = spec.roofAccess && e.id === spec.stair && p < 3.0;
+        // The switchback tops out near the street end of the stair elevation;
+        // leave that stretch open or the roof is not actually reachable.
+        const atStair = spec.roofAccess && e.id === spec.stair && p > e.span - 8;
         if (!gap && !atStair && len > 0.5) {
           const hh = spec.ruin ? 0.4 + rnd() * 0.5 : 0.72 + rnd() * 0.42;
           const off = p + len / 2 - e.span / 2;

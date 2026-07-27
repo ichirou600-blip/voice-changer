@@ -80,3 +80,5 @@ server/model_dir_static/Beatrice-JVS
 game/node_modules/
 game/dist/
 game/shots/
+game/.csmtest/
+game/tools/.probe/
