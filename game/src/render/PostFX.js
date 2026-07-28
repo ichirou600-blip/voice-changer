@@ -32,18 +32,22 @@ import { SMAAPass } from 'three/examples/jsm/postprocessing/SMAAPass.js';
 
 /** Per-tier cost knobs. Everything visual stays on; only sample counts drop. */
 const TIERS = {
+  // Contact tap counts are per-frame *and* now split across two search octaves,
+  // so the budget that used to be one 8-tap spiral is two 5-tap ones. Half a
+  // dozen taps is the floor at which a single octave still resolves a crevice
+  // rather than dithering it, hence the bump at every tier.
   low: {
-    aa: 'smaa', aoScale: 0.5, aoDirs: 2, aoSteps: 3, aoBlur: 1, contactTaps: 8, raySteps: 8,
+    aa: 'smaa', aoScale: 0.5, aoDirs: 2, aoSteps: 3, aoBlur: 1, contactTaps: 10, raySteps: 8,
     motionBlur: false, motionSamples: 6, dof: false, dofTaps: 8,
     bloomMips: 4, historyFilter: 0,
   },
   medium: {
-    aa: 'taa', aoScale: 0.5, aoDirs: 2, aoSteps: 5, aoBlur: 2, contactTaps: 10, raySteps: 10,
+    aa: 'taa', aoScale: 0.5, aoDirs: 2, aoSteps: 5, aoBlur: 2, contactTaps: 12, raySteps: 10,
     motionBlur: true, motionSamples: 8, dof: true, dofTaps: 12,
     bloomMips: 5, historyFilter: 1,
   },
   high: {
-    aa: 'taa', aoScale: 0.5, aoDirs: 3, aoSteps: 6, aoBlur: 2, contactTaps: 12, raySteps: 12,
+    aa: 'taa', aoScale: 0.5, aoDirs: 3, aoSteps: 6, aoBlur: 2, contactTaps: 16, raySteps: 12,
     motionBlur: true, motionSamples: 12, dof: true, dofTaps: 20,
     bloomMips: 6, historyFilter: 1,
   },
@@ -197,14 +201,43 @@ class GBufferPass {
         out vec4 vCurClip;
         out vec4 vPrevClip;
         void main() {
-          vec4 world = modelMatrix * vec4(position, 1.0);
+          // Instance transform, or identity when this draw is not instanced.
+          //
+          // This is not a refinement, it is the pass's central bug. Every piece
+          // of street dressing in the level — sandbags, jersey barriers, drums,
+          // crates, tyres, the water tank's legs — is realised as a single
+          // InstancedMesh, and the colour pass draws them correctly because
+          // three's own materials consume instanceMatrix. This override
+          // material did not, so in the g-buffer every one of those instances
+          // was transformed by the InstancedMesh's own (identity) matrix and
+          // piled up at the world origin. The props were therefore *absent*
+          // from depth and normals: the contact trace at a sandbag read the
+          // road behind it, found a flat coplanar surface, and correctly
+          // reported no occlusion.
+          //
+          // That is the whole reason the term worked at a kerb wall and an
+          // alley wall — batched level geometry, present in the buffer — and
+          // failed at every junction involving a prop. Radius, bias and relief
+          // were never the constraint; the geometry was not there to occlude.
+          #ifdef USE_INSTANCING
+            mat4 imat = instanceMatrix;
+          #else
+            mat4 imat = mat4(1.0);
+          #endif
+          vec4 local = imat * vec4(position, 1.0);
+          vec4 world = modelMatrix * local;
           vec4 view = viewMatrix * world;
-          vNormalView = normalMatrix * normal;
+          // Same normal handling three's own defaultnormal_vertex chunk does:
+          // divide out the squared column lengths so a scaled instance does not
+          // skew its normals, then rotate.
+          mat3 im = mat3(imat);
+          vec3 nrm = normal / vec3(dot(im[0], im[0]), dot(im[1], im[1]), dot(im[2], im[2]));
+          vNormalView = normalMatrix * (im * nrm);
           vDepth = -view.z;
           // Jitter-free clip positions: the TAA jitter must not leak into motion
           // vectors or every static pixel would report half a pixel of movement.
           vCurClip = uCurVP * world;
-          vPrevClip = uPrevVP * (uPrevModel * vec4(position, 1.0));
+          vPrevClip = uPrevVP * (uPrevModel * local);
           gl_Position = projectionMatrix * view;
         }`,
       fragmentShader: /* glsl */`
@@ -553,7 +586,14 @@ const ContactAOShader = {
     uRadius: { value: 0.32 },
     uBias: { value: 0.13 },
     uIntensity: { value: 1.0 },
-    uMinRadiusPx: { value: 3.0 },
+    // Pixel floor on the search. Below this the taps land back in the centre
+    // texel and the term switches itself off — which at 3 px happened to every
+    // prop past ~65 m, so the water tank's legs and the crate under it had no
+    // ground contact at all and the crate read as a card lying on the frame.
+    // 6 px keeps four distinct texels under the trace out to the far end of the
+    // boulevard; the world radius it implies grows with distance, which the
+    // tangent-plane rejection makes harmless on flat ground.
+    uMinRadiusPx: { value: 6.0 },
     uMaxRadiusPx: { value: 42.0 },
     uSunView: { value: new THREE.Vector3(0, 1, 0) },
     uRayRange: { value: 0.8 },
@@ -642,25 +682,47 @@ const ContactAOShader = {
 
       // World radius projected to pixels, then clamped at both ends. The upper
       // clamp is the same guard the wide pass needs — the viewmodel is 30 cm
-      // from the lens and a 0.32 m search there would swallow the whole weapon.
-      // The lower clamp matters more here: past ~50 m a 0.32 m radius is under
-      // one texel and every tap would land back in the centre pixel, silently
-      // switching the term off exactly where a prop needs its base pinned.
+      // from the lens and a half-metre search there would swallow the whole
+      // weapon. The lower clamp is what pins a prop's base at range: it is a
+      // *pixel* floor, so past the distance where it bites the world radius
+      // grows with depth instead of collapsing under a texel. At 3 px that
+      // crossover sat at ~66 m and the world radius below it was never more
+      // than the nominal 0.32 m — which is three pixels of ground on a street
+      // seen edge-on, and three pixels is not a contact shadow, it is a seam.
       // Whichever clamp bites, the world falloff radius follows it.
       float radiusPx = clamp(uRadius * uProjScale / z, uMinRadiusPx, uMaxRadiusPx);
-      float R = radiusPx * z / uProjScale;
 
       float noise = ign(gl_FragCoord.xy, uFrame);
       float rot = noise * 6.2831853;
       vec2 texel = 1.0 / uResolution;
 
-      float occ = 0.0, wsum = 0.0;
+      // Two octaves, sharing one tap budget and one spiral.
+      //
+      // A single radius cannot serve this pass, because the junctions it has to
+      // read span two orders of magnitude of scale in the same frame: the
+      // crevice between two sandbags is 3 cm, the shadow under a jersey barrier
+      // is 30 cm, and the ground a crate on a far pavement sits on is half a
+      // metre. Search wide and the near taps that found the crevice are
+      // averaged against eight that found open sky, so the wall measures a
+      // sixth of its true obscurance and reads as a row of dinner rolls.
+      // Search tight and the barrier foot never finds the barrier.
+      //
+      // So each octave is normalised on its own weight and the two are combined
+      // by taking the larger. Occlusion is not an average over scales — a gap
+      // that blocks the sky at 3 cm blocks it whether or not the metre around
+      // it is open — and max() is the combiner that says so.
+      float occN = 0.0, wN = 0.0, occF = 0.0, wF = 0.0;
+      const float SPLIT = 0.30;   // inner octave covers the first 30% of the radius
+      // Where the two octaves meet, in pixels. Floored at 2.5 px because the
+      // g-buffer is point sampled and an octave whose whole span is under a
+      // texel is an octave of the centre pixel.
+      float splitPx = max(radiusPx * SPLIT, 2.5);
       for (int i = 0; i < CONTACT_TAPS; i++) {
         float fi = float(i) + 0.5;
-        // Taps are spaced linearly from 1.5 px out to the full radius. The
-        // g-buffer is point sampled, so anything closer than about a texel
-        // returns the centre pixel itself and contributes nothing.
-        float rPx = mix(1.5, radiusPx, fi / float(CONTACT_TAPS));
+        float h = fi / float(CONTACT_TAPS);
+        bool inner = (i - (i / 2) * 2) == 0;   // interleaved, so both octaves get
+                                               // the full angular spread
+        float rPx = inner ? mix(1.5, splitPx, h) : mix(splitPx, max(radiusPx, splitPx), h);
         float ang = fi * GOLDEN + rot;
         vec2 suv = vUv + vec2(cos(ang), sin(ang)) * rPx * texel;
 
@@ -674,11 +736,19 @@ const ContactAOShader = {
         // degrees scores that wall at a third of its true obscurance. That
         // single mis-normalisation is most of why the first cut of this pass
         // measured 253/255 mean and was invisible.
+        //
+        // This is also the whole defence against the open-road dark band an
+        // earlier wide GTAO produced: coplanar taps read elevation ~0 and are
+        // rejected no matter how far the search reaches, which is what makes
+        // the radius and the intensity safe to raise at all. It does not move.
         float rise = smoothstep(uBias, uBias + 0.34, dot(S, N) / max(d, 1e-5));
-        // Proximity weight: full inside half the radius, gone at the edge.
-        float att = smoothstep(0.0, 0.5, 1.0 - d / R);
-        occ += rise * att;
-        wsum += att;
+        // Proximity weight, measured against each octave's own reach rather
+        // than the outer radius — otherwise every inner tap sits deep inside
+        // the falloff at weight 1 and the octave has no falloff at all.
+        float reach = (inner ? splitPx : max(radiusPx, splitPx)) * z / uProjScale;
+        float att = smoothstep(0.0, 0.5, 1.0 - d / max(reach, 1e-4));
+        if (inner) { occN += rise * att; wN += att; }
+        else       { occF += rise * att; wF += att; }
       }
 
       // Normalise by the weight actually in range, not by the tap count. A tap
@@ -687,7 +757,8 @@ const ContactAOShader = {
       // zero is what lets seven distant taps bury the one that found the floor
       // the crate is sitting on. occ never exceeds wsum, so the ratio needs no
       // clamping beyond the divide-by-zero guard.
-      float ao = sat01(1.0 - uIntensity * occ / max(wsum, 1e-4));
+      float ao = sat01(1.0 - uIntensity * max(occN / max(wN, 1e-4),
+                                              occF / max(wF, 1e-4)));
       // .r ambient contact, .g direct contact shadow — the two are consumed
       // with opposite sensitivity to how lit a pixel is, so they cannot be
       // folded into one number here. .ba carry the packed depth so the resolve
@@ -722,8 +793,16 @@ const AOApplyShader = {
     uStrength: { value: 1.0 },
     uDirectRelief: { value: 0.5 },
     uContactStrength: { value: 1.0 },
-    uContactRelief: { value: 0.22 },
+    // Measured, not assumed: bright only reaches ~0.53 on sunlit plaster, so
+    // 0.22 was taking about 12% off the contact term there — real, but nowhere
+    // near enough to explain a term that was not visible at all. Trimmed
+    // anyway, on the argument already made above: a 5 cm gap does not open up
+    // because the sun came out.
+    uContactRelief: { value: 0.10 },
     uShadowStrength: { value: 1.0 },
+    // The grade's exposure, so the two "how lit is this pixel" tests below can
+    // be written against a keyed image instead of against raw scene radiance.
+    uExposure: { value: 1.0 },
   },
   vertexShader: GLSL_FS_VERT,
   fragmentShader: /* glsl */`
@@ -732,7 +811,7 @@ const AOApplyShader = {
     uniform sampler2D tDiffuse, tAO, tContact;
     uniform vec2 uTexel;
     uniform float uStrength, uDirectRelief, uContactStrength, uContactRelief,
-                  uShadowStrength;
+                  uShadowStrength, uExposure;
     varying vec2 vUv;
 
     void main() {
@@ -753,15 +832,52 @@ const AOApplyShader = {
           // tolerance that widens with distance — which is what you want: the
           // resolve must not blur a contact across the silhouette in front of
           // it, but at 100 m the whole prop is a few pixels wide.
-          float w = exp(-abs(unpackUnit(s.ba) - z0) * 1200.0);
+          //
+          // The depth guard alone is not enough, and this is the single change
+          // that made the pass visible. The features this term exists for are
+          // the same size as the filter: the shaded strip in front of a barrier
+          // on a street seen edge-on is three or four pixels tall, and the
+          // crevice between two sandbags is two. A depth-guarded box over the
+          // four diagonal neighbours passes all of them — same surface, same
+          // depth — and averages a genuine 0.6 against four 1.0s, which is how
+          // a 40% contact arrived on screen as 8% and read as nothing. So the
+          // weight carries a range term as well: a neighbour whose occlusion
+          // disagrees with the centre is on the other side of the feature, not
+          // a noisier estimate of the same pixel. Small disagreements still
+          // average, which is all the trace's rotation dither needs.
+          float dz = abs(unpackUnit(s.ba) - z0);
+          float dv = abs(s.r - k0.r) + abs(s.g - k0.g);
+          float w = exp(-dz * 1200.0 - dv * 4.5);
           sum += s.rg * w; wsum += w;
         }
         contact = sum.x / wsum;
         shadow = sum.y / wsum;
       }
 
-      float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
-      float bright = smoothstep(0.35, 1.6, l);
+      // Both tests below ask "how lit is this pixel", and both were asking it
+      // of the wrong number. tDiffuse here is the scene-referred composite —
+      // pre-exposure, pre-tonemap — and this scene keys low: measured off the
+      // captures, sunlit road sits at radiance 0.14, sunlit sandbags at 0.23,
+      // and the brightest plaster in any pose at 0.55. Thresholds of 0.30 and
+      // 0.35 are display-referred numbers, and against a 0.14 road they both
+      // evaluate to *zero*.
+      //
+      // That is the actual reason the contact pass could not be seen on the
+      // sunlit street. Not the search radius and not the relief: lit was 0,
+      // so kSun was 0, so the screen-space sun shadow — the only term that can
+      // draw the strip of ground a barrier shades, since ambient occlusion at
+      // that grazing angle has three pixels to work with — was multiplied out
+      // of the frame entirely. The reliefs were dead for the same reason, which
+      // is why easing them off changed nothing either.
+      //
+      // Keying by exposure rather than hard-coding new constants keeps this
+      // honest: the tests now live in the same space the grade does, so they
+      // do not silently switch off again the next time the sun's intensity is
+      // re-derived upstream.
+      float l = dot(c, vec3(0.2126, 0.7152, 0.0722)) * uExposure;
+      // Genuinely blown-out, not merely lit: this rides above sunlit road and
+      // sandbag, and only reaches full strength on white plaster in full sun.
+      float bright = smoothstep(0.20, 0.90, l);
       float kWide = uStrength * (1.0 - uDirectRelief * bright);
       float kNear = uContactStrength * (1.0 - uContactRelief * bright);
 
@@ -770,8 +886,10 @@ const AOApplyShader = {
       // scales *direct*, so it applies only where there is direct light left to
       // remove. Gating it on how lit the pixel already is doubles as the guard
       // against double-darkening: a pixel the cascades have already put in
-      // shadow is dark, reads as unlit, and is left alone.
-      float lit = smoothstep(0.30, 1.05, l);
+      // shadow is dark, reads as unlit, and is left alone. The band this has to
+      // separate is deep shade (~0.03) from open street (~0.16), so that is
+      // where the ramp goes.
+      float lit = smoothstep(0.05, 0.28, l);
       float kSun = uShadowStrength * lit;
 
       gl_FragColor = vec4(
@@ -1483,6 +1601,31 @@ const GradeShader = {
 /* Pipeline                                                            */
 /* ------------------------------------------------------------------ */
 
+/**
+ * `?fx=key:value,key:value` overrides on the pipeline parameter block.
+ *
+ * This exists for one reason: every claim made about this stack has to be an
+ * A/B difference of two captures, and a capture costs minutes of software
+ * rasterisation plus a full procedural bake. Without an override the only way
+ * to shoot a pair is to edit a constant and rebuild between them, which means
+ * the pair is not actually a controlled comparison — anything else touching
+ * the tree in between lands in the difference too. With it, both frames come
+ * off the same build and the same bake, and the difference is the parameter.
+ *
+ * Booleans accept 0/1, everything else is a number. Unknown keys are ignored
+ * rather than thrown, so a stale capture URL cannot take the game down.
+ */
+function applyParamOverrides(params) {
+  if (typeof location === 'undefined') return;
+  const raw = new URLSearchParams(location.search).get('fx');
+  if (!raw) return;
+  for (const pair of raw.split(',')) {
+    const [k, v] = pair.split(':');
+    if (!(k in params)) continue;
+    params[k] = typeof params[k] === 'boolean' ? v !== '0' : Number(v);
+  }
+}
+
 export class RenderPipeline {
   constructor(engine, { quality = 'high', sky } = {}) {
     this.engine = engine;
@@ -1514,13 +1657,26 @@ export class RenderPipeline {
       aoBias: 0.09,
 
       // Short-range contact occlusion, full res, independent of the wide term.
-      // 0.32 m is deliberately just over prop scale: wide enough that the
-      // gradient under a crate or a barrier foot reads as a soft shadow rather
-      // than a hard line, tight enough that it never becomes a second, worse
-      // copy of the GTAO above.
+      //
+      // 0.32 m was chosen as "just over prop scale", which is the right idea
+      // measured in the wrong space. On the ground beside a jersey barrier, ten
+      // metres out on a street seen almost edge-on, one screen pixel spans
+      // ~10 cm of floor: the entire 0.32 m the search could darken is three
+      // pixels tall, and after the resolve filter it was none. 0.55 m puts five
+      // to six pixels of gradient there — the same width as the kerb junction
+      // that was already reading — and the trace is multi-scale now, so the
+      // wider outer octave does not cost the sandbag crevices their contrast.
+      // Near the eye the pixel clamp still bites first and holds the effective
+      // radius at ~0.33 m, so nothing about the viewmodel or the foreground
+      // changes; the whole of this increase lands on the mid-frame props that
+      // were floating.
       contact: true,
-      contactRadius: 0.32,
-      contactIntensity: 1.0,
+      contactRadius: 0.55,
+      // The tangent-plane bias below makes intensity a safe lever: flat ground
+      // scores zero occlusion regardless of how hard the term is driven, so
+      // this deepens junctions without touching the open road. Verified by
+      // differencing an A/B pair rather than assumed.
+      contactIntensity: 1.25,
       // Same units as aoBias — sine of the minimum elevation above the tangent
       // plane. Slightly higher than the wide pass because the taps here are one
       // to two pixels apart, where depth quantisation is a larger share of the
@@ -1588,6 +1744,8 @@ export class RenderPipeline {
       sharpen: 0.22,
       lift: 0.0,
     };
+
+    applyParamOverrides(this.params);
 
     const renderer = engine.renderer;
     // Half-float gives the post stack real HDR headroom, but some software
@@ -1786,6 +1944,9 @@ export class RenderPipeline {
       u.uStrength.value = p.aoIntensity;
       u.uContactStrength.value = p.contact ? p.contactStrength : 0.0;
       u.uShadowStrength.value = (p.contact && p.contactShadow) ? 1.0 : 0.0;
+      // Keeps the two lit/bright tests inside this shader in the same space the
+      // grade works in, so they stay calibrated if the key ever moves.
+      u.uExposure.value = p.exposure;
       this._time('aoApply', () => this._draw(r, this._quads.aoApply, this.rtLit));
       lit = this.rtLit.texture;
     }

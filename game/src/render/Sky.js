@@ -1149,8 +1149,17 @@ export class Sky {
     // light; once the probe was fixed the fill doubled and nothing rebalanced
     // the key. SUN_TO_SKY targets the clear-day direct:indirect irradiance
     // ratio on a horizontal surface, where real values run 4:1 to 8:1.
-    const SUN_TO_SKY = 5.5;
-    this.sunIntensity = Math.max(0.05, this.ambientIntensity * SUN_TO_SKY * dim);
+    // Derived from the solar beam's own transmittance, NOT as a multiple of the
+    // fill. Expressing it as ambientIntensity * ratio * dim reapplied the
+    // elevation falloff a second time, because ambientIntensity already tracks
+    // the sun's height — so the key still collapsed at low sun even after `dim`
+    // came out of sunColor. Same dim-squared shape, new home.
+    //
+    // SUN_SCALE converts unit transmittance into the renderer's intensity units
+    // and is the only hand-set number here; `peak` carries the atmosphere's own
+    // extinction, which is what should dim the key as the slant path grows.
+    const SUN_SCALE = 11.0;
+    this.sunIntensity = Math.max(0.05, peak * SUN_SCALE * above);
 
     // --- dome uniforms -------------------------------------------------------
     const u = this.material.uniforms;

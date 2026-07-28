@@ -585,7 +585,13 @@ function glovedHand(material, plate, sleeveMat, {
     const t = i / 3;
     const fs = FINGER[i];
     const lens = [0.038 * fs, 0.029 * fs, 0.026 * fs];
-    const radii = [0.0105 * fs, 0.0095 * fs, 0.0083 * fs];
+    // Radii, not diameters — adjacent fingers are KNUCKLE_X apart (0.0197 m),
+    // and at the previous 0.0105 the proximal capsules were up to 0.0222 m
+    // across with fs applied, so every adjacent pair interpenetrated by 1-2.5
+    // mm. The four fingers fused into one tube with three transverse creases
+    // and read as a mitten. These leave roughly 3 mm of daylight between
+    // proximals, which is what lets the creases separate at viewmodel scale.
+    const radii = [0.0082 * fs, 0.0074 * fs, 0.0064 * fs];
 
     const root = new THREE.Group();
     const rootY = 0.037;

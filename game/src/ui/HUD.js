@@ -442,22 +442,36 @@ export class HUD {
 
   /**
    * Top-left tactical map. Rotates with the player so "up" is always forward,
-   * plots nearby level geometry from the physics broadphase and marks hostiles
-   * that are currently aware of the player.
+   * draws the actual street plan and marks hostiles that are currently aware of
+   * the player.
    *
-   * The bezel does most of the work of making this read as an instrument: a
-   * dark recessed ring, a bone hairline on top of it, an inner shadow so the
-   * plot sits *below* the frame rather than floating on it, and a range grid
-   * that rotates with the world. A flat translucent disc with dots on it is a
-   * debug view of a quadtree; this is a map.
+   * Two rules govern the size. It has to be small — the previous disc ran a
+   * quarter of the frame height, which made it the loudest object in the image
+   * and dragged the eye out of the centre on every glance; a shipped military
+   * shooter puts this at ~120 px on a 1080p frame, which is what the clamp
+   * below now lands on. And it has to contain a *map*: streets and building
+   * mass, so a glance answers "where can I go" rather than "where are the
+   * blips". The footprints come straight from the level plan, which is the
+   * same rect list the ground splat and sand drift are driven from, so the
+   * plot and the world cannot disagree.
+   *
+   * Reading is by figure/ground, not by decoration: the disc is street, the
+   * blocks are built mass, and the only bright marks are the player and the
+   * hostiles. An earlier version sampled the collision BVH's coarse upper
+   * nodes instead; those bounds tile the level, so the streets came out as
+   * holes punched in a slab and the plot read as a quadtree debug view.
    */
   _drawMinimap() {
     const ctx = this.ctx;
-    const size = Math.round(Math.min(Math.max(Math.min(this.w, this.h) * 0.205, 118), 190));
+    // Half the old radius. Floor and ceiling keep it sane from 720p to 4K.
+    const size = Math.round(Math.min(Math.max(Math.min(this.w, this.h) * 0.104, 74), 122));
     const r = size / 2;
     const x0 = this.pad, y0 = this.pad;
     const cx = x0 + r, cy = y0 + r;
-    const range = 46;                 // metres from centre to edge
+    // Pulled in with the disc: the plot is half the width it was, so holding
+    // the old 46 m would have halved the scale as well and left the blocks
+    // too small to tell apart from the blips.
+    const range = 34;                 // metres from centre to edge
     const scale = r / range;
 
     const px = this.player.position.x, pz = this.player.position.z;
@@ -483,7 +497,10 @@ export class HUD {
     ctx.arc(cx, cy, r, 0, Math.PI * 2);
     ctx.clip();
 
-    ctx.fillStyle = 'rgba(12,16,20,0.50)';
+    // Ground plane of the plot. This is the *street* — everything the player
+    // can walk on — so it is the darker of the two tones and the blocks read
+    // as mass sitting on it.
+    ctx.fillStyle = 'rgba(14,18,22,0.62)';
     ctx.fillRect(x0 - 2, y0 - 2, size + 4, size + 4);
 
     // Everything in this block is drawn in world-delta space: translating and
@@ -494,62 +511,37 @@ export class HUD {
     ctx.translate(cx, cy);
     ctx.rotate(this.player.yaw);
 
-    // Range grid, every ten metres, anchored to the world rather than the eye.
-    const step = 10 * scale;
-    const reach = r * 1.5;
-    ctx.strokeStyle = 'rgba(150,172,190,0.075)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let i = -4; i <= 4; i++) {
-      const gx = (Math.round(px / 10) * 10 + i * 10 - px) * scale;
-      const gz = (Math.round(pz / 10) * 10 + i * 10 - pz) * scale;
-      ctx.moveTo(gx, -reach); ctx.lineTo(gx, reach);
-      ctx.moveTo(-reach, gz); ctx.lineTo(reach, gz);
-    }
-    ctx.stroke();
-
-    // Level footprint, sampled from the collision BVH's top-level nodes so the
-    // map reflects the actual world rather than a hand-authored copy of it.
-    const phys = this.engine.game?.physics;
-    if (phys?.nodes) {
-      const nodes = phys.nodes;
-      const count = Math.min(phys.nodeCount || 0, 256);
-      // Deliberately the coarse upper nodes and nothing finer. Two sharper
-      // schemes were tried and both read worse: filling the union of a deeper
-      // cut covers almost the whole disc, because collision bounds tile the
-      // level and the streets come out as holes punched in a slab; stroking
-      // that union turns the plot into a wireframe. Overlapping the coarse
-      // bounds at low alpha is what makes built-up mass accumulate and the
-      // roads stay open, which is the only thing the player reads off a map
-      // this size.
-      ctx.fillStyle = 'rgba(128,146,164,0.30)';
-      ctx.strokeStyle = 'rgba(178,198,216,0.20)';
+    // Building footprints, straight off the level plan: `{x0,x1,z0,z1}` rects
+    // in world metres. Filled solid rather than stacked at low alpha — these
+    // do not overlap, so there is nothing to accumulate, and a solid block on
+    // a dark street is the one figure/ground relationship that survives being
+    // read in a tenth of a second out of the corner of the eye.
+    const fps = this.level?._footprints;
+    if (fps) {
+      const reach = range + 40;       // generous: a block's near edge can be in view
+      ctx.fillStyle = 'rgba(154,164,172,0.50)';
+      ctx.strokeStyle = 'rgba(210,220,228,0.34)';
       ctx.lineWidth = 1;
-      for (let i = 1; i < count; i++) {
-        const o = i * 8;
-        const minX = nodes[o], minZ = nodes[o + 2];
-        const maxX = nodes[o + 3], maxZ = nodes[o + 5];
-        if (nodes[o + 4] - nodes[o + 1] < 1.6) continue;   // skip ground/low cover
-        // Drawn under the rotation, so a footprint stays a rectangle. Projecting
-        // two opposite corners and filling the axis-aligned box between them —
-        // which is what this did before — grows every building into its own
-        // bounding square as the player turns.
-        const rx = (minX - px) * scale, rz = (minZ - pz) * scale;
-        const rw = (maxX - minX) * scale, rh = (maxZ - minZ) * scale;
+      for (let i = 0; i < fps.length; i++) {
+        const f = fps[i];
+        // Cheap reject on the world-space AABB. The clip circle would do this
+        // correctly anyway; this only keeps the path count down.
+        if (f.x1 < px - reach || f.x0 > px + reach || f.z1 < pz - reach || f.z0 > pz + reach) continue;
+        const rx = (f.x0 - px) * scale, rz = (f.z0 - pz) * scale;
+        const rw = (f.x1 - f.x0) * scale, rh = (f.z1 - f.z0) * scale;
         ctx.fillRect(rx, rz, rw, rh);
-        ctx.strokeRect(rx + 0.5, rz + 0.5, rw - 1, rh - 1);
+        if (rw > 3 && rh > 3) ctx.strokeRect(rx + 0.5, rz + 0.5, rw - 1, rh - 1);
       }
     }
     ctx.restore();
 
-    // Range rings, on top of the plot so they read as instrument furniture.
-    ctx.strokeStyle = rgba(BONE, 0.09);
+    // One range ring, at half scale. Two rings plus a ten-metre grid was
+    // instrument furniture competing with the thing it was framing.
+    ctx.strokeStyle = rgba(BONE, 0.10);
     ctx.lineWidth = 1;
-    for (const f of [0.34, 0.67]) {
-      ctx.beginPath();
-      ctx.arc(cx, cy, r * f, 0, Math.PI * 2);
-      ctx.stroke();
-    }
+    ctx.beginPath();
+    ctx.arc(cx, cy, r * 0.5, 0, Math.PI * 2);
+    ctx.stroke();
 
     // Field-of-view wedge, faded outward so it suggests reach rather than
     // drawing a hard cone across the plot.
@@ -567,22 +559,22 @@ export class HUD {
     for (const e of this.enemies.enemies || []) {
       if (e.state === 4) continue;                        // STATE.DEAD
       const [ex, ey] = project(e.position.x, e.position.z);
-      if (Math.hypot(ex - cx, ey - cy) > r - 5) continue;
+      if (Math.hypot(ex - cx, ey - cy) > r - 4) continue;
       ctx.beginPath();
-      ctx.arc(ex, ey, 3.2, 0, Math.PI * 2);
+      ctx.arc(ex, ey, 2.7, 0, Math.PI * 2);
       if (e.hasLos) {
         ctx.fillStyle = rgba(ALARM, 0.96); ctx.fill();
         ctx.strokeStyle = rgba(INK, 0.55); ctx.lineWidth = 1; ctx.stroke();
       } else {
-        ctx.strokeStyle = 'rgba(232,150,72,0.85)'; ctx.lineWidth = 1.4; ctx.stroke();
+        ctx.strokeStyle = 'rgba(232,150,72,0.85)'; ctx.lineWidth = 1.3; ctx.stroke();
       }
     }
 
     // Inner shadow: the single cheapest cue that this is a recess and not a
     // sticker. Without it the disc floats exactly the way the props did.
-    const inner = ctx.createRadialGradient(cx, cy, r * 0.52, cx, cy, r);
+    const inner = ctx.createRadialGradient(cx, cy, r * 0.62, cx, cy, r);
     inner.addColorStop(0, rgba(INK, 0));
-    inner.addColorStop(1, rgba(INK, 0.55));
+    inner.addColorStop(1, rgba(INK, 0.5));
     ctx.fillStyle = inner;
     ctx.fillRect(x0 - 2, y0 - 2, size + 4, size + 4);
     ctx.restore();
@@ -593,10 +585,10 @@ export class HUD {
     ctx.shadowBlur = 3;
     ctx.fillStyle = rgba(BONE, 0.97);
     ctx.beginPath();
-    ctx.moveTo(cx, cy - 6.5);
-    ctx.lineTo(cx - 4.6, cy + 5);
-    ctx.lineTo(cx, cy + 2.6);
-    ctx.lineTo(cx + 4.6, cy + 5);
+    ctx.moveTo(cx, cy - 5.4);
+    ctx.lineTo(cx - 3.8, cy + 4.2);
+    ctx.lineTo(cx, cy + 2.2);
+    ctx.lineTo(cx + 3.8, cy + 4.2);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
@@ -608,36 +600,59 @@ export class HUD {
     ctx.arc(cx, cy, r + 0.6, 0, Math.PI * 2);
     ctx.stroke();
     ctx.strokeStyle = rgba(BONE, 0.5);
-    ctx.lineWidth = 1.4;
+    ctx.lineWidth = 1.3;
     for (let i = 0; i < 4; i++) {
       const a = (Math.PI / 2) * i - Math.PI / 2;
       ctx.beginPath();
       ctx.moveTo(cx + Math.cos(a) * (r + 1), cy + Math.sin(a) * (r + 1));
-      ctx.lineTo(cx + Math.cos(a) * (r + 4.5), cy + Math.sin(a) * (r + 4.5));
+      ctx.lineTo(cx + Math.cos(a) * (r + 3.6), cy + Math.sin(a) * (r + 3.6));
       ctx.stroke();
     }
 
     // North pip rides the bezel, because the plot rotates and the player still
     // has to know which way the map is pointing.
-    const nx = cx + s * (r + 2.6), ny = cy - c * (r + 2.6);
+    const nx = cx + s * (r + 2.4), ny = cy - c * (r + 2.4);
     ctx.save();
     ctx.translate(nx, ny);
     ctx.rotate(Math.atan2(-c, s) + Math.PI / 2);
     ctx.fillStyle = rgba(AMBER, 0.92);
     ctx.beginPath();
-    ctx.moveTo(0, -3.6); ctx.lineTo(-3, 2.2); ctx.lineTo(3, 2.2);
+    ctx.moveTo(0, -3.1); ctx.lineTo(-2.6, 1.9); ctx.lineTo(2.6, 1.9);
     ctx.closePath();
     ctx.fill();
     ctx.restore();
 
     // Caption. Count first and large, label second and quiet — the number is
     // what gets read.
-    const capY = y0 + size + 19;
+    //
+    // On its own scrim, not just a glyph shadow. This row sits directly under
+    // the disc, which in the `closeup` framing puts it over sunlit plaster at
+    // display code ~200; a 5 px text shadow does not carry bone-on-bone and
+    // the count was reading as a smudge. A plate is what every shipped HUD
+    // does with a caption that can land anywhere in the frame.
+    const capY = y0 + size + 17;
     const n = String(this.enemies.alive ?? 0);
-    this._text(n, x0, capY, { font: `500 15px ${FONT_DISPLAY}`, fill: rgba(BONE, 0.9) });
-    const nw = this._measure(n, `500 15px ${FONT_DISPLAY}`);
+    const nFont = `500 14px ${FONT_DISPLAY}`;
+    const lFont = `500 9px ${FONT_MONO}`;
+    const nw = this._measure(n, nFont);
+    const lw = this._measure('HOSTILES', lFont, 1.8);
+    const plateW = nw + lw + 8 + 12, plateH = 15;
+    ctx.save();
+    ctx.fillStyle = rgba(INK, 0.62);
+    ctx.beginPath();
+    const px0 = x0 - 5, py0 = capY - 11.5, rr = 2.5;
+    ctx.moveTo(px0 + rr, py0);
+    ctx.arcTo(px0 + plateW, py0, px0 + plateW, py0 + plateH, rr);
+    ctx.arcTo(px0 + plateW, py0 + plateH, px0, py0 + plateH, rr);
+    ctx.arcTo(px0, py0 + plateH, px0, py0, rr);
+    ctx.arcTo(px0, py0, px0 + plateW, py0, rr);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    this._text(n, x0, capY, { font: nFont, fill: rgba(BONE, 0.92), glow: 0.5 });
     this._text('HOSTILES', x0 + nw + 8, capY - 1, {
-      font: `500 9px ${FONT_MONO}`, fill: rgba(BONE, 0.42), track: 1.8,
+      font: lFont, fill: rgba(BONE, 0.5), track: 1.8, glow: 0.5,
     });
   }
 

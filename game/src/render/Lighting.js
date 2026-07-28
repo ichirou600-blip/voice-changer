@@ -86,6 +86,11 @@ const VIEW_ENV = 0.6;
 // bounce was added. Trimming it also widens the direct-to-indirect ratio,
 // which is the direction the frame needs.
 const WORLD_ENV = 0.78;
+// Shares of the sky's irradiance carried by the hemisphere and bounce fills.
+// See the note in update(): with all three carriers at full strength the fill
+// matched the key and the frame had no directional structure at all.
+const HEMI_SHARE = 0.34;
+const BOUNCE_SHARE = 0.30;
 
 let _patched = false;
 
@@ -445,7 +450,15 @@ export class Lighting {
     // that colour still carried raw radiance leaves the fill ~20x too weak and
     // crushes every shadowed surface to black.
     const amb = sky.ambientIntensity ?? this.hemi.intensity;
-    if (sky.ambientIntensity !== undefined) this.hemi.intensity = sky.ambientIntensity;
+    // HEMI_SHARE: the sky's irradiance was being delivered three times over —
+    // once by this hemisphere light, once by the bounce fill below, and once by
+    // the PMREM probe at WORLD_ENV. Direct on horizontal ground measured 4.30
+    // against a combined fill of about 4.1, i.e. 1.05:1 where a clear day at 31
+    // degrees is 5:1, which is why nothing in the street poses cast a shadow or
+    // had any form. The probe is the physically-derived carrier, so it keeps
+    // its full weight and these two are cut to a residual that fills the
+    // probe's low-frequency gaps rather than duplicating it.
+    if (sky.ambientIntensity !== undefined) this.hemi.intensity = sky.ambientIntensity * HEMI_SHARE;
 
     // Warm bounce off the ground. Chromaticity is the sun through one reflection
     // off warm grey asphalt, normalised to unit maximum so the magnitude stays
@@ -455,7 +468,7 @@ export class Lighting {
     const peak = Math.max(_bounce.r, _bounce.g, _bounce.b, 1e-4);
     this.bounce.groundColor.copy(_bounce).multiplyScalar(1 / peak);
     const sun = THREE.MathUtils.clamp(sky.sunDirection.y * 2.2, 0, 1);
-    this.bounce.intensity = amb * (0.24 + 0.58 * sun);
+    this.bounce.intensity = amb * (0.24 + 0.58 * sun) * BOUNCE_SHARE;
 
     this._updateCascades();
     this._updateLocals(dt);
