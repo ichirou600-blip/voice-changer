@@ -257,6 +257,25 @@ for (const dist of dists) {
     shots.push({ name, idName, placed, ids });
   }
 }
-const stats = await page.evaluate(() => ({ ...window.__engine.stats }));
+const stats = await page.evaluate(() => {
+  // Per-soldier cost, which is what multiplies across the wave.
+  let tris = 0; let meshes = 0;
+  const per = {};
+  window.__hero.group.traverse((n) => {
+    if (!n.isMesh) return;
+    meshes++;
+    const g = n.geometry;
+    const t = (g.index ? g.index.count : g.attributes.position.count) / 3;
+    tris += t;
+    const k = n.parent === window.__hero.group ? 'node' : 'child';
+    per[k] = (per[k] || 0) + t;
+  });
+  return {
+    ...window.__engine.stats,
+    soldierTris: tris,
+    soldierMeshes: meshes,
+    waveTris: tris * window.__engine.game.enemies.enemies.length,
+  };
+});
 console.log(JSON.stringify({ ready, posed, frozen, stats, shots, errors: [...new Set(errors)].slice(0, 6) }));
 await browser.close();

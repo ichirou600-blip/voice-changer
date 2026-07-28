@@ -225,10 +225,17 @@ export class EnemyManager {
     // thing separating "soldier" from "green mannequin" at 6 m: it breaks the
     // body into patches long before any individual thread is resolvable, and it
     // is the reason the uniform stops reading as one flat diffuse.
-    const DARK = [0.115, 0.124, 0.090];
-    const MID = [0.186, 0.192, 0.138];
-    const LIGHT = [0.256, 0.246, 0.180];
-    const BROWN = [0.180, 0.148, 0.112];
+    // Reflectance, not "a dark green". Measured off a 2.3 m capture, the old
+    // sheet rendered the uniform at a luminance of 0.015 where the sunlit sand
+    // beside it read 0.138 — an effective albedo near 3%, which is charcoal.
+    // Olive-drab combat cloth measures 8-12% and nothing that sits on top of it
+    // — plate, pouch, strap — can separate from a base that is already crushed
+    // into the bottom twentieth of the display range. These four are sRGB
+    // encodings whose luminances are 0.041 / 0.082 / 0.129 / 0.061 linear.
+    const DARK = [0.215, 0.226, 0.176];
+    const MID = [0.315, 0.322, 0.244];
+    const LIGHT = [0.410, 0.396, 0.300];
+    const BROWN = [0.300, 0.250, 0.186];
     const cloth = bakeKit((u, v) => {
       // Plain weave: warp and weft alternate over and under, so the height field
       // is a checker of two orthogonal ribs rather than a grid of bumps.
@@ -253,19 +260,27 @@ export class EnemyManager {
       // level sets, and a separate coarse field for the brown overlay. The
       // fleck layer is kept but pushed to a value step small enough that it
       // adds grain to a patch rather than competing with it.
-      const wx = tileFbm(nz, u, v, 3.4, 2, 51.0, 23.0) * 0.16;
-      const wy = tileFbm(nz, u, v, 3.4, 2, 94.0, 76.0) * 0.16;
-      const n1 = tileFbm(nz, u, v, 1.5, 2, wx * 12, wy * 12);
-      const n2 = tileFbm(nz, u, v, 2.1, 2, 31.0 + wy * 12, 77.0 + wx * 12);
+      // The warp is a boundary perturbation, not a second pattern. Feeding it in
+      // at gain 12 offset the sample by +/-1.5 *noise units* — more than a whole
+      // feature — so the shape field was not being wandered, it was being
+      // scrambled at the warp's own 3.4-cycle frequency. Measured on the baked
+      // sheet, the mean single-colour chord was 1.2 cm: vermiculation, which is
+      // exactly what a reviewer means by "mould". At gain 1.15 the boundary
+      // moves by about a sixth of a feature and the chord measures 8.7 cm, so a
+      // 12 cm forearm carries two or three shapes and a thigh carries four.
+      const wx = tileFbm(nz, u, v, 2.2, 2, 51.0, 23.0) * 0.16;
+      const wy = tileFbm(nz, u, v, 2.2, 2, 94.0, 76.0) * 0.16;
+      const n1 = tileFbm(nz, u, v, 1.25, 2, wx * 1.15, wy * 1.15);
+      const n2 = tileFbm(nz, u, v, 1.8, 2, 31.0 + wy * 1.15, 77.0 + wx * 1.15);
       // With the tiling helper fixed, n1 covers its full range again, so the
       // thresholds have to be pushed back out: at +/-0.1 on a properly scaled
       // field the mid tone all but disappears and the print goes to a
       // high-contrast dark-and-light stipple. Real four-colour camo is mostly
       // one mid value with the other three cut into it.
       let c = MID;
-      if (n1 > 0.20) c = LIGHT;
-      if (n1 < -0.24) c = DARK;
-      if (n2 > 0.34) c = BROWN;
+      if (n1 > 0.18) c = LIGHT;
+      if (n1 < -0.22) c = DARK;
+      if (n2 > 0.32) c = BROWN;
       // Fleck: the small hard-edged specks a modern print carries inside the
       // large shapes. Value only, so it never reads as a fifth colour.
       const fleck = tileFbm(nz, u, v, 9, 1, 117.0, 39.0) > 0.30 ? 0.90 : 1;
@@ -306,11 +321,11 @@ export class EnemyManager {
     // a real four-colour print measures. Nothing above the collar takes a cloth
     // sheet at all: the helmet, the skin and the neck are their own materials,
     // so the print stops where it stops in life.
-    // 0.31 m of sheet at two shape octaves lands roughly 20 cm blotches, which
-    // is what a four-colour print measures and — more to the point — is large
-    // enough relative to a 12 cm forearm that the arm carries two or three
-    // patches instead of a field of them.
-    const CAMO_TILE = 0.42;
+    // 0.50 m of sheet at the shape frequencies above measures a mean chord of
+    // 8.7 cm on the baked texel grid, i.e. blotches in the 12-18 cm range — what
+    // a four-colour print measures, and large enough relative to a 12 cm forearm
+    // that the arm carries two or three patches instead of a field of them.
+    const CAMO_TILE = 0.50;
     const WEAVE_TILE = 0.15;
     const garment = (girth, run) => retile(
       cloth, girth / WEAVE_TILE, run / WEAVE_TILE, girth / CAMO_TILE, run / CAMO_TILE,
@@ -321,6 +336,9 @@ export class EnemyManager {
       clothArm: garment(0.37, 0.32),     // upper arm and forearm
       clothLeg: garment(0.58, 0.44),     // thigh and shin
       clothFine: garment(0.30, 0.22),    // knee pads, cargo pockets, cuffs
+      // The helmet cover is cloth like everything else, so it takes the print at
+      // its own girth: 0.86 m round the shell, 0.30 m from brow to crown.
+      clothHelm: garment(0.86, 0.30),
       nylon: retile(nylon, 2, 2),
       nylonFine: retile(nylon, 1, 1),
       rubber: retile(rubber, 2, 2),
@@ -361,25 +379,38 @@ export class EnemyManager {
       return mat;
     };
 
-    // A deliberate value ladder — sole 0x0d, gear 0x13, plate 0x1d, webbing
-    // 0x19, gaiter 0x26, pouch 0x30, helmet 0x42, camo 0x1d..0x41, skin 0xb0.
-    // Eight steps between the darkest strap and the face is what keeps the kit
-    // legible in silhouette.
+    // The value ladder is written as a ratio against the uniform, because that
+    // ratio is what the eye reads and it is the one thing an exposure change
+    // elsewhere in the pipeline cannot take away. The camo sheet averages a
+    // linear luminance of about 0.082; against it:
+    //
+    //   webbing 0.17  plate 0.28  gear 0.30  pouch 0.44  camoWorn 0.48
+    //   gaiter 0.24   helmet cover 0.62   boot 0.28   skin 3.2
+    //
+    // The number that matters is pouch-to-uniform. Measured on the previous
+    // build the carrier's pouches, cummerbund and MOLLE — nine per cent of the
+    // soldier's pixels — rendered at a luminance ratio of 1.03 against the
+    // shirt. Not a small gap: no gap at all, which is precisely why the carrier
+    // read as one soft mass with a vest painted on it. At 0.44 the same pixels
+    // sit a clear two stops under the cloth.
     const m = {
       camo: M(0xffffff, FABRIC, 0.0, s.clothTorso),      // albedo is the sheet
       camoArm: M(0xffffff, FABRIC, 0.0, s.clothArm),
       camoLeg: M(0xffffff, FABRIC, 0.0, s.clothLeg),
-      camoWorn: M(0x8f8d84, 0.96, 0.0, s.clothFine),     // pads, cargo pockets
-      gaiter: M(0x26271f, FABRIC, 0.0, s.nylonFine, 0.7),
-      plate: M(0x1d1f19, 0.70, 0.03, s.nylon),
-      pouch: M(0x303227, 0.76, 0.02, s.nylon),
-      webbing: M(0x191a15, 0.70, 0.02, s.nylonFine),
-      helmet: M(0x42452f, 0.66, 0.04, s.nylonFine, 0.55),
-      gear: M(0x131412, 0.55, 0.12, s.nylonFine, 0.5),
+      camoWorn: M(0xb8b4a6, 0.96, 0.0, s.clothFine),     // pads, cargo pockets
+      gaiter: M(0x2f302a, FABRIC, 0.0, s.nylonFine, 0.7),
+      plate: M(0x282a22, 0.70, 0.03, s.nylon),
+      pouch: M(0x33362b, 0.76, 0.02, s.nylon),
+      webbing: M(0x1e201a, 0.70, 0.02, s.nylonFine),
+      // Helmet cover, not a painted shell: same print as the uniform, one step
+      // down in value, which stops the head reading as the brightest single mass
+      // on the soldier (it measured 2.6x the uniform before).
+      helmet: M(0xcfcdbe, 0.88, 0.0, s.clothHelm, 0.8),
+      gear: M(0x212320, 0.55, 0.12, s.nylonFine, 0.5),
       skin: M(0xb08466, 0.62, 0.0, s.nylonFine, 0.22),
-      glove: M(0x232420, 0.66, 0.03, s.rubber),
-      boot: M(0x2a2823, 0.60, 0.04, s.rubber),
-      sole: M(0x0d0d0c, 0.95, 0.0, s.rubber, 1.4),
+      glove: M(0x2c2d28, 0.66, 0.03, s.rubber),
+      boot: M(0x35322b, 0.60, 0.04, s.rubber),
+      sole: M(0x141412, 0.95, 0.0, s.rubber, 1.4),
       lens: new THREE.MeshStandardMaterial({
         color: 0x101a18, roughness: 0.12, metalness: 0.1,
         emissive: 0x0a1512, emissiveIntensity: 0.3,
@@ -401,7 +432,22 @@ export class EnemyManager {
       shin: new THREE.CapsuleGeometry(0.070, 0.26, 4, 10),
       upperArm: new THREE.CapsuleGeometry(0.058, 0.19, 4, 9),
       foreArm: new THREE.CapsuleGeometry(0.050, 0.20, 4, 9),
-      helmetShell: new THREE.LatheGeometry(HELMET_PROFILE, 22),
+      // Carrier shell and its upper bevel. A plate carrier cannot be a flat box:
+      // the chest is a 0.172 m capsule, so a 0.31 m wide slab either sits inside
+      // the body (which is where the old front and back plates were — 26 mm
+      // *under* the skin of the capsule, so the shirt drew over the armour and
+      // the MOLLE ladder was buried with it) or floats 9 cm off it at the
+      // corners. A shell that wraps at 0.198 m stands 26 mm proud everywhere and
+      // has no corners to float.
+      shell: new THREE.CylinderGeometry(0.5, 0.5, 1, 20),
+      bevel: new THREE.CylinderGeometry(0.38, 0.5, 1, 20, 1, true),
+      // The helmet is two lathes, not one: a full-revolution crown that stops at
+      // the brow, and a partial-revolution skirt covering the ears and the nape.
+      // One lathe running down to -0.09 is a surface of revolution in front of
+      // the face as well as behind it, which is why the soldier had four pixels
+      // of visible skin and read as a blank.
+      helmetCrown: new THREE.LatheGeometry(HELMET_CROWN, 22),
+      helmetSkirt: new THREE.LatheGeometry(HELMET_SKIRT, 16, 0.66, Math.PI * 2 - 1.32),
       // A shoulder is not a ball. The sphere this replaces was 15 mm wider than
       // the arm capsule it sat on, all the way round, so the joint read as two
       // objects intersecting rather than as a deltoid; a lathe that starts at
@@ -432,96 +478,90 @@ export class EnemyManager {
     torso.add(m.camo, P.sphere, [0, 0.196, -0.012], null, [0.330, 0.190, 0.235]);
     torso.add(m.gaiter, P.cyl, [0, 0.192, 0.004], null, [0.176, 0.080, 0.160]);
 
-    // Plate carrier. The hard, bevelled slab standing off the soft body is the
-    // strongest "kitted up" cue there is, so it is built as a chest plate, an
-    // angled upper bevel and a cummerbund rather than one flat box.
-    for (const sz of [1, -1]) {
-      torso.add(m.plate, P.box, [0, -0.022, sz * 0.118], null, [0.310, 0.260, 0.056]);
-      torso.add(m.plate, P.box, [0, 0.128, sz * 0.096], [-sz * 0.30, 0, 0], [0.258, 0.120, 0.050]);
-    }
-    // Cummerbund round the ribs — the piece that closes the silhouette from the
-    // side, where bare front and back plates leave the body reading as a tube.
-    for (const sx of [-1, 1]) {
-      torso.add(m.pouch, P.box, [sx * 0.170, -0.078, 0], [0, 0, sx * 0.06], [0.060, 0.150, 0.212]);
-      torso.add(m.plate, P.box, [sx * 0.106, 0.148, 0.012], [0, 0, -sx * 0.10], [0.086, 0.076, 0.212]);
-    }
+    // Plate carrier. Everything on it is placed by bearing rather than by (x, z):
+    // `at` puts a part flat against the shell at angle `a` — 0 at the sternum,
+    // +/-pi/2 at the flanks, pi at the spine — with its inner face on the shell
+    // at radius `r`. That is what keeps a pouch touching the armour instead of
+    // hovering off a corner of it, and it is the only way the ladder of MOLLE
+    // loops can follow the curve of a chest.
+    // 20 mm proud of the 0.172 m chest capsule: enough for the armour to own the
+    // silhouette, not so much that the shoulder pivots at +/-0.196 end up inside
+    // it and the deltoids read as amputated.
+    const SHELL = 0.192;
+    const at = (mat, geo, a, y, r, size, tilt = 0) => torso.add(
+      mat, geo, [Math.sin(a) * r, y, Math.cos(a) * r], [tilt, a, 0], size,
+    );
+
+    torso.add(m.plate, P.shell, [0, -0.025, 0], null, [SHELL * 2, 0.300, SHELL * 2]);
+    torso.add(m.plate, P.bevel, [0, 0.165, 0], null, [SHELL * 2, 0.080, SHELL * 2]);
+    // Edge binding top and bottom: 3 mm of a darker tape is what stops a
+    // cylinder reading as a cylinder and starts it reading as a made object.
+    torso.add(m.webbing, P.shell, [0, -0.172, 0], null, [0.396, 0.028, 0.396]);
+    torso.add(m.webbing, P.shell, [0, 0.202, 0], null, [0.300, 0.020, 0.300]);
+    // Cummerbund: a full band at the waist in the pouch value, so the carrier
+    // has a horizontal division and the flanks are not a bare wall.
+    torso.add(m.pouch, P.shell, [0, -0.112, 0], null, [0.402, 0.098, 0.402]);
+
     // Three magazine pouches with flaps, a radio, an admin pouch, two grenades.
     // The chest line has to be broken by hard objects standing off it, not by
     // anything painted on.
     for (let i = -1; i <= 1; i++) {
-      torso.add(m.pouch, P.box, [i * 0.082, -0.078, 0.152], null, [0.076, 0.135, 0.062]);
-      torso.add(m.webbing, P.box, [i * 0.082, 0.002, 0.155], [0.12, 0, 0], [0.080, 0.038, 0.068]);
+      at(m.pouch, P.box, i * 0.40, -0.072, SHELL + 0.033, [0.080, 0.140, 0.066]);
+      at(m.webbing, P.box, i * 0.40, 0.006, SHELL + 0.036, [0.084, 0.036, 0.070], 0.12);
+      at(m.gaiter, P.box, i * 0.40, -0.044, SHELL + 0.038, [0.088, 0.024, 0.072]);
     }
-    torso.add(m.gear, P.box, [-0.148, 0.052, 0.096], [0, 0.25, 0], [0.070, 0.135, 0.062]);
-    torso.add(m.gear, P.cyl, [-0.152, 0.212, 0.086], [0, 0, 0.16], [0.010, 0.240, 0.010]);
-    torso.add(m.pouch, P.box, [0.150, 0.055, 0.100], [0, -0.25, 0], [0.078, 0.108, 0.055]);
-    for (const sx of [-1, 1]) {
-      torso.add(m.gear, P.cyl, [sx * 0.058, 0.092, 0.152], null, [0.048, 0.086, 0.048]);
+    at(m.gear, P.box, -0.92, 0.046, SHELL + 0.031, [0.072, 0.140, 0.062]);       // radio
+    torso.add(m.gear, P.cyl, [-0.196, 0.214, 0.108], [0, 0, 0.16], [0.010, 0.240, 0.010]);
+    at(m.pouch, P.box, 0.92, 0.046, SHELL + 0.028, [0.080, 0.110, 0.056]);       // admin
+    for (const sx of [-1, 1]) {                                                  // grenades
+      at(m.gear, P.cyl, sx * 0.26, 0.086, SHELL + 0.026, [0.048, 0.086, 0.048]);
     }
-    torso.add(m.pouch, P.box, [0.072, -0.108, -0.148], null, [0.112, 0.102, 0.072]);
-    // Sling, right shoulder to left hip, front and back runs.
-    torso.add(m.webbing, P.box, [0.005, -0.012, 0.150], [0, 0, 0.62], [0.040, 0.300, 0.020]);
-    torso.add(m.webbing, P.box, [0.005, -0.012, -0.150], [0, 0, -0.62], [0.040, 0.290, 0.020]);
+    at(m.pouch, P.box, 2.42, -0.104, SHELL + 0.036, [0.116, 0.104, 0.072]);      // IFAK
+    // Sling, right shoulder to left hip, front and back runs, lying on the shell.
+    torso.add(m.webbing, P.box, [0.005, -0.012, 0.206], [0, 0, 0.62], [0.042, 0.300, 0.018]);
+    torso.add(m.webbing, P.box, [0.005, -0.012, -0.206], [0, 0, -0.62], [0.042, 0.290, 0.018]);
 
-    // MOLLE. Four bevelled boxes with pouches glued to them is a chest rig, not
-    // a plate carrier: what makes armour read as armour is the ladder of nylon
-    // loops covering every square centimetre that is not a pouch, plus the
-    // straps and buckles that hold the thing together. All of it is 3-6 mm
-    // proud, which is exactly the scale that puts a broken shadow line across a
-    // flat panel and stops the plates reading as painted boards.
-    const molle = (z, face, rows, cols, w, top, pitch) => {
+    // MOLLE. What makes armour read as armour is the ladder of nylon loops
+    // covering every square centimetre that is not a pouch, plus the straps and
+    // buckles that hold the thing together. All of it is 4-8 mm proud, which is
+    // the scale that puts a broken shadow line across a panel and stops it
+    // reading as a painted board.
+    const molle = (a0, a1, cols, rows, top, pitch) => {
       for (let r = 0; r < rows; r++) {
         for (let c = 0; c < cols; c++) {
-          const x = (c - (cols - 1) / 2) * w;
-          // The loop bar is the *lighter* of the two: the webbing colour is a
-          // step below the plate it sits on, so a ladder built out of it is
+          const a = a0 + (a1 - a0) * (cols === 1 ? 0.5 : c / (cols - 1));
+          const y = top - r * pitch;
+          // The loop bar is the lighter of the two — the webbing value is a step
+          // below the shell it sits on, so a ladder built only out of webbing is
           // invisible on the panel it is meant to break up.
-          torso.add(m.pouch, P.box, [x, top - r * pitch, z + face * 0.006],
-            null, [w * 0.86, 0.020, 0.012]);
-          // The vertical stitch that divides each row into loops.
-          torso.add(m.webbing, P.box, [x, top - r * pitch, z + face * 0.009],
-            null, [0.006, 0.024, 0.008]);
+          at(m.pouch, P.box, a, y, SHELL + 0.008, [0.058, 0.019, 0.016]);
+          at(m.webbing, P.box, a, y, SHELL + 0.013, [0.006, 0.023, 0.012]);
         }
       }
     };
-    molle(-0.146, -1, 4, 5, 0.062, 0.062, 0.046);            // back plate
-    for (const sx of [-1, 1]) {                              // cummerbund flanks
-      for (let r = 0; r < 2; r++) {
-        for (let c = 0; c < 3; c++) {
-          torso.add(m.webbing, P.box,
-            [sx * 0.202, -0.038 - r * 0.044, (c - 1) * 0.062],
-            [0, 0, sx * 0.06], [0.012, 0.020, 0.054]);
-        }
-      }
-    }
+    molle(Math.PI - 0.60, Math.PI + 0.60, 5, 4, 0.068, 0.046);   // back panel
+    for (const sx of [-1, 1]) molle(sx * 1.30, sx * 1.86, 3, 2, -0.036, 0.044);
 
     // Padded shoulder yoke: the strap that actually carries the plates, running
     // over each shoulder from the back panel to the front, with the quick-
     // release buckle where it lands on the chest.
     for (const sx of [-1, 1]) {
-      torso.add(m.plate, P.box, [sx * 0.104, 0.196, 0.006], [0, 0, -sx * 0.14], [0.086, 0.044, 0.220]);
-      torso.add(m.webbing, P.box, [sx * 0.104, 0.208, 0.006], [0, 0, -sx * 0.14], [0.056, 0.024, 0.226]);
-      // Front and rear strap runs down onto the plates.
-      torso.add(m.webbing, P.box, [sx * 0.098, 0.144, 0.116], [-0.42, 0, 0], [0.062, 0.110, 0.020]);
-      torso.add(m.webbing, P.box, [sx * 0.098, 0.140, -0.112], [0.44, 0, 0], [0.062, 0.110, 0.020]);
+      torso.add(m.plate, P.box, [sx * 0.116, 0.198, 0.006], [0, 0, -sx * 0.16], [0.094, 0.048, 0.244]);
+      torso.add(m.webbing, P.box, [sx * 0.116, 0.212, 0.006], [0, 0, -sx * 0.16], [0.058, 0.026, 0.250]);
+      // Front and rear strap runs down onto the shell.
+      at(m.webbing, P.box, sx * 0.52, 0.150, SHELL + 0.012, [0.062, 0.110, 0.020], -0.42);
+      at(m.webbing, P.box, Math.PI - sx * 0.52, 0.146, SHELL + 0.012, [0.062, 0.110, 0.020], 0.44);
       // Buckle and its tail.
-      torso.add(m.gear, P.box, [sx * 0.098, 0.092, 0.148], [-0.16, 0, 0], [0.048, 0.036, 0.016]);
-      torso.add(m.gear, P.box, [sx * 0.098, 0.072, 0.150], [-0.16, 0, 0], [0.030, 0.016, 0.012]);
+      at(m.gear, P.box, sx * 0.50, 0.096, SHELL + 0.022, [0.048, 0.036, 0.020], -0.16);
+      at(m.gear, P.box, sx * 0.50, 0.074, SHELL + 0.022, [0.030, 0.016, 0.018], -0.16);
       // Elastic retention band across each shoulder strap.
-      torso.add(m.gaiter, P.box, [sx * 0.104, 0.186, 0.070], [0, 0, -sx * 0.14], [0.070, 0.048, 0.014]);
+      torso.add(m.gaiter, P.box, [sx * 0.116, 0.190, 0.078], [0, 0, -sx * 0.16], [0.074, 0.050, 0.014]);
+      // Cummerbund closure flap and its side-release buckle.
+      at(m.pouch, P.box, sx * 0.86, -0.108, SHELL + 0.020, [0.100, 0.116, 0.020]);
+      at(m.gear, P.box, sx * 0.72, -0.108, SHELL + 0.028, [0.038, 0.050, 0.022]);
     }
-    // Cummerbund closure flaps and their side-release buckles.
-    for (const sx of [-1, 1]) {
-      torso.add(m.pouch, P.box, [sx * 0.132, -0.078, 0.126], [0, sx * 0.42, 0], [0.090, 0.140, 0.018]);
-      torso.add(m.gear, P.box, [sx * 0.120, -0.078, 0.142], [0, sx * 0.42, 0], [0.036, 0.048, 0.014]);
-    }
-    // Drag handle across the top of the back plate.
-    torso.add(m.webbing, P.box, [0, 0.152, -0.130], [0.30, 0, 0], [0.140, 0.030, 0.026]);
-    torso.add(m.plate, P.box, [0, 0.130, -0.138], null, [0.150, 0.026, 0.016]);
-    // Elastic retention over the front magazine pouches.
-    for (let i = -1; i <= 1; i++) {
-      torso.add(m.gaiter, P.box, [i * 0.082, -0.052, 0.156], null, [0.084, 0.024, 0.070]);
-    }
+    // Drag handle across the top of the back panel.
+    at(m.webbing, P.box, Math.PI, 0.132, SHELL + 0.026, [0.140, 0.032, 0.030], 0.30);
 
     // --- head -----------------------------------------------------------------
     const head = new GeoBag();
@@ -536,28 +576,56 @@ export class EnemyManager {
     // hard dark ring that makes it a neck coming out of a shirt.
     head.add(m.camoWorn, P.cyl, [0, -0.152, -0.004], null, [0.218, 0.052, 0.212]);
     head.add(m.gaiter, P.cyl, [0, -0.130, -0.004], null, [0.186, 0.044, 0.180]);
-    // Lower face is a neck gaiter, not a blank chin. It puts a hard dark value
-    // under the cheekbones, which is what lets a head read as a face at range
-    // without modelling features nobody can resolve anyway.
-    head.add(m.gaiter, P.sphere, [0, -0.040, 0.010], null, [0.174, 0.146, 0.186]);
+    // Lower face is a neck gaiter, not a blank chin — but it stops at the
+    // cheekbone. The old one closed at y = +0.033 and the goggle slab ran from
+    // 0.000 to 0.057, so between them, the helmet skirt, and the head being
+    // inside a full lathe, the soldier rendered four pixels of skin: a covered
+    // head with nothing under the cover is a mannequin by definition.
+    // The gaiter has to be *outside* the skull to cover anything, and it has to
+    // be a cylinder to cover it evenly: the old ellipsoid was 0.090 deep inside
+    // a face 0.094 deep, so it showed only under the jaw, and even sized up an
+    // ellipsoid's covering line at the face plane sits 4 cm below its own crown.
+    // A short cylinder of radius 0.100 crosses the face at one clean height —
+    // the gaiter line under the cheekbone — and the sphere below rounds the jaw.
+    head.add(m.gaiter, P.cyl, [0, -0.058, 0.004], null, [0.196, 0.072, 0.204]);
+    head.add(m.gaiter, P.sphere, [0, -0.090, 0.004], null, [0.196, 0.096, 0.204]);
 
-    head.add(m.helmet, P.helmetShell, [0, 0.010, -0.006], null, [1.02, 1.0, 1.08]);
-    // The brim. A hemisphere reads as a bowl; the lip is what reads as a helmet,
-    // and it is also the edge that catches the sun and draws the head.
-    head.add(m.helmet, P.box, [0, -0.062, 0.104], [-0.28, 0, 0], [0.176, 0.020, 0.072]);
-    head.add(m.webbing, P.torus, [0, -0.012, -0.004], [Math.PI / 2, 0, 0], [0.278, 0.278, 0.278]);
+    // Helmet: crown to the brow, skirt over the ears and nape, front left open.
+    head.add(m.helmet, P.helmetCrown, [0, 0.014, -0.006], null, [1.03, 1.0, 1.08]);
+    head.add(m.helmet, P.helmetSkirt, [0, 0.014, -0.006], null, [1.03, 1.0, 1.08]);
+    // The brim above the brow. A dome reads as a bowl; the lip is what reads as
+    // a helmet, and it is the edge that catches the sun and draws the head.
+    head.add(m.helmet, P.box, [0, 0.040, 0.104], [-0.34, 0, 0], [0.168, 0.018, 0.062]);
+    // Scrim. Two bands round the cover, sized to the dome at the height they sit
+    // at: a torus follows the shell, where a straight bungee box stood 4 cm out
+    // of the crown like a fin.
+    head.add(m.webbing, P.torus, [0, 0.040, -0.004], [Math.PI / 2, 0, 0], [0.258, 0.258, 0.258]);
+    head.add(m.webbing, P.torus, [0, 0.096, -0.004], [Math.PI / 2, 0, 0], [0.222, 0.222, 0.222]);
     for (const sx of [-1, 1]) {
-      head.add(m.gear, P.box, [sx * 0.130, -0.020, 0.006], null, [0.016, 0.026, 0.150]);
-      head.add(m.gear, P.cyl, [sx * 0.114, -0.014, 0.004], [0, 0, Math.PI / 2], [0.096, 0.036, 0.096]);
-      head.add(m.webbing, P.box, [sx * 0.084, -0.052, 0.030], [0, 0, sx * 0.35], [0.018, 0.112, 0.052]);
+      // Rail and mounting puck on each side of the shell.
+      head.add(m.gear, P.box, [sx * 0.124, 0.024, 0.006], null, [0.016, 0.026, 0.140]);
+      head.add(m.gear, P.cyl, [sx * 0.110, 0.028, 0.004], [0, 0, Math.PI / 2], [0.090, 0.034, 0.090]);
+      // Chinstrap: down past the ear to under the jaw, where the gaiter is.
+      head.add(m.webbing, P.box, [sx * 0.084, -0.028, 0.026], [0, 0, sx * 0.30], [0.016, 0.108, 0.044]);
     }
+    head.add(m.webbing, P.box, [0, -0.084, 0.030], [0.16, 0, 0], [0.120, 0.026, 0.066]);
     // NVG mount and its stub arm: the two details that instantly date a helmet
     // as modern military, and a bump proud of the brow line in silhouette.
-    head.add(m.gear, P.box, [0, 0.050, 0.108], [0.10, 0, 0], [0.072, 0.044, 0.032]);
-    head.add(m.gear, P.box, [0, 0.098, 0.120], [-0.30, 0, 0], [0.032, 0.072, 0.034]);
-    head.add(m.webbing, P.box, [0, 0.010, -0.132], [0.18, 0, 0], [0.112, 0.070, 0.062]);
-    head.add(m.gear, P.box, [0, 0.028, 0.084], null, [0.166, 0.058, 0.032]);
-    head.add(m.lens, P.box, [0, 0.030, 0.092], [0.06, 0, 0], [0.152, 0.044, 0.038]);
+    head.add(m.gear, P.box, [0, 0.074, 0.104], [0.10, 0, 0], [0.070, 0.044, 0.034]);
+    head.add(m.gear, P.box, [0, 0.108, 0.112], [-0.30, 0, 0], [0.030, 0.052, 0.032]);
+    // Counterweight pouch on the back of the cover.
+    head.add(m.pouch, P.box, [0, 0.044, -0.126], [0.18, 0, 0], [0.104, 0.072, 0.058]);
+    // Face. What is left uncovered is one band on the eye line: brow above the
+    // glasses, cheekbone below them, a nose between. A bare oval of tan the full
+    // height of the face is a shop-window head; three centimetres of lit skin
+    // interrupted by a hard dark lens is a man looking at you.
+    head.add(m.skin, P.box, [0, -0.016, 0.086], [0.24, 0, 0], [0.024, 0.038, 0.030]);
+    for (const sx of [-1, 1]) {
+      head.add(m.gear, P.box, [sx * 0.052, 0.006, 0.078], [0, -sx * 0.55, 0], [0.072, 0.026, 0.026]);
+      head.add(m.lens, P.box, [sx * 0.050, 0.006, 0.086], [0, -sx * 0.55, 0], [0.064, 0.020, 0.024]);
+    }
+    head.add(m.gear, P.box, [0, 0.007, 0.090], null, [0.050, 0.024, 0.024]);
+    head.add(m.lens, P.box, [0, 0.007, 0.098], null, [0.044, 0.018, 0.020]);
 
     // --- limb segments --------------------------------------------------------
     const thigh = new GeoBag();
@@ -569,8 +637,13 @@ export class EnemyManager {
 
     const knee = new GeoBag();
     knee.add(m.camoLeg, P.shin, [0, -0.200, 0]);
-    knee.add(m.camoWorn, P.sphere, [0, -0.022, 0.036], null, [0.156, 0.132, 0.098]);
-    knee.add(m.gear, P.box, [0, -0.026, 0.058], [0.10, 0, 0], [0.108, 0.088, 0.022]);
+    // Knee pad in the carrier's value family, not the uniform's: a pad the same
+    // value as the trouser it is strapped to is a pad nobody can see.
+    knee.add(m.pouch, P.sphere, [0, -0.022, 0.036], null, [0.160, 0.136, 0.102]);
+    knee.add(m.gear, P.box, [0, -0.026, 0.060], [0.10, 0, 0], [0.112, 0.092, 0.022]);
+    for (const sx of [-1, 1]) {
+      knee.add(m.webbing, P.box, [sx * 0.062, -0.030, 0.012], [0, 0, sx * 0.10], [0.024, 0.036, 0.070]);
+    }
     // Boot. The old one was the shin cylinder in a darker colour with a slab
     // under it: no ankle, no heel, no laces, and the leg capsule ran straight
     // through the sole. A boot's silhouette is a shaft, a waist at the ankle, a
@@ -1143,18 +1216,30 @@ function raySphere(origin, dir, center, radius, maxDist) {
 }
 
 /**
- * Half-section of a combat helmet, lathed about Y. The first three points are
- * the underside lip and the flared brim: a plain hemisphere reads as a salad
- * bowl, and the brim is both the shape cue and the edge the sun catches.
+ * Half-sections of a combat helmet, lathed about Y, in head-local space where
+ * the skull is an ellipsoid of radii (0.088, 0.098, 0.094) and the eye line
+ * sits at y = +0.008.
+ *
+ * Two pieces, because a helmet is not a surface of revolution. Revolving one
+ * profile down to the jaw puts shell in front of the face as well as behind it
+ * — the previous single lathe reached y = -0.09 at a radius of 0.13, wrapping
+ * a face whose own radius is 0.09, and the result rendered exactly four pixels
+ * of skin at 2.3 m. The crown revolves fully but stops at the brow; the skirt
+ * carries the shell down over the ears and the nape through 5.0 of its 6.28
+ * radians, leaving the front 1.32 rad open.
  *
  * Ordered bottom-to-top, which is the order LatheGeometry needs if the faces
  * are to come out with their normals pointing outwards — reversed, the crown of
  * the helmet is back-facing, gets culled, and the wearer's scalp shows through.
  */
-const HELMET_PROFILE = [
-  [0.118, -0.086], [0.139, -0.090], [0.147, -0.080], [0.141, -0.068],
-  [0.133, -0.050], [0.132, -0.014], [0.128, 0.030], [0.118, 0.068],
-  [0.101, 0.098], [0.076, 0.118], [0.042, 0.128], [0.000, 0.130],
+const HELMET_CROWN = [
+  [0.1165, 0.020], [0.1180, 0.038], [0.1160, 0.060], [0.1080, 0.084],
+  [0.0940, 0.106], [0.0700, 0.124], [0.0380, 0.133], [0.0000, 0.136],
+].map(([r, y]) => new THREE.Vector2(r, y));
+
+const HELMET_SKIRT = [
+  [0.1020, -0.060], [0.1215, -0.064], [0.1290, -0.050], [0.1275, -0.028],
+  [0.1215, -0.004], [0.1165, 0.020],
 ].map(([r, y]) => new THREE.Vector2(r, y));
 
 // Shoulder cap -> deltoid belly -> sleeve. The last radius is the upper-arm
