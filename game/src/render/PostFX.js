@@ -37,7 +37,12 @@ const TIERS = {
   // dozen taps is the floor at which a single octave still resolves a crevice
   // rather than dithering it, hence the bump at every tier.
   low: {
-    aa: 'smaa', aoScale: 0.5, aoDirs: 2, aoSteps: 3, aoBlur: 1, contactTaps: 10, raySteps: 8,
+    // aoBlur is 2 everywhere. One pass of the AO resolve is not a cheap
+    // version of two, it is an attenuation of about a third at the frequency
+    // the trace's residual actually sits at; the pass is thirteen taps on a
+    // quarter-resolution buffer and running it twice is the cheapest thing in
+    // this file.
+    aa: 'smaa', aoScale: 0.5, aoDirs: 2, aoSteps: 3, aoBlur: 2, contactTaps: 10, raySteps: 8,
     motionBlur: false, motionSamples: 6, dof: false, dofTaps: 8,
     bloomMips: 4, historyFilter: 0,
   },
@@ -160,6 +165,46 @@ const GLSL_IGN = /* glsl */`
     p += 5.588238 * mod(frame, 64.0);
     return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))));
   }
+`;
+
+/**
+ * Sample-set multiplexing over a 2x2 block, and the frame phase that extends it
+ * in time.
+ *
+ * Every occlusion trace in this file spends its whole tap budget on one rotation
+ * of one pattern, and then relies on a spatial filter to recover the rest. What
+ * that filter recovers depends entirely on how the rotations are laid out.
+ *
+ * Rotating by interleaved gradient noise — which is what both traces used to do
+ * — gives each pixel an independent draw. Averaging N of them divides the
+ * variance by N and no more, and the result is dither: a term whose error is
+ * white in space, which is precisely the thing a sharpening filter downstream
+ * amplifies and a still frame freezes.
+ *
+ * Stratifying instead is strictly better for the same cost. The four pixels of
+ * every 2x2 block take four *different* phases of the same pattern, spanning
+ * exactly one of its angular cells. Any filter that averages the block does not
+ * average four noisy estimates of the same integral, it evaluates a pattern four
+ * times denser — a stratified estimate, whose error falls far faster than 1/N
+ * and, crucially, has all of its residual energy at one known frequency.
+ *
+ * That frequency is the pixel-scale Nyquist, and it is known *because* the
+ * layout is deterministic: a period-2 pattern in x and y. Both resolves below
+ * are then built to have an exact zero there, which is the difference between a
+ * filter that attenuates the dither and one that removes it.
+ *
+ * `phasePos` is that phase, 0..3, distinct for each pixel of every 2x2 block.
+ * `phaseFrame` slides the whole set between frames so a temporal integrator
+ * fills in between the four spatial phases instead of re-measuring them; it is
+ * held at zero when nothing downstream integrates, because rotating a pattern
+ * no one accumulates only makes it crawl.
+ */
+const GLSL_PHASE = /* glsl */`
+  float phasePos(vec2 fragCoord) {
+    vec2 c = mod(floor(fragCoord), 2.0);
+    return c.x + 2.0 * c.y;
+  }
+  float phaseFrame(float frame) { return fract(frame * 0.6180339887); }
 `;
 
 /* ------------------------------------------------------------------ */
@@ -415,7 +460,7 @@ const GTAOShader = {
   fragmentShader: /* glsl */`
     precision highp float;
     ${GLSL_GBUFFER}
-    ${GLSL_IGN}
+    ${GLSL_PHASE}
     uniform vec2 uResolution;
     uniform float uProjScale, uRadius, uMaxRadiusPx, uPower, uFrame, uBias;
     varying vec2 vUv;
@@ -441,14 +486,32 @@ const GTAOShader = {
       if (radiusPx < 2.0) { gl_FragColor = vec4(1.0, 0.0, g.b, g.a); return; }
       float effRadius = radiusPx * z / uProjScale;
 
-      float noise = ign(gl_FragCoord.xy, uFrame);
-      float stepPx = radiusPx / float(AO_STEPS);
+      // Stratified sample set (see GLSL_PHASE). The slice rotation takes one of
+      // four phases of a single angular cell, so a 2x2 block covers 4*AO_DIRS
+      // evenly spaced slices — at AO_DIRS 2, eight — and the resolve below is
+      // built to average exactly that block. The radial offset takes a
+      // different permutation of the same four phases so the two are not
+      // locked together, which would leave whole rings of the search
+      // unsampled no matter how the block is averaged.
+      float tj = phaseFrame(uFrame);
+      float ph = phasePos(gl_FragCoord.xy);
+      float dirNoise = (ph + tj) * 0.25;
+      float stepNoise = fract(ph * 0.6180339887 + tj);
       float falloffScale = 1.0 / (effRadius * 0.75);
       vec2 texel = 1.0 / uResolution;
 
+      // Depth is stored as a 16-bit sqrt, so one code is 2*sqrt(z*FAR)/65535
+      // metres. Divided by a tap's own separation that is the elevation the
+      // encoding could invent on its own, in the same sine units uBias is in.
+      // The distribution below deliberately puts taps close to the centre, so
+      // this has to be here: without it the innermost step of a grazing surface
+      // measures quantisation and reports it as occlusion. It only ever makes
+      // the test stricter, and only for near taps — uBias itself does not move.
+      float quantum = 2.0 * sqrt(z * ${DEPTH_FAR.toFixed(1)}) / 65535.0;
+
       float visibility = 0.0;
       for (int d = 0; d < AO_DIRS; d++) {
-        float phi = (float(d) + noise) * (PI / float(AO_DIRS));
+        float phi = (float(d) + dirNoise) * (PI / float(AO_DIRS));
         vec2 dir = vec2(cos(phi), sin(phi));
 
         // Orthonormal frame of the slice plane spanned by V and dir.
@@ -465,7 +528,19 @@ const GTAOShader = {
 
         float cosPos = -1.0, cosNeg = -1.0;
         for (int s = 0; s < AO_STEPS; s++) {
-          float t = (float(s) + 0.5 + noise * 0.9) * stepPx;
+          // Radially non-uniform. Evenly spaced steps put the innermost sample
+          // at radius/AO_STEPS, which on a surface a couple of metres from the
+          // eye is thirty full-resolution pixels: the search opens with a tap
+          // that has already cleared the sandbag it is standing on, so the two
+          // remaining taps decide the horizon from geometry a third of a metre
+          // away and the estimate swings with whatever they happen to land on.
+          // That is where most of this pass's per-pixel variance came from —
+          // not from too few taps, from all of them being spent in the wrong
+          // place. Weighting the sequence toward the centre costs nothing, is
+          // where the horizon actually moves fastest, and still reaches the
+          // full radius on the last step.
+          float u = (float(s) + 0.5 + stepNoise * 0.5) / float(AO_STEPS);
+          float t = radiusPx * pow(u, 1.7);
           vec2 off = dir * t * texel;
 
           // Attenuating the horizon cosine toward -1 (fully open) with distance
@@ -482,15 +557,17 @@ const GTAOShader = {
           vec3 Sp = viewPos(vUv + off, gbufDepth(vUv + off)) - P;
           float lp = length(Sp);
           float elevP = dot(Sp, N) / max(lp, 1e-4);
+          float bp = uBias + quantum / max(lp, 1e-4);
           float wp = sat01((effRadius * 1.5 - lp) * falloffScale)
-                   * smoothstep(uBias * 0.5, uBias, elevP);
+                   * smoothstep(bp * 0.5, bp, elevP);
           cosPos = max(cosPos, mix(-1.0, dot(Sp, V) / max(lp, 1e-4), wp));
 
           vec3 Sn = viewPos(vUv - off, gbufDepth(vUv - off)) - P;
           float ln = length(Sn);
           float elevN = dot(Sn, N) / max(ln, 1e-4);
+          float bn = uBias + quantum / max(ln, 1e-4);
           float wn = sat01((effRadius * 1.5 - ln) * falloffScale)
-                   * smoothstep(uBias * 0.5, uBias, elevN);
+                   * smoothstep(bn * 0.5, bn, elevN);
           cosNeg = max(cosNeg, mix(-1.0, dot(Sn, V) / max(ln, 1e-4), wn));
         }
 
@@ -511,10 +588,32 @@ const GTAOShader = {
 };
 
 /**
- * Depth-aware separable blur. A plain gaussian on AO is what produces halos
- * around foreground objects, so taps are rejected by depth difference relative
- * to the centre depth, scaled by distance so the tolerance stays constant in
- * world units instead of tightening as you look further away.
+ * Depth-aware separable blur.
+ *
+ * A plain gaussian on AO is what produces halos around foreground objects, so
+ * taps are rejected by depth difference relative to the centre depth.
+ *
+ * THE STRIDE IS ONE TEXEL, AND THAT IS THE WHOLE POINT OF THIS PASS.
+ *
+ * This filter used to take its nine taps at offsets 0, +-2, +-4, +-6, +-8 —
+ * "16 effective pixels of reach at half res", and a reasonable-looking way to
+ * buy a wide kernel for few fetches. It is not: a kernel that only ever touches
+ * even offsets cannot see the difference between a pixel and its immediate
+ * neighbour, so its response at the buffer's own Nyquist frequency is exactly
+ * 1.0. Every period-two component of the trace's per-pixel dither passed
+ * through this blur completely untouched, however many times it was run, and
+ * bilinear upsampling then turned a half-resolution period-two pattern into the
+ * four-pixel diagonal lattice that was visible on every surface in the frame.
+ * Measured on the closeup pose, the wide term's residual was concentrated at
+ * exactly that frequency: the AO difference image autocorrelated to -0.14 at a
+ * four-pixel vertical lag with nothing beyond it, which is the signature of a
+ * half-res checkerboard and of nothing else.
+ *
+ * Thirteen taps at unit stride, sigma 2.6, has a response of 0.006 there — two
+ * hundred times down — for four more fetches on a quarter-resolution buffer.
+ * Reach drops from 8 half-res texels to 6, which is why the low tier now runs
+ * the pass twice like the others: an attenuation of one is not a wide filter,
+ * it is no filter.
  */
 const AOBlurShader = {
   uniforms: {
@@ -536,10 +635,10 @@ const AOBlurShader = {
       vec4 c = texture2D(tAO, vUv);
       float z0 = unpackUnit(c.ba);
       float sum = c.r, wsum = 1.0;
-      // 9-tap, 2-pixel stride: 16 effective pixels of reach at half res.
-      for (int i = 1; i <= 4; i++) {
-        float o = float(i) * 2.0;
-        float gw = exp(-0.5 * (o * o) / 12.25);
+      // 13-tap, unit stride, sigma 2.6.
+      for (int i = 1; i <= 6; i++) {
+        float o = float(i);
+        float gw = exp(-0.5 * (o * o) / 6.76);
         vec2 d = uDirection * uTexel * o;
 
         vec4 a = texture2D(tAO, vUv + d);
@@ -605,7 +704,7 @@ const ContactAOShader = {
   fragmentShader: /* glsl */`
     precision highp float;
     ${GLSL_GBUFFER}
-    ${GLSL_IGN}
+    ${GLSL_PHASE}
     uniform vec2 uResolution;
     uniform float uProjScale, uRadius, uBias, uIntensity,
                   uMinRadiusPx, uMaxRadiusPx, uFrame,
@@ -691,8 +790,6 @@ const ContactAOShader = {
       // Whichever clamp bites, the world falloff radius follows it.
       float radiusPx = clamp(uRadius * uProjScale / z, uMinRadiusPx, uMaxRadiusPx);
 
-      float noise = ign(gl_FragCoord.xy, uFrame);
-      float rot = noise * 6.2831853;
       vec2 texel = 1.0 / uResolution;
 
       // Two octaves, sharing one tap budget and one spiral.
@@ -719,6 +816,24 @@ const ContactAOShader = {
       // Taps per octave. The two are interleaved by parity so each gets the
       // whole angular circle rather than half of it.
       float perOct = float(CONTACT_TAPS) * 0.5;
+
+      // Stratified rotation (see GLSL_PHASE). The fan below is uniform, so its
+      // bearings repeat every 2*PI/perOct; rotating by a *quarter of one of
+      // those cells* per pixel means the four pixels of a 2x2 block together
+      // sample 4*perOct evenly spaced bearings and nothing twice.
+      //
+      // The rotation this replaced was a full turn drawn from gradient noise.
+      // Two neighbouring pixels could land on nearly the same bearings or on
+      // opposite ones, so the block average was four noisy draws of a ten-tap
+      // integral rather than one clean forty-tap one, and the leftover was
+      // white dither at the pixel scale — the frequency a resolve has the
+      // hardest time removing and the sharpen pass downstream amplifies most.
+      float tj = phaseFrame(uFrame);
+      float ph = phasePos(gl_FragCoord.xy);
+      float rot = (ph + tj) * (6.2831853 / (4.0 * perOct));
+      // The shadow ray needs an offset, not a bearing, so it gets its own
+      // permutation of the same four phases rather than sharing the rotation.
+      float rayJitter = fract(ph * 0.6180339887 + tj);
       for (int i = 0; i < CONTACT_TAPS; i++) {
         bool inner = (i - (i / 2) * 2) == 0;
         float h = (float(i / 2) + 0.5) / perOct;      // 0..1 within the octave
@@ -786,7 +901,7 @@ const ContactAOShader = {
       // with opposite sensitivity to how lit a pixel is, so they cannot be
       // folded into one number here. .ba carry the packed depth so the resolve
       // can reject taps across an edge without a second g-buffer fetch.
-      gl_FragColor = vec4(ao, sunRay(P, N, z, noise), g.b, g.a);
+      gl_FragColor = vec4(ao, sunRay(P, N, z, rayJitter), g.b, g.a);
     }`,
 };
 
@@ -802,10 +917,28 @@ const ContactAOShader = {
  * the sunlit road and the sunlit rooftop, which is precisely where the props
  * looked pasted on.
  *
- * The contact trace is one rotated tap set per pixel, so it arrives noisy. The
- * five-tap diagonal resolve here averages four neighbouring rotation cells
- * together under a depth guard, which makes an 8-tap trace read like a 40-tap
- * one and costs four fetches instead of a whole blur pass.
+ * The contact trace is one rotated tap set per pixel, so it arrives as a
+ * partial estimate and is resolved here rather than in a blur pass of its own.
+ *
+ * The resolve is a 3x3 tent under a joint depth and range guard, and both of
+ * those choices are load bearing.
+ *
+ * It replaced a five-tap diagonal — centre plus the four corners — which reads
+ * as the cheap version of the same idea and is in fact a different filter
+ * entirely. A kernel supported only on the diagonals never mixes the two
+ * checkerboard sublattices of the image: pixels where x+y is even and pixels
+ * where it is odd are filtered as two independent images that never exchange a
+ * sample. Any difference between the two survives the resolve at full
+ * amplitude, and a per-pixel rotation guarantees such a difference. That is not
+ * a filter that is too narrow to hide the dither, it is a filter that is
+ * structurally incapable of touching it, and it is why the term arrived as a
+ * lattice rather than as noise.
+ *
+ * [1,2,1] in each axis fixes it exactly rather than approximately. Its response
+ * at the pixel-scale Nyquist frequency is 1 - 2 + 1 = 0, and that frequency is
+ * where the trace's stratified rotation now puts *all* of its residual — so the
+ * pairing of a 2x2 phase multiplex with a tent resolve does not attenuate the
+ * dither, it cancels it. Nine fetches instead of five.
  */
 const AOApplyShader = {
   uniforms: {
@@ -840,6 +973,39 @@ const AOApplyShader = {
                   uShadowStrength, uExposure;
     varying vec2 vUv;
 
+    /**
+     * One tent tap of the contact resolve.
+     *
+     * Depth is sqrt encoded, so a fixed tolerance here is a world-space
+     * tolerance that widens with distance — which is what you want: the resolve
+     * must not blur a contact across the silhouette in front of it, but at
+     * 100 m the whole prop is a few pixels wide.
+     *
+     * The depth guard alone is not enough, and the range term beside it is the
+     * single change that made this pass visible at all. The features the term
+     * exists for are the same size as the filter: the shaded strip in front of
+     * a barrier on a street seen edge-on is three or four pixels tall, and the
+     * crevice between two sandbags is two. A depth-guarded box passes all of
+     * them — same surface, same depth — and averages a genuine 0.6 against
+     * eight 1.0s, which is how a 40% contact arrived on screen as 8%. So the
+     * weight carries a range term as well: a neighbour whose occlusion
+     * disagrees with the centre is on the other side of the feature, not a
+     * noisier estimate of the same pixel.
+     *
+     * The range term is deliberately gentle. Too sharp and it refuses to
+     * average exactly where the trace's rotation phase lives, and the contact
+     * band under a barrier arrives as a dashed line instead of a shadow; too
+     * flat and it is the plain box that erased the band in the first place.
+     */
+    void contactTap(vec2 uv, float tw, vec2 c0, float z0,
+                    inout vec2 sum, inout float wsum) {
+      vec4 s = texture2D(tContact, uv);
+      float dz = abs(unpackUnit(s.ba) - z0);
+      float dv = abs(s.r - c0.x) + abs(s.g - c0.y);
+      float w = tw * exp(-dz * 1200.0 - dv * 1.5);
+      sum += s.rg * w; wsum += w;
+    }
+
     void main() {
       vec3 c = texture2D(tDiffuse, vUv).rgb;
       float ao = texture2D(tAO, vUv).r;
@@ -848,42 +1014,17 @@ const AOApplyShader = {
       if (uContactStrength > 0.0) {
         vec4 k0 = texture2D(tContact, vUv);
         float z0 = unpackUnit(k0.ba);
-        vec2 sum = k0.rg;
-        float wsum = 1.0;
-        for (int i = 0; i < 4; i++) {
-          vec2 o = i == 0 ? vec2(1.0, 1.0) : i == 1 ? vec2(-1.0, 1.0)
-                 : i == 2 ? vec2(1.0, -1.0) : vec2(-1.0, -1.0);
-          vec4 s = texture2D(tContact, vUv + o * uTexel);
-          // Depth is sqrt encoded, so a fixed tolerance here is a world-space
-          // tolerance that widens with distance — which is what you want: the
-          // resolve must not blur a contact across the silhouette in front of
-          // it, but at 100 m the whole prop is a few pixels wide.
-          //
-          // The depth guard alone is not enough, and this is the single change
-          // that made the pass visible. The features this term exists for are
-          // the same size as the filter: the shaded strip in front of a barrier
-          // on a street seen edge-on is three or four pixels tall, and the
-          // crevice between two sandbags is two. A depth-guarded box over the
-          // four diagonal neighbours passes all of them — same surface, same
-          // depth — and averages a genuine 0.6 against four 1.0s, which is how
-          // a 40% contact arrived on screen as 8% and read as nothing. So the
-          // weight carries a range term as well: a neighbour whose occlusion
-          // disagrees with the centre is on the other side of the feature, not
-          // a noisier estimate of the same pixel. Small disagreements still
-          // average, which is all the trace's rotation dither needs.
-          //
-          // The range term is deliberately gentle. Too sharp and it refuses to
-          // average exactly where the trace's per-pixel rotation dither lives,
-          // and the contact band under a barrier arrives as a dashed line
-          // instead of a shadow; too flat and it is the plain box that erased
-          // the band in the first place. At this slope ordinary dither (a few
-          // hundredths apart) still averages and a genuine step across a
-          // feature is roughly halved.
-          float dz = abs(unpackUnit(s.ba) - z0);
-          float dv = abs(s.r - k0.r) + abs(s.g - k0.g);
-          float w = exp(-dz * 1200.0 - dv * 1.5);
-          sum += s.rg * w; wsum += w;
-        }
+        vec2 sum = k0.rg * 4.0;
+        float wsum = 4.0;
+        vec2 t = uTexel;
+        contactTap(vUv + vec2(-t.x,  0.0), 2.0, k0.rg, z0, sum, wsum);
+        contactTap(vUv + vec2( t.x,  0.0), 2.0, k0.rg, z0, sum, wsum);
+        contactTap(vUv + vec2( 0.0, -t.y), 2.0, k0.rg, z0, sum, wsum);
+        contactTap(vUv + vec2( 0.0,  t.y), 2.0, k0.rg, z0, sum, wsum);
+        contactTap(vUv + vec2(-t.x, -t.y), 1.0, k0.rg, z0, sum, wsum);
+        contactTap(vUv + vec2( t.x, -t.y), 1.0, k0.rg, z0, sum, wsum);
+        contactTap(vUv + vec2(-t.x,  t.y), 1.0, k0.rg, z0, sum, wsum);
+        contactTap(vUv + vec2( t.x,  t.y), 1.0, k0.rg, z0, sum, wsum);
         contact = sum.x / wsum;
         shadow = sum.y / wsum;
       }
@@ -1686,12 +1827,27 @@ export class RenderPipeline {
       // S-curve having been removed. The chain was measured end to end in node
       // rather than guessed at: it maps scene radiance 1.0 to display 205, 2.0
       // to 230 and 4.5 to 247, and the LUT passes 0 -> 0 and 1 -> 255/255/247,
-      // so nothing here caps the top. What caps it is the scene: the brightest
-      // world pixel in any of the five poses corresponds to radiance ~1.4, so
-      // this is only 0.23 stop, taken because it is what the measured
-      // histogram wanted and no more. Anything past ~1.5 slid the median up
-      // without adding anything above 200 and cost the deep shade its blacks.
-      exposure: 1.35,
+      // so nothing here caps the top. What caps it is the scene.
+      //
+      // Re-measured against the current build, after the sky stopped being
+      // counted three times and the key started coming from its own
+      // transmittance. That moved the scene: the brightest world pixel in the
+      // five poses is now radiance ~2.2 rather than ~1.4, skyline peaks at
+      // display 249 with 5.7% of the frame over 200, and 186-1764 pixels per
+      // pose pass a specular test (>150 luma at >1.6x their 17x17 local mean).
+      // So the premise this file was tuned under — nothing in the top two
+      // stops, no specular candidates anywhere, bloom firing on nothing — is
+      // simply no longer true of this build, and re-keying against it is a
+      // different exercise than re-keying against the one it was written for.
+      //
+      // The lever that widens a histogram is not this one on its own. Exposure
+      // slides the whole distribution; measured by inverting the shipped grade
+      // on the captured frames and re-applying it, 1.35 -> 1.75 bought five
+      // codes at the top and thirteen at the median, which is the milkiness the
+      // previous owner correctly backed out of. Exposure and the contrast pivot
+      // below move together: the pair takes the top up and the bottom down, and
+      // the median almost nowhere.
+      exposure: 1.5,
       tonemap: 'agx',
 
       ao: true,
@@ -1801,7 +1957,23 @@ export class RenderPipeline {
       // highlight end out at the same time. The pair together is the only way
       // to get both a nonzero population over 200 and true black out of a
       // scene whose own dynamic range is under five stops.
-      contrast: 1.05,
+      //
+      // Raised with the exposure above, and the pair chosen by predicting the
+      // histogram rather than by shooting guesses: the shipped grade was ported
+      // to node, inverted on each captured frame to recover the radiance behind
+      // every display code, and re-applied with candidate parameters. Against
+      // the five baseline poses, 1.5/1.10 predicts (baseline -> retuned):
+      //   hero      max 238 -> 246, over 200 0.19% -> 0.49%, sub-3 4943 -> 8619
+      //   alley     max 225 -> 233, over 200 1.39% -> 2.29%, sub-3 43k -> 67k
+      //   skyline   max 248 -> 254, over 200 5.71% -> 9.54%, 34 pixels over 248
+      //   closeup   max 239 -> 246, over 200 1.02% -> 2.05%, sub-3 5362 -> 11k
+      // with the median moving +4, +2, +5, +2 codes respectively. That is a
+      // histogram getting wider at both ends, which is what a daylight frame
+      // looks like, rather than one sliding up, which is what a print does.
+      // goldenHour is unmoved above 200 and stays unmoved: it is a silhouette
+      // pose shot into a low sun and its ceiling is the scene's, not the
+      // grade's.
+      contrast: 1.10,
       // Was ringing a 1-2px light halo along silhouettes; the unsharp is now
       // clamped to its own neighbourhood, so overshoot is structurally
       // impossible and the amount can go back up to where the image needs it.
@@ -2191,7 +2363,13 @@ export class RenderPipeline {
     u.uBias.value = p.aoBias;
     u.uMaxRadiusPx.value = aoH * 0.12;
     u.uPower.value = p.aoPower;
-    u.uFrame.value = this._frame;
+    // Same rule the contact pass has always had, and the wide pass did not:
+    // sliding the sample set between frames is only free when something
+    // downstream accumulates the frames. With TAA off it bought nothing and
+    // cost a term that crawls over every static surface as you stand still —
+    // and, in a still capture, a different noise realisation in every frame,
+    // which is enough on its own to make an A/B of two captures unreadable.
+    u.uFrame.value = this.useTaa ? this._frame : 0;
     this._draw(renderer, this._quads.gtao, this.rtAO[0]);
 
     const b = this._quads.aoBlur.material.uniforms;
