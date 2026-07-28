@@ -406,15 +406,15 @@ export class EnemyManager {
       camoArm: M(0xffffff, FABRIC, 0.0, s.clothArm),
       camoLeg: M(0xffffff, FABRIC, 0.0, s.clothLeg),
       camoWorn: M(0xb8b4a6, 0.96, 0.0, s.clothFine),     // pads, cargo pockets
-      gaiter: M(0x2f302a, FABRIC, 0.0, s.nylonFine, 0.7, 0.72),
-      plate: M(0x282a22, 0.74, 0.02, s.nylon, 1, 0.68),
-      pouch: M(0x2e3126, 0.78, 0.01, s.nylon, 1, 0.68),
-      webbing: M(0x1e201a, 0.74, 0.01, s.nylonFine, 1, 0.68),
+      gaiter: M(0x2f302a, FABRIC, 0.0, s.nylonFine, 0.7, 0.60),
+      plate: M(0x282a22, 0.74, 0.02, s.nylon, 1, 0.52),
+      pouch: M(0x2e3126, 0.78, 0.01, s.nylon, 1, 0.52),
+      webbing: M(0x1e201a, 0.74, 0.01, s.nylonFine, 1, 0.52),
       // Helmet cover, not a painted shell: same print as the uniform, one step
       // down in value, which stops the head reading as the brightest single mass
       // on the soldier (it measured 2.6x the uniform before).
       helmet: M(0xcfcdbe, 0.88, 0.0, s.clothHelm, 0.8),
-      gear: M(0x212320, 0.66, 0.06, s.nylonFine, 0.5, 0.62),
+      gear: M(0x212320, 0.66, 0.06, s.nylonFine, 0.5, 0.48),
       skin: M(0xb08466, 0.62, 0.0, s.nylonFine, 0.22),
       glove: M(0x2c2d28, 0.66, 0.03, s.rubber),
       boot: M(0x35322b, 0.60, 0.04, s.rubber),

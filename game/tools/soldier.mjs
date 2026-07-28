@@ -199,6 +199,53 @@ for (const dist of dists) {
     await page.waitForTimeout(1200);
     await page.screenshot({ path: name, timeout: 600000 });
 
+    // Optional A/B: the same frame, same geometry, same light, with the previous
+    // build's kit palette put back on the materials. Comparing the shipped shot
+    // against a shot taken minutes earlier is not a measurement when another
+    // agent may have moved the exposure in between; this is.
+    if (o.ab) {
+      await page.evaluate(() => {
+        const m = window.__engine.game.enemies._assets.m;
+        window.__pal = new Map();
+        const set = (mat, hex, opts = {}) => {
+          window.__pal.set(mat, {
+            hex: mat.color.getHex(), env: mat.envMapIntensity,
+            rough: mat.roughness, metal: mat.metalness, map: mat.map,
+          });
+          mat.color.setHex(hex);
+          mat.envMapIntensity = 1;
+          if (opts.rough !== undefined) mat.roughness = opts.rough;
+          if (opts.metal !== undefined) mat.metalness = opts.metal;
+          if (opts.noMap) mat.map = null;
+          mat.needsUpdate = true;
+        };
+        // The old camo lived in the baked sheet, so it is reproduced here as the
+        // per-channel linear ratio of the old sheet to the new one (0.352,
+        // 0.358, 0.339) applied as a tint.
+        for (const k of ['camo', 'camoArm', 'camoLeg']) set(m[k], 0xa0a19d);
+        set(m.camoWorn, 0x5a5952);
+        set(m.plate, 0x1d1f19);
+        set(m.pouch, 0x303227);
+        set(m.webbing, 0x191a15);
+        set(m.gear, 0x131412, { rough: 0.55, metal: 0.12 });
+        set(m.helmet, 0x42452f, { rough: 0.66, metal: 0.04, noMap: true });
+        set(m.gaiter, 0x26271f);
+        set(m.boot, 0x2a2823);
+        set(m.sole, 0x0d0d0c);
+        set(m.glove, 0x232420);
+      });
+      await page.waitForTimeout(1400);
+      await page.screenshot({ path: name.replace(/\.png$/, '-legacy.png'), timeout: 600000 });
+      await page.evaluate(() => {
+        for (const [mat, s] of window.__pal) {
+          mat.color.setHex(s.hex); mat.envMapIntensity = s.env;
+          mat.roughness = s.rough; mat.metalness = s.metal; mat.map = s.map;
+          mat.needsUpdate = true;
+        }
+      });
+      await page.waitForTimeout(1000);
+    }
+
     // Material-ID pass in register with the beauty frame. Every mesh of the
     // frozen soldier is swapped for a flat unlit colour keyed to its material
     // name and re-rendered with tone mapping and the sRGB transfer off, so the

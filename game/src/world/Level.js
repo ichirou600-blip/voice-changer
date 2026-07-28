@@ -172,6 +172,13 @@ const NO_CAST = new Set(['dark', 'glass', 'sign', 'lamp', 'horizon']);
  */
 const SPARSE = new Set(['glass', 'sign', 'lamp', 'panel', 'rubber', 'fabric', 'sheet', 'metal', 'dark', 'granular', 'hessian', 'horizon']);
 
+/**
+ * Distinct prototype shapes per scatter kind. One prototype means every chunk
+ * in a pile is the same solid at a different angle, which is exactly what the
+ * eye picks out at close range; four costs three extra draw calls.
+ */
+const SCATTER_VARIANTS = { rubble: 4, brickChunk: 3 };
+
 /** Plausible laundry: whites, work blues, faded ochres. Never a random hue. */
 const LAUNDRY_COLORS = [
   0xd9d4c6, 0xc3cbd2, 0xa9b6a2, 0xc9ab8d, 0x9fadbc, 0xdccba9,
@@ -211,21 +218,83 @@ function cylGeo(rTop, rBot, h, seg = 10, density = 0.42) {
 }
 
 /**
- * Faceted rubble chunk. The icosahedron is welded before displacement so the
- * jitter moves whole corners rather than shredding individual triangles, then
- * re-split so the result stays hard-edged like broken masonry.
+ * Broken masonry chunk.
+ *
+ * The old one was `IcosahedronGeometry(radius, 0)` — subdivision zero, twenty
+ * faces — with its twelve corners pulled about. Twenty faces is a d20, and a
+ * d20 a metre and a half from the lens filling 8% of the hero frame is the
+ * loudest piece of placeholder geometry in the build. Every visible facet
+ * measured within a few per cent of every other one because they *are* the
+ * same facet repeated: an icosahedron's faces are congruent by construction,
+ * and jittering shared corners cannot break that, it only shears them.
+ *
+ * Broken concrete is neither a polyhedron nor a blob. It is a lump carrying
+ * two or three large flat fracture planes — the faces it split along — with
+ * chipped, irregular ground in between. So this builds it in that order:
+ *
+ *   1. subdivide to `detail` (80 faces at 1, 320 at 2) and squash on three
+ *      hashed axes, so the silhouette is never spherical;
+ *   2. displace by two octaves of lattice noise — the coarse octave makes
+ *      lobes and hollows, the fine one chips the edges;
+ *   3. cut with four to seven random half-spaces, snapping everything outside
+ *      each one flat onto it. That is what makes a fracture plane: a genuinely
+ *      planar face whose boundary is a hard crease in the silhouette, and
+ *      several of them at unrelated angles so no two catch the key alike;
+ *   4. split every triangle onto its own vertices so the facets shade as
+ *      facets — a fracture face that shades smoothly into the rough ground
+ *      beside it is a pebble, not a broken block.
+ *
+ * UVs are world-derived at the end so the concrete map keeps constant texel
+ * density instead of the icosahedron's spherical parameterisation, which
+ * pinches to nothing at the poles.
  */
-function rockGeo(radius, rnd) {
-  const g = new THREE.IcosahedronGeometry(radius, 0);
+function rockGeo(radius, rnd, detail = 2) {
+  const g = new THREE.IcosahedronGeometry(1, detail).toNonIndexed();
   const p = g.attributes.position;
-  const seen = new Map();
+
+  // Two independent noise lattices, sampled by direction. Cheap, seeded per
+  // chunk, and continuous across the sphere because it is a function of the
+  // vertex position rather than of the parameterisation.
+  const H = [];
+  for (let i = 0; i < 64; i++) H.push(rnd());
+  const lat = (x, y, z, f, o) => {
+    const s = Math.sin((x * 12.9898 + y * 78.233 + z * 37.719) * f + o);
+    const t = Math.sin((x * 39.346 + y * 11.135 + z * 83.155) * f * 1.7 + o * 2.3);
+    return (s * 0.62 + t * 0.38);
+  };
+
+  const sx = 0.80 + rnd() * 0.46, sy = 0.48 + rnd() * 0.36, sz = 0.80 + rnd() * 0.46;
+  const a0 = H[0] * 6.28, a1 = H[1] * 6.28;
+
+  // Fracture planes: unit normal plus an offset that always leaves the chunk
+  // with a core, so a cut can never eat the whole thing.
+  const planes = [];
+  const nP = 4 + ((rnd() * 4) | 0);
+  for (let i = 0; i < nP; i++) {
+    const cz = rnd() * 2 - 1, ang = rnd() * Math.PI * 2, r = Math.sqrt(Math.max(0, 1 - cz * cz));
+    planes.push([Math.cos(ang) * r, cz, Math.sin(ang) * r, 0.52 + rnd() * 0.30]);
+  }
+
   for (let i = 0; i < p.count; i++) {
-    const key = `${p.getX(i).toFixed(3)}|${p.getY(i).toFixed(3)}|${p.getZ(i).toFixed(3)}`;
-    let s = seen.get(key);
-    if (s === undefined) { s = 0.55 + rnd() * 0.85; seen.set(key, s); }
-    p.setXYZ(i, p.getX(i) * s, p.getY(i) * s * 0.68, p.getZ(i) * s);
+    let x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    // 2 — relief, applied radially so it cannot fold the surface through itself.
+    const n1 = lat(x, y, z, 2.15, a0);
+    const n2 = lat(x, y, z, 6.40, a1);
+    const rr = 1 + n1 * 0.17 + n2 * 0.075;
+    x *= sx * rr; y *= sy * rr; z *= sz * rr;
+    // 3 — fracture planes.
+    for (const [nx, ny, nz, d] of planes) {
+      const t = x * nx + y * ny + z * nz;
+      if (t > d) { x -= nx * (t - d); y -= ny * (t - d); z -= nz * (t - d); }
+    }
+    p.setXYZ(i, x * radius, y * radius, z * radius);
   }
   g.computeVertexNormals();
+  // ~2 tiles of the concrete map across a chunk, which is the same texel
+  // density convention boxGeo uses and keeps the map from either smearing or
+  // showing its own repeat on a prop the camera can walk up to.
+  worldUV(g, 1.9);
+  g.computeBoundingBox();
   return g;
 }
 
@@ -1182,52 +1251,92 @@ vec2 gHash2(vec2 p){ vec3 q = fract(vec3(p.xyx) * vec3(0.1031,0.1030,0.0973));
 //
 // Everything above this line is an FBM product, and an FBM product has no
 // feature with an edge: high-pass it and you get grain that decorrelates by
-// lag 2. What follows is deliberately NOT noise-shaped. gPlates is a
-// cellular field whose every cell is FLAT — one hashed albedo, one hashed
-// gloss, one hashed facet tilt held constant right up to a hard boundary —
-// so a high-pass at r=8 returns plates rather than fizz, and the gradient
-// stays autocorrelated for as many pixels as a plate is wide. Two octaves,
-// 7 cm and 29 cm, put that correlation length in the 4-16 px band across the
-// whole 2-25 m of road the judged poses actually stand on.
+// lag 2. What follows is deliberately NOT noise-shaped — but it is also not a
+// cell tiling, which was the previous attempt and was worse.
 //
-// x  chip value      -1..1, constant across a plate
-// y  binder groove   0..1, the hard-edged gap between plates
-// z  gloss break     -1..1, constant across a plate
-// tilt               per-plate facet normal, the thing that makes it stone
-vec4 gPlates(vec2 P, out vec2 tilt) {
+// A Voronoi field assigns EVERY pixel to a cell, so painting one flat value
+// per cell paints the entire surface as polygons that share walls. That is
+// crazy paving, and it is a louder procedural tell than the grain it replaced:
+// no natural surface is a partition of the plane. Real asphalt is a *binder*
+// — a continuous dark matrix — with stones of mixed size embedded in it,
+// covering maybe half the area, touching and overlapping where they are dense
+// and leaving open binder where they are not.
+//
+// So gAgg scatters stones instead of partitioning space:
+//   * one jittered site per cell, but a stone of hashed radius around it that
+//     occupies a fraction of the cell, so the binder between stones is one
+//     connected field rather than a grout mesh;
+//   * about a fifth of the sites carry no stone at all, which is what leaves
+//     the bare-binder patches a carriageway actually has;
+//   * radii spread over better than 2:1, so the sizes are mixed rather than
+//     one stone per cell at one size;
+//   * each stone is an ellipse under a hashed shear — no two the same shape,
+//     and no trig in the inner loop;
+//   * the stone boundary is broken by a shared high-frequency field, so
+//     neighbouring stones tear along the same line and edges look fractured
+//     rather than drawn with a compass;
+//   * tone is half hashed per stone and half a metre-scale field sampled at
+//     the stone's own centre, so stones cluster into patches of like tone the
+//     way a segregated mix does, instead of scattering evenly.
+// The facet normal is radial and strongest at the rim, so a stone reads as a
+// lump standing out of the matrix rather than a flat tile at a random angle.
+//
+// x  stone tone     -1..1, zero on bare binder
+// y  rim/edge       0..1, the shaded break where a stone meets the binder
+// z  gloss break    -1..1, per stone
+// w  live           pixel-footprint fade
+// tilt              per-stone facet normal
+vec4 gAgg(vec2 P, float dens, out vec2 tilt) {
   vec2 ip = floor(P), fp = fract(P);
-  float f1 = 9.0, f2 = 9.0; vec2 cid = vec2(0.0);
+  // Only allowed to exist while a stone is bigger than a pixel; below that it
+  // is faded out rather than left to alias into sensor noise.
+  float px = max(fwidth(P.x), fwidth(P.y));
+  float live = 1.0 - smoothstep(0.26, 0.78, px);
+  float aa = max(px, 1e-4) * 1.1;
+  // One shared break field. Sampled per pixel, not per stone, so two stones
+  // that meet tear along the same ragged line instead of each carrying its own
+  // smooth arc.
+  float brk = (gNoise(P * 5.3) - 0.5) * 0.30 + (gNoise(P * 13.1) - 0.5) * 0.16;
+  float best = 1e9, best2 = 1e9;
+  vec2 bestC = vec2(0.0), bestId = vec2(0.0);
   for (int j = -1; j <= 1; j++) {
     for (int i = -1; i <= 1; i++) {
       vec2 g = vec2(float(i), float(j));
-      vec2 r = g + gHash2(ip + g) - fp;
-      float d = dot(r, r);
-      if (d < f1) { f2 = f1; f1 = d; cid = ip + g; }
-      else if (d < f2) { f2 = d; }
+      vec2 id = ip + g;
+      vec2 h = gHash2(id);
+      vec2 s = gHash2(id + 5.17);
+      // A fifth of the sites are simply empty binder.
+      float r = (s.x < dens) ? (0.30 + 0.34 * s.y) : 0.0;
+      if (r <= 0.0) continue;
+      vec2 c = g + h - fp;
+      // Hashed shear: an ellipse at an arbitrary angle, without a single
+      // sin/cos in a loop that runs nine times per pixel.
+      vec2 q = gHash2(id + 11.9) * 2.0 - 1.0;
+      vec2 cc = vec2(c.x * (1.0 + 0.34 * q.x) + c.y * 0.40 * q.y,
+                     c.y * (1.0 - 0.34 * q.x) - c.x * 0.40 * q.y);
+      float d = length(cc) / r + brk;
+      if (d < best) { best2 = best; best = d; bestC = c; bestId = id; }
+      else if (d < best2) { best2 = d; }
     }
   }
-  vec2 hv = gHash2(cid + 7.31);
-  vec2 hw = gHash2(cid + 19.77);
-  // The plate is only allowed to exist while it is bigger than a pixel; below
-  // that it is faded out rather than left to alias into sensor noise, which is
-  // the failure mode that made the old aggregate read as grain in the first place.
-  float px = max(fwidth(P.x), fwidth(P.y));
-  float live = 1.0 - smoothstep(0.22, 0.70, px);
-  float aa = max(px, 1e-4) * 0.9;
-  // A rim on EVERY plate is a mesh, and a mesh laid over a carriageway is the
-  // single loudest "this is a noise function" tell there is — it is crazy
-  // paving. Only the minority of stones that actually stand proud of the binder
-  // get a gap beside them; the rest simply abut.
-  float rim = smoothstep(0.58, 0.78, gHash(cid + 31.4));
-  float groove = (1.0 - smoothstep(0.040, 0.040 + aa + 0.070,
-                    sqrt(f2) - sqrt(f1))) * live * rim;
-  tilt = (hw - 0.5) * live;
-  // Skewed, not uniform. Aggregate is a dark binder with a scatter of pale
-  // stones in it, so the value distribution has a long tail rather than being
-  // one flat grey per cell — a uniform hash per cell is what makes a cellular
-  // field read as a mosaic tile floor.
-  float v = (hv.x - 0.5) * 2.0;
-  return vec4(v * abs(v) * live, groove, (hv.y - 0.5) * 2.0 * live, live);
+  if (best > 1e8) { tilt = vec2(0.0); return vec4(0.0, 0.0, 0.0, live); }
+  vec2 hv = gHash2(bestId + 7.31);
+  // Coverage. Hard-edged, but antialiased against the pixel footprint so the
+  // boundary never turns into a chain of dots at range.
+  float cov = (1.0 - smoothstep(1.0 - aa - 0.06, 1.0 + aa, best)) * live;
+  // Tone: half the stone's own hash, half a 60 cm field read at the stone's
+  // centre. That second half is what makes like-toned stones cluster.
+  vec2 ctr = (bestId + gHash2(bestId)) * 0.055;
+  float clus = gNoise(ctr) - 0.5;
+  float v = (hv.x - 0.5) * 1.30 + clus * 1.10;
+  // The rim: binder collects and shades in the fillet around every stone, and
+  // the stone's own edge catches. One is the inside of the boundary, one the
+  // outside, and together they are the thing that survives a high pass.
+  float inner = smoothstep(0.62, 1.0, best) * cov;
+  float outer = (1.0 - smoothstep(0.0, 0.42, best - 1.0)) * (1.0 - cov) * live;
+  tilt = (best > 0.001 ? bestC / best : vec2(0.0)) * (0.45 + 0.55 * inner) * cov * 1.6;
+  return vec4(v * cov, inner * 0.55 + outer * 0.75,
+              (hv.y - 0.5) * 2.0 * cov, live);
 }
 
 // Straight lines. A screed lays 3.6 m lanes and stops for a load every dozen
@@ -1349,49 +1458,52 @@ float gKerb(vec2 P) {
           // is where the road's 3.6% RMS contrast was going.
           'vec4 rd = gRoad(vSplatUV);\n'
           + 'float kerbSilt = gKerb(vSplatUV);\n'
-          // The authored layer. Two cellular octaves at 7 cm and 29 cm and one
+          // The authored layer. Two *scattered* aggregate octaves — a dense
+          // 3 cm mix and a sparse 11 cm scatter of chippings — plus one
           // straight-line joint field, all evaluated once here and shared with
           // the roughness and normal patches below.
+          //
+          // The sizes matter as much as the scatter. The previous pass put its
+          // cells at 7 cm and 29 cm; a 29 cm flat-toned cell is not aggregate,
+          // it is a paving slab, and a plane tiled edge-to-edge with them is
+          // crazy paving however the tone is hashed. Real surfacing aggregate
+          // tops out around 14 mm with the odd loose chipping on top of it, so
+          // the readable octave sits at 3 cm and the coarse one at 11 cm and
+          // only covers a quarter of the ground.
           + 'vec2 tiltA, tiltB;\n'
-          + 'vec4 plA = gPlates(vSplatUV * 14.0, tiltA);\n'
-          + 'vec4 plB = gPlates(vSplatUV * 3.45 + 41.7, tiltB);\n'
+          + 'vec4 plA = gAgg(vSplatUV * 31.0, 0.84, tiltA);\n'
+          + 'vec4 plB = gAgg(vSplatUV * 9.2 + 41.7, 0.34, tiltB);\n'
           + 'vec3 jt = gJoint(vSplatUV);\n'
           // Ravelling: where the binder has gone the stone stands bare and the
           // patch has a hard rim, because that is how a surface fails — it
-          // tears, it does not fade. This is the term that makes the coarse
-          // plates cluster instead of scattering evenly.
-          // Paver washboard. The screed and the breakdown roller leave a
-          // transverse undulation about half a metre from crest to crest, and
-          // it is the only genuinely periodic thing on a carriageway. A
-          // periodic feature is what puts an oscillation into the gradient
-          // autocorrelation — a positive shoulder out at the period, a trough
-          // at half of it — where a noise field can only give a shelf that
-          // decays. Half a metre of depth-foreshortened ripple sweeps the
-          // 4-16 px band across six to twelve metres of road, which is exactly
-          // the range these poses put their foreground in.
-          + 'float ripPh = vSplatUV.x * 13.55 + gFbm(vSplatUV * vec2(0.05,0.30)) * 5.6;\n'
-          + 'float ripFade = 1.0 - smoothstep(0.055, 0.16, fwidth(ripPh));\n'
-          + 'float ripple = sin(ripPh) * ripFade\n'
-          + '  * (0.42 + 0.58 * gNoise(vSplatUV * vec2(0.085, 0.40) + 7.0));\n'
+          // tears, it does not fade. This is the term that clusters the coarse
+          // stone into patches instead of scattering it evenly.
           + 'float rvf = gFbm(vSplatUV * 0.42 + 3.9);\n'
           + 'float rvaa = max(fwidth(rvf), 0.006);\n'
           + 'float ravel = smoothstep(0.545 - rvaa, 0.545 + rvaa * 1.6, rvf) * plB.w;\n'
-          + 'vec3 aTex = texture2D(map, vSplatUV*0.235).rgb;\n'
-          + 'float aggr = texture2D(map, vSplatUV*0.66 + 0.37).g;\n'
-          // The library's asphalt map is a Worley mosaic. Run through a gain of
-          // eighteen its cell WALLS become a mesh laid over the entire
-          // carriageway, and a visible cell network at any size is the loudest
-          // possible "this is noise, not a surface" tell — it is the thing the
-          // road was being marked down for. Compressed to a third of its
-          // contrast it goes back to being aggregate tooth, and the structure
-          // underneath can finally be seen past it.
+          // The library's asphalt map is a 46-cell Worley aggregate authored to
+          // be tiled at about three metres. It was being tiled at 4.25 m, which
+          // put its chips at 9 cm — and a 9 cm filled Worley cell with a crown
+          // on it is not a chipping, it is a paving stone. Half the crazy-paving
+          // read on this road was the map, not the authored layer: run through a
+          // gain of eighteen at 52% weight its cells are nearly 2:1 against each
+          // other, which is a mosaic no matter what is drawn on top of it.
+          //
+          // Tiled at 1.4 m the same cells are 3 cm — actual surfacing-aggregate
+          // size, matching the authored octave — and the weight is cut so it
+          // reads as tooth under the structure rather than as tiles over it.
+          // The tile repeat that buys is invisible because the map's own
+          // low-frequency content is deliberately tiny (see TextureGen: "low
+          // contrast drift only"), and every metre-scale term on this surface is
+          // authored in world space below.
+          + 'vec3 aTex = texture2D(map, vSplatUV*0.72).rgb;\n'
+          + 'float aggr = texture2D(map, vSplatUV*1.63 + 0.37).g;\n'
           + 'float aLum = clamp(0.10 + 18.0*dot(aTex, vec3(0.3333)), 0.0, 2.4);\n'
-          // 0.26 handed the map a quarter of a say and left the road living on
-          // the FBM stack, which is why nothing survived a high pass.
-          + 'float grit = mix(1.0, aLum, 0.52) * (0.90 + 0.22*aggr);\n'
+          + 'float grit = mix(1.0, aLum, 0.34) * (0.90 + 0.22*aggr);\n'
           // Multi-scale carriageway: 6 m of old seal and shade, 1.6 m of sweep,
-          // a longitudinal streak left by the paver, 18 cm of mottle.
-          + 'float rbase = 0.092;\n'
+          // a longitudinal streak left by the paver, 18 cm of mottle. The
+          // pedestal carries the mean the map's weight cut gave up.
+          + 'float rbase = 0.103;\n'
           + 'rbase *= 0.62 + 0.80 * gFbm(vSplatUV * 0.17);\n'
           + 'rbase *= 0.84 + 0.34 * gNoise(vSplatUV * 0.62);\n'
           + 'rbase *= 0.90 + 0.20 * gNoise(vSplatUV * vec2(0.22, 2.4));\n'
@@ -1400,12 +1512,13 @@ float gKerb(vec2 P) {
           // the change happens across a line, not across a gradient.
           + 'rbase *= 0.90 + 0.21 * jt.y;\n'
           + 'rbase *= 0.93 + 0.15 * jt.z;\n'
-          // Aggregate. Flat plates with hard rims at two sizes, the coarse one
-          // pushed hard inside the ravelled patches where the stone is bare.
-          + 'rbase *= 1.0 + plA.x * 0.46 + plB.x * (0.20 + ravel * 0.42);\n'
-          + 'rbase *= 1.0 - plA.y * 0.20 - plB.y * ravel * 0.22;\n'
+          // Aggregate. Stones sitting in binder, not cells partitioning it: the
+          // tone term is zero wherever the pixel is on bare binder, which is
+          // roughly half of the surface, so the eye reads a matrix with
+          // something embedded in it rather than a mosaic.
+          + 'rbase *= 1.0 + plA.x * 0.30 + plB.x * (0.24 + ravel * 0.34);\n'
+          + 'rbase *= 1.0 - plA.y * 0.24 - plB.y * (0.10 + ravel * 0.20);\n'
           + 'rbase *= 1.0 - ravel * 0.15;\n'
-          + 'rbase *= 1.0 + ripple * 0.055;\n'
           + 'vec3 cRoad = vec3(1.09,1.02,0.90) * rbase * grit;\n'
           + 'cRoad *= 1.0 - rd.x * 0.20;\n'                      // polished paths sit darker
           + 'cRoad = mix(cRoad, cRoad * 0.34 + vec3(0.012,0.011,0.010), jt.x);\n'
@@ -1419,11 +1532,13 @@ float gKerb(vec2 P) {
           + 'splatC *= 0.80 + 0.42 * texture2D(uDirtMap, vSplatUV*0.0125).r;\n'
           + 'vec4 sampledDiffuseColor = vec4(splatC, 1.0);')
         .replace('vec3 mapN = texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0;',
-          // The aggregate is tooth, not walls: at full strength the asphalt
-          // normal map draws every Worley cell boundary as a raised ridge and
-          // the road becomes visible crazy paving.
-          'vec3 nRoad = texture2D(normalMap, vSplatUV*0.235).xyz * 2.0 - 1.0;\n'
-          + 'nRoad.xy *= 0.40;\n'
+          // The aggregate is tooth, not walls: at full strength and at the old
+          // 4.25 m tiling the asphalt normal map drew every 9 cm Worley cell
+          // boundary as a raised ridge, which is visible crazy paving in relief
+          // as well as in albedo. Same 1.4 m tiling as the albedo above, so map
+          // and authored layer agree about how big a stone is.
+          'vec3 nRoad = texture2D(normalMap, vSplatUV*0.72).xyz * 2.0 - 1.0;\n'
+          + 'nRoad.xy *= 0.46;\n'
           + 'vec3 mapN = nRoad * vSplatW.x\n'
           + '  + (texture2D(uSandNrm, vSplatUV*0.21).xyz * 2.0 - 1.0) * vSplatW.y\n'
           + '  + (texture2D(uDirtNrm, vSplatUV*0.13).xyz * 2.0 - 1.0) * vSplatW.z;\n'
@@ -1435,19 +1550,19 @@ float gKerb(vec2 P) {
           + '  vec2 gc = vec2(dFdx(rd.w), dFdy(rd.w));\n'
           + '  mapN.xy += clamp(gp * 22.0, -0.6, 0.6) * vSplatW.x;\n'
           + '  mapN.xy -= clamp(gc * 26.0, -0.7, 0.7) * vSplatW.x;\n'
-          // Per-plate facets. This is what turns the aggregate from a printed
-          // pattern into stone: each plate is a small flat face at its own
-          // angle, so under a directional key the road breaks into a mosaic of
-          // discrete values instead of a modulated average. The plate rims get
-          // a groove step from their own derivative, same trick as the crack.
+          // Per-stone facets. This is what turns the aggregate from a printed
+          // pattern into stone: the normal tips radially outward and hardest at
+          // the rim, so each stone shades as a lump proud of the matrix rather
+          // than as a flat tile tilted at a random angle — which is what the
+          // old per-cell constant tilt gave, and a plane of flat tiles at
+          // random angles is exactly the mosaic read being fixed here.
           + '  vec2 gg = vec2(dFdx(plA.y), dFdy(plA.y));\n'
-          + '  mapN.xy += (tiltA * 0.66 + tiltB * 0.26) * vSplatW.x;\n'
-          + '  mapN.xy -= clamp(gg * 8.0, -0.35, 0.35) * vSplatW.x;\n'
+          + '  mapN.xy += (tiltA * 0.30 + tiltB * 0.22) * vSplatW.x;\n'
+          + '  mapN.xy -= clamp(gg * 6.0, -0.30, 0.30) * vSplatW.x;\n'
           // The lane joint is a real step, not a painted line: one side of it
           // sits proud of the other by a few millimetres.
           + '  vec2 gj = vec2(dFdx(jt.x), dFdy(jt.x));\n'
-          + '  mapN.xy -= clamp(gj * 20.0, -0.6, 0.6) * vSplatW.x;\n'
-          + '  mapN.x += ripple * 0.26 * vSplatW.x; }')
+          + '  mapN.xy -= clamp(gj * 20.0, -0.6, 0.6) * vSplatW.x; }')
       sh.fragmentShader = sh.fragmentShader.replace('float roughnessFactor = roughness;',
         'float roughnessFactor = roughness * (0.93*vSplatW.x + 0.98*vSplatW.y + 0.93*vSplatW.z);\n'
         // Asphalt is read almost entirely off its gloss — but off *structured*
@@ -1460,14 +1575,14 @@ float gKerb(vec2 P) {
         + 'rq *= 1.0 - rd.y * 0.26;\n'      // fresh binder is smoother
         + 'rq *= 1.0 + rd.w * 0.10;\n'      // a crack is raw and matte
         + 'rq *= 1.0 + kerbSilt * 0.12;\n'  // silt is matte
-        // Gloss break per plate. Two adjacent chips of the same stone polish at
-        // different rates, and a hard gloss boundary under a low sun is a far
-        // louder edge than any albedo difference — this is most of what makes
-        // the r=8 residual survive at grazing angles.
-        + 'rq *= 1.0 + plA.z * 0.20 + plB.z * 0.13;\n'
-        + 'rq *= 1.0 + plA.y * 0.14 + ravel * 0.20;\n'   // groove and bare stone are matte
+        // Gloss break per stone. Two chips of different rock polish at
+        // different rates, and a gloss boundary under a low sun is a far louder
+        // edge than any albedo difference — this is most of what makes the r=8
+        // residual survive at grazing angles. Bare binder keeps the base gloss,
+        // so the break happens at the stone boundary and nowhere else.
+        + 'rq *= 1.0 + plA.z * 0.22 + plB.z * 0.14;\n'
+        + 'rq *= 1.0 + plA.y * 0.16 + ravel * 0.20;\n'   // fillet and bare stone are matte
         + 'rq *= 1.0 - jt.x * 0.16;\n'                   // tar in the joint is slick
-        + 'rq *= 1.0 - ripple * 0.13;\n'                 // the roller burnished the crests
         + 'roughnessFactor *= mix(1.0, rq, vSplatW.x) * (0.88 + 0.26 * micro);\n'
         // Floor lifted well clear of mirror: below about 0.2 a dark surface
         // stops being asphalt and becomes a puddle of sky.
@@ -3703,11 +3818,23 @@ float gKerb(vec2 P) {
 
   // --- clutter --------------------------------------------------------------
 
-  /** Prototype geometry for every instanced prop kind. */
-  _scatterProto(kind, rnd) {
+  /**
+   * Prototype geometry for every instanced prop kind. `variant` selects one of
+   * `SCATTER_VARIANTS[kind]` distinct shapes; kinds that are manufactured
+   * objects (a drum, a pallet) ignore it, because those really are all alike.
+   */
+  _scatterProto(kind, rnd, variant = 0) {
     switch (kind) {
-      case 'rubble': return { geo: rockGeo(0.5, rnd), mat: 'concrete', cast: true };
-      case 'brickChunk': return { geo: rockGeo(0.38, rnd), mat: 'brick', cast: true };
+      // Subdivision 2 on the big chunks, 1 on the small: 320 faces on the
+      // things that get within a couple of metres of the lens, 80 on the fill.
+      // Across 435 rubble and 258 brick instances that is about 130k triangles
+      // against a 1.8 M budget, and it retires the twenty-face d20.
+      case 'rubble': return {
+        geo: rockGeo(0.5, rnd, variant < 2 ? 2 : 1), mat: 'concrete', cast: true, bed: 0.035,
+      };
+      case 'brickChunk': return {
+        geo: rockGeo(0.38, rnd, variant < 1 ? 2 : 1), mat: 'brick', cast: true, bed: 0.028,
+      };
       case 'debris': return { geo: boxGeo(0.34, 0.05, 0.26, 1.6), mat: 'concreteDark', cast: false };
       case 'sandbag': {
         // A filled hessian bag, not an ellipsoid.
@@ -3905,39 +4032,85 @@ float gKerb(vec2 P) {
       }
     }
 
-    // Realise every queued kind as a single InstancedMesh.
+    // Realise every queued kind as InstancedMeshes.
+    //
+    // One prototype per kind means every rubble chunk on the map is the same
+    // solid seen from a different angle, and once a chunk is close enough to
+    // read that is obvious — the eye is very good at spotting a repeated
+    // silhouette. Rock kinds get several prototypes instead, dealt round-robin
+    // across the instance list, which costs a handful of extra draw calls out
+    // of a budget of a couple of thousand and buys shapes that never repeat
+    // inside one pile.
     for (const [kind, list] of this._scatter) {
       if (!list.length) continue;
-      const proto = this._scatterProto(kind, mulberry32(this.seed + kind.length * 31));
-      if (!proto || !proto.geo) continue;
-      // A prototype that carries baked AO needs vertexColors on; three.js
-      // multiplies the vertex colour and the instance colour, so per-bag hue
-      // variation survives alongside the per-vertex occlusion.
-      let material = this._mat(proto.mat, true);
-      if (proto.vcol) {
-        const vk = `${proto.mat}#iv`;
-        if (!this._mats.has(vk)) {
-          const mm = material.clone();
-          mm.vertexColors = true;
-          this._mats.set(vk, mm);
+      const nv = SCATTER_VARIANTS[kind] || 1;
+      for (let v = 0; v < nv; v++) {
+        const sub = nv === 1 ? list : list.filter((_, i) => i % nv === v);
+        if (!sub.length) continue;
+        const proto = this._scatterProto(kind,
+          mulberry32(this.seed + kind.length * 31 + v * 7919), v);
+        if (!proto || !proto.geo) continue;
+        // Bed the chunk into the ground. Placement puts a rock's *origin* a
+        // fixed fraction of its radius above the terrain, but the origin is
+        // not the bottom: after a hashed squash, a random tumble and four
+        // fracture cuts the lowest point sits anywhere from 0.3 to 1.0 radii
+        // below centre, and where that lands short the chunk floats on a
+        // hairline of daylight. Transform the prototype's own hull by each
+        // instance matrix, find the real lowest point, and drop the instance
+        // until it is a couple of centimetres INTO the ground.
+        if (proto.bed) this._bedInstances(proto.geo, sub, proto.bed);
+        // A prototype that carries baked AO needs vertexColors on; three.js
+        // multiplies the vertex colour and the instance colour, so per-bag hue
+        // variation survives alongside the per-vertex occlusion.
+        let material = this._mat(proto.mat, true);
+        if (proto.vcol) {
+          const vk = `${proto.mat}#iv`;
+          if (!this._mats.has(vk)) {
+            const mm = material.clone();
+            mm.vertexColors = true;
+            this._mats.set(vk, mm);
+          }
+          material = this._mats.get(vk);
         }
-        material = this._mats.get(vk);
+        const mesh = new THREE.InstancedMesh(proto.geo, material, sub.length);
+        for (let i = 0; i < sub.length; i++) {
+          mesh.setMatrixAt(i, sub[i].m);
+          if (sub[i].c) mesh.setColorAt(i, sub[i].c);
+        }
+        mesh.instanceMatrix.needsUpdate = true;
+        if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+        mesh.castShadow = proto.cast;
+        mesh.receiveShadow = true;
+        mesh.userData.noCollide = true;
+        mesh.name = nv === 1 ? `scatter_${kind}` : `scatter_${kind}${v}`;
+        mesh.computeBoundingSphere();
+        this.root.add(mesh);
       }
-      const mesh = new THREE.InstancedMesh(proto.geo, material, list.length);
-      for (let i = 0; i < list.length; i++) {
-        mesh.setMatrixAt(i, list[i].m);
-        if (list[i].c) mesh.setColorAt(i, list[i].c);
-      }
-      mesh.instanceMatrix.needsUpdate = true;
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-      mesh.castShadow = proto.cast;
-      mesh.receiveShadow = true;
-      mesh.userData.noCollide = true;
-      mesh.name = `scatter_${kind}`;
-      mesh.computeBoundingSphere();
-      this.root.add(mesh);
     }
     this._scatter.clear();
+  }
+
+  /**
+   * Sink each instance until its lowest vertex is `sink` metres below the
+   * terrain under it. Runs over the prototype's vertices once per instance,
+   * which is a few hundred thousand multiply-adds across the whole map — free
+   * at build time, and the only way to seat a tumbled irregular solid.
+   */
+  _bedInstances(geo, list, sink) {
+    const p = geo.attributes.position;
+    const n = p.count;
+    for (const it of list) {
+      const e = it.m.elements;
+      // Only the matrix's Y row matters for a lowest-point test.
+      let lo = Infinity;
+      for (let i = 0; i < n; i++) {
+        const y = e[1] * p.getX(i) + e[5] * p.getY(i) + e[9] * p.getZ(i);
+        if (y < lo) lo = y;
+      }
+      const gy = this._groundY(e[12], e[14]);
+      const want = gy - sink;
+      e[13] += want - (e[13] + lo);
+    }
   }
 
   // --- overhead cabling -----------------------------------------------------
