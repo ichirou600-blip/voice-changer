@@ -16,8 +16,12 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  // Neon などのプール接続を使う場合、url にはプール経由 (pgbouncer) を、
+  // directUrl にはマイグレーション用の直結 URL を設定する。
+  // DIRECT_DATABASE_URL 未設定時は DATABASE_URL をそのまま使う運用でよい。
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_DATABASE_URL")
 }
 
 // ---------------------------------------------------------
@@ -110,15 +114,73 @@ model User {
   storeId      String?
   store        Store?  @relation(fields: [storeId], references: [id])
 
-  /// 退職スタッフは無効化する（物理削除しない）
+  /// 退職スタッフは無効化する（物理削除しない）。
+  /// セッション検証のたびに JOIN で確認するため、false にした瞬間に全端末で失効する
   isActive Boolean @default(true)
 
   recordedPosts     BlogPost[]   @relation("PostRecordedBy")
   voidedPosts       BlogPost[]   @relation("PostVoidedBy")
   invitationsIssued Invitation[]
+  sessions          Session[]
+  auditLogs         AuditLog[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+/// ログインセッション（DBセッション方式）。
+/// Cookie には平文トークンを、DB にはその SHA-256 ハッシュのみを保存する。
+/// 「アイドル期限」と「絶対期限」の両方を持ち、永久セッションを作らない。
+model Session {
+  id        String @id @default(cuid())
+  tokenHash String @unique
+  userId    String
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  ip        String?
+  userAgent String?
+
+  /// 最終利用時刻。書き込み負荷を避けるため一定間隔でのみ更新する
+  lastUsedAt        DateTime @default(now())
+  /// 未使用が続いた場合の失効時刻（アクセスのたびに延長される）
+  idleExpiresAt     DateTime
+  /// 発行時に決まる絶対失効時刻（延長されない）
+  absoluteExpiresAt DateTime
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([idleExpiresAt])
+}
+
+/// ログイン試行の記録（レート制限用）。
+/// Vercel のサーバーレスではインメモリのカウンタが機能しないため、
+/// 共有ストアである DB を使う。IP 単位・アカウント単位の二重で制限する。
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  /// 制限キー（例: "ip:1.2.3.4" / "email:foo@example.com"）
+  key       String
+  succeeded Boolean
+  createdAt DateTime @default(now())
+
+  @@index([key, createdAt])
+}
+
+/// 監査ログ。招待・パスワード再設定・無効化など、
+/// 「誰が誰に対して何をしたか」を後から検証できるようにする
+model AuditLog {
+  id          String   @id @default(cuid())
+  actorUserId String?
+  actor       User?    @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  action      String // 例: "USER_INVITED" / "PASSWORD_RESET_ISSUED" / "POST_VOIDED"
+  targetType  String? // 例: "User" / "Cast" / "BlogPost"
+  targetId    String?
+  detail      String?
+  ip          String?
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([targetType, targetId])
 }
 
 /// スタッフ招待・パスワード再設定（リンク手渡し方式・メール基盤不要）

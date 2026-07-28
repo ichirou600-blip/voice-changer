@@ -1,0 +1,26 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+
+import { defineAction, ValidationError } from "@/lib/auth/authorize";
+import { createStore, updateStoreSettings } from "@/lib/dal/stores";
+import { storeSettingsSchema } from "@/lib/validations";
+
+export const updateStoreAction = defineAction("MANAGER", async (ctx, formData: FormData) => {
+  const parsed = storeSettingsSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    throw new ValidationError(parsed.error.issues[0]?.message ?? "入力内容を確認してください");
+  }
+  await updateStoreSettings(ctx.user, parsed.data);
+  revalidatePath("/settings");
+  revalidatePath("/dashboard");
+  return { ok: true };
+});
+
+export const createStoreAction = defineAction("ADMIN", async (ctx, formData: FormData) => {
+  const name = String(formData.get("name") ?? "").trim();
+  if (!name) throw new ValidationError("店舗名を入力してください");
+  await createStore(ctx.user, name);
+  revalidatePath("/settings");
+  return { ok: true };
+});

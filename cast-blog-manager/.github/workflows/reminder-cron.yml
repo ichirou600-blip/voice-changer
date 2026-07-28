@@ -1,0 +1,32 @@
+name: リマインド定期実行
+
+# Vercel Cron は Hobby プランだと1日1回までのため、
+# 無料で毎時実行できる GitHub Actions をトリガーに使う。
+# エンドポイント側は冪等（1営業日1通）かつキャッチアップ型のため、
+# 遅延・重複起動しても正しく収束する。
+on:
+  schedule:
+    # 毎時 5 分（UTC）。GitHub の schedule はベストエフォートで遅延しうるが、
+    # /api/cron/tick はキャッチアップ型なので取りこぼさない。
+    - cron: "5 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    steps:
+      - name: リマインド実行をトリガー
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "APP_URL / CRON_SECRET の Secrets が未設定です" >&2
+            exit 1
+          fi
+          code=$(curl -sS -o /tmp/tick.json -w '%{http_code}' \
+            -X POST "$APP_URL/api/cron/tick" \
+            -H "Authorization: Bearer $CRON_SECRET")
+          echo "HTTP $code"
+          cat /tmp/tick.json
+          test "$code" = "200"
