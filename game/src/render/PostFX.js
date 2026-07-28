@@ -1753,7 +1753,23 @@ const GradeShader = {
       s = pow(max(s, 0.0), 1.0 / max(uGamma, vec3(0.01)));
       float ls = luma(s);
       s = mix(vec3(ls), s, uSaturation);
-      s = (s - 0.5) * uContrast + 0.5;
+      // Contrast with both endpoints preserved. The old form was a linear
+      // stretch about 0.5, which drives everything below 0.5*(1 - 1/uContrast)
+      // negative and straight into the clamp: at uContrast 1.10 that is
+      // everything under code 12. It showed up as the alley brick wall reading
+      // 39% of its pixels at or below 4, with the lime mortar joints sitting at
+      // exactly 0.0 for four or five consecutive scanlines in every course —
+      // clipped, not dark. Mortar in open shade under a blue sky belongs ABOVE
+      // the brick face, so the wall was rendering as a perforated grille.
+      //
+      // This form steepens around the same pivot but approaches 0 and 1
+      // asymptotically, so deep shade keeps its ordering instead of collapsing
+      // to a single flat black.
+      {
+        vec3 lo = 0.5 * pow(max(s, 0.0) / 0.5, vec3(uContrast));
+        vec3 hi = 1.0 - 0.5 * pow(max(1.0 - s, 0.0) / 0.5, vec3(uContrast));
+        s = mix(lo, hi, step(vec3(0.5), s));
+      }
 
       // Natural falloff: cos^4-ish, floored so the corners stay readable and
       // slightly desaturated rather than crushed to black.

@@ -232,10 +232,17 @@ export class EnemyManager {
     // — plate, pouch, strap — can separate from a base that is already crushed
     // into the bottom twentieth of the display range. These four are sRGB
     // encodings whose luminances are 0.041 / 0.082 / 0.129 / 0.061 linear.
-    const DARK = [0.215, 0.226, 0.176];
-    const MID = [0.315, 0.322, 0.244];
-    const LIGHT = [0.410, 0.396, 0.300];
-    const BROWN = [0.300, 0.250, 0.186];
+    // Lifted again. The values below the first fix rendered at an effective
+    // albedo of about 6% measured against the shadowed plaster the soldier
+    // stands in front of in the alley pose — better than the 3% they replaced,
+    // still under the 10-18% real olive-drab and multicam sit at, and the
+    // soldier still read as a silhouette at 8.9x darker than that wall. These
+    // encode to luminances near 0.056 / 0.108 / 0.166 / 0.082 linear, putting
+    // the sheet's mean inside the real range rather than just above charcoal.
+    const DARK = [0.256, 0.269, 0.209];
+    const MID = [0.375, 0.383, 0.290];
+    const LIGHT = [0.488, 0.471, 0.357];
+    const BROWN = [0.357, 0.298, 0.221];
     const cloth = bakeKit((u, v) => {
       // Plain weave: warp and weft alternate over and under, so the height field
       // is a checker of two orthogonal ribs rather than a grid of bumps.
