@@ -100,7 +100,11 @@ export class WeaponSystem {
     // only thing on screen was handguard, rail and optic. Raised and pushed out
     // to 30 cm so the receiver sits about half way down the right of the frame.
     this.hipPose = { pos: new THREE.Vector3(0.152, -0.086, -0.300), rot: new THREE.Euler(0.03, 0.135, 0.014) };
-    this.adsPose = { pos: new THREE.Vector3(0.0, -0.054, -0.155), rot: new THREE.Euler(0, 0, 0) };
+    // Derived from the model rather than written down: the optic sits higher
+    // now that it clamps onto the rail instead of intersecting it, and a hand
+    // number here would put the reticle off the screen centre.
+    const sight = this.models[this.loadout[0]].userData.sightHeight;
+    this.adsPose = { pos: new THREE.Vector3(0.0, -(sight - 0.004), -0.155), rot: new THREE.Euler(0, 0, 0) };
 
     player.setAdsFov(WEAPONS[this.loadout[0]].adsFov);
   }
@@ -325,6 +329,16 @@ export class WeaponSystem {
       lerp(pose.rot.z, apose.rot.z, a) + this._recoilRot.z + reloadRot * 0.5 + this._sprintBlend * 0.42,
     );
 
+    // The reticle is an emitter behind a lens, not paint on the objective: an
+    // eye forty degrees off the optical axis — which is where the camera is at
+    // the hip pose — sees nothing of it at all. It fades in with the aim blend.
+    const ret = model.userData.reticle;
+    if (ret) {
+      const vis = this.ads * this.ads;
+      if (model.userData.reticleNode) model.userData.reticleNode.visible = vis > 0.005;
+      for (const r of ret) r.m.opacity = r.o * vis;
+    }
+
     if (model.userData.flashTimer > 0) {
       model.userData.flashTimer -= dt;
       if (model.userData.flashTimer <= 0 && model.userData.flash) model.userData.flash.visible = false;
@@ -407,34 +421,70 @@ function boxProjectUV(geometry, scale = 14) {
   return geometry;
 }
 
+// MIL-STD-1913 cross-section, in metres. The rib is 21.2 mm across the top of
+// its flanks and chamfered down to 16 mm at the crown; the web it stands on is
+// 15.6 mm, so every rib overhangs the web by 2.8 mm a side. That overhang is
+// the whole point: it is what puts a shadowed undercut under every rib and a
+// visible floor at the bottom of every slot. A rail modelled as a flat bar with
+// ribs the same width as the bar has no cross-slot depth from any angle, which
+// is exactly what the last build shipped.
+const RAIL_WEB_W = 0.0156;
+const RAIL_WEB_H = 0.0102;
+const RAIL_RIB_W = 0.0212;
+const RAIL_TOP_W = 0.0160;
+const RAIL_RIB_H = 0.0052;
+/** Height of a rail's crown above its own origin — where a mount sits. */
+export const RAIL_CROWN = RAIL_WEB_H / 2 + RAIL_RIB_H;
+
+/** Chamfered rib cross-section, extruded along the rail's axis. */
+function railRibGeometry(len) {
+  const y0 = RAIL_WEB_H / 2;
+  const y1 = y0 + RAIL_RIB_H;
+  const s = new THREE.Shape();
+  s.moveTo(-RAIL_RIB_W / 2, y0);
+  s.lineTo(RAIL_RIB_W / 2, y0);
+  s.lineTo(RAIL_RIB_W / 2, y1 - 0.0016);
+  s.lineTo(RAIL_TOP_W / 2, y1);
+  s.lineTo(-RAIL_TOP_W / 2, y1);
+  s.lineTo(-RAIL_RIB_W / 2, y1 - 0.0016);
+  s.closePath();
+  const geo = new THREE.ExtrudeGeometry(s, { depth: len, bevelEnabled: false, curveSegments: 1 });
+  geo.translate(0, 0, -len / 2);
+  return geo;
+}
+
 /**
- * Picatinny rail: a solid base, a continuous ribbed top, and narrow recoil
- * grooves cut into it.
+ * Picatinny rail: a narrow web carrying chamfered recoil ribs at the real 10 mm
+ * pitch, returned as a group of two meshes so the web can be a value darker
+ * than the ribs.
  *
- * The previous build spaced 5 mm teeth on a 10 mm pitch, which is the real MIL-
- * STD-1913 geometry and still read as a bicycle chain — because at viewmodel
- * scale each tooth covers a dozen screen pixels and the 5 mm of *background*
- * between them covers a dozen more. So the pitch is halved and the groove
- * narrowed to a fifth of it: the rail resolves as one ribbed bar with a texture
- * of slots, which is what a rail looks like to an eye rather than to a caliper.
- * The base is also tall enough now that the grooves never cut through to sky.
+ * An earlier build halved the pitch to stop the rail reading as a bicycle
+ * chain. It did — by turning it into a row of identical bright blocks with a
+ * 1.4 mm gap, which is under two pixels at viewmodel scale and so resolves as
+ * one continuous bright bar. The chain read came from the slots having no
+ * *depth*, not from their pitch; with a 5 mm floor, an undercut and a darker
+ * web the true pitch reads as a rail.
  */
-function picatinnyRail(length, material, slotPitch = 0.0062) {
-  const parts = [];
-  parts.push(new THREE.BoxGeometry(0.021, 0.0094, length));
-  // The ribbed top is one continuous bar; the grooves are the gaps between the
-  // ribs, so there is never a hole through the rail.
+function picatinnyRail(length, ribMat, webMat, slotPitch = 0.0100) {
+  const group = new THREE.Group();
+  const web = new THREE.Mesh(new THREE.BoxGeometry(RAIL_WEB_W, RAIL_WEB_H, length), webMat);
+  group.add(web);
+
   const slots = Math.max(1, Math.round(length / slotPitch));
-  const rib = slotPitch - 0.0014;
+  const pitch = length / slots;
+  const proto = railRibGeometry(pitch * 0.465);
+  const parts = [];
   for (let i = 0; i < slots; i++) {
-    const z = -length / 2 + slotPitch * (i + 0.5);
-    const tooth = new THREE.BoxGeometry(0.0212, 0.0024, rib);
-    tooth.translate(0, 0.0056, z);
-    parts.push(tooth);
+    const g = proto.clone();
+    g.translate(0, 0, -length / 2 + pitch * (i + 0.5));
+    parts.push(g);
   }
+  proto.dispose();
   const merged = mergeGeometries(parts);
   for (const p of parts) p.dispose();
-  return new THREE.Mesh(merged, material);
+  group.add(new THREE.Mesh(merged, ribMat));
+  group.userData.crown = RAIL_CROWN;
+  return group;
 }
 
 /** Minimal geometry merge — avoids depending on an addon path across versions. */
@@ -507,6 +557,42 @@ function wrapFinger(rootY, rootZ, axisY, axisZ, radius, lens) {
 const HAND_ARM_AXIS = new THREE.Vector3(0, -1, 0);
 
 /**
+ * Bake an occlusion term into a geometry's colour attribute.
+ *
+ * The viewmodel is rendered into its own scene after a depth clear, so nothing
+ * in the frame's ambient-occlusion pass can ever see it: the channels between
+ * the fingers are lit by exactly the same hemisphere as the finger crowns and
+ * measure the same value, which is the single loudest reason a hand reads as a
+ * mannequin. Vertex colour is the one channel every material here already
+ * multiplies into albedo, so the occlusion goes there.
+ *
+ * `fn` is evaluated at the vertex position expressed in the *hand's* frame, so
+ * one function can reason about neighbouring fingers and about the object being
+ * gripped without caring which joint the vertex happens to hang off.
+ */
+function paintAO(mesh, toHand, fn) {
+  const geo = mesh.geometry;
+  const pos = geo.attributes.position;
+  const col = new Float32Array(pos.count * 3);
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.set(pos.getX(i), pos.getY(i), pos.getZ(i));
+    if (toHand) v.applyMatrix4(toHand);
+    const a = clamp(fn(v.x, v.y, v.z), 0, 1);
+    col[i * 3] = a; col[i * 3 + 1] = a; col[i * 3 + 2] = a;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+}
+
+/** Flat white, so a vertexColors material is safe on an unpainted mesh. */
+function whiteAO(mesh) {
+  const pos = mesh.geometry.attributes.position;
+  if (mesh.geometry.getAttribute('color')) return;
+  const col = new Float32Array(pos.count * 3).fill(1);
+  mesh.geometry.setAttribute('color', new THREE.BufferAttribute(col, 3));
+}
+
+/**
  * A gloved first-person hand.
  *
  * Built around the thing it holds rather than around itself. `gripRadius` is the
@@ -523,13 +609,18 @@ const HAND_ARM_AXIS = new THREE.Vector3(0, -1, 0);
  * half of why the old fingers read as ridges lying on the handguard: the hard
  * plates were modelled on the palmar side, between the hand and the weapon.
  */
-function glovedHand(material, plate, sleeveMat, {
+function glovedHand(material, plate, sleeveMat, creaseMat, nailMat, {
   mirror = false, trigger = false, thumbForward = false,
   gripRadius = 0.024, holdY = 0.008, scale = 0.92,
 } = {}) {
   const hand = new THREE.Group();
   const s = mirror ? -1 : 1;
   hand.scale.setScalar(scale);
+  // Meshes that take the baked occlusion. `fi` is the digit index for anything
+  // that has a neighbouring finger to be shadowed by, -1 for the inter-digital
+  // webbing (always in a channel) and -2 for the rest of the hand.
+  const aoMesh = [];
+  const ao = (mesh, fi = -2) => { aoMesh.push({ mesh, fi }); return mesh; };
 
   // Grip radius arrives in the parent's units; everything below is hand-local.
   const R = gripRadius / scale;
@@ -558,6 +649,7 @@ function glovedHand(material, plate, sleeveMat, {
     const m = new THREE.Mesh(new THREE.SphereGeometry(0.5, 10, 8), material);
     m.scale.set(sx, sy, sz);
     m.position.set(px, py, pz);
+    ao(m);
     hand.add(m);
   };
   pad(-s * 0.026, -0.004, FRONT + 0.009, 0.032, 0.056, 0.026);
@@ -581,6 +673,8 @@ function glovedHand(material, plate, sleeveMat, {
   // Four fingers, three phalanges each, solved onto the grip circle. Lengths
   // and radii are staggered per finger so the four do not close as one block.
   const FINGER = [0.97, 1.06, 1.00, 0.86];
+  const roots = [];      // per finger: the root group and its solved angles
+  const dorsal = [];     // nodes that must be oriented off the back of the hand
   for (let i = 0; i < 4; i++) {
     const t = i / 3;
     const fs = FINGER[i];
@@ -607,22 +701,101 @@ function glovedHand(material, plate, sleeveMat, {
       : wrapFinger(rootY, rootZ, holdY, holdZ, R + radii[0], lens);
 
     root.rotation.x = th[0];
-    const seg = (r, len, parent, rel) => {
-      const g = new THREE.Group();
-      g.rotation.x = rel;
-      const mesh = new THREE.Mesh(new THREE.CapsuleGeometry(r, Math.max(0.002, len - r * 1.1), 3, 8), material);
-      mesh.rotation.x = Math.PI / 2;
+
+    // A phalanx is a tapered tube, not a capsule. Butting two capsules of
+    // different radii end to end leaves the thinner one's hemisphere standing
+    // proud inside the thicker one's — a hard silhouette step at every joint,
+    // which is the bead-string read the review called a mannequin. A frustum
+    // whose base radius is the previous segment's tip radius has no step at
+    // all, and the joint is then built explicitly and the right way round: a
+    // knuckle swelling on the back of the finger, a dark flexion crease on the
+    // palmar side.
+    const seg = (rBase, rTip, len, parent, rel) => {
+      const grp = new THREE.Group();
+      grp.rotation.x = rel;
+      const mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(rBase, rTip, len, 10, 1, true), material,
+      );
+      mesh.rotation.x = Math.PI / 2;   // geometry +Y -> group +Z, so top is the base
       mesh.position.z = -len / 2;
-      g.add(mesh);
-      parent.add(g);
-      return g;
+      grp.add(ao(mesh, i));
+      parent.add(grp);
+      return grp;
     };
-    const prox = seg(radii[0], lens[0], root, 0);
-    const mid = seg(radii[1], lens[1], prox, th[1] - th[0]);
+    // Flexion crease: a narrow inset band of darker glove at the joint. It is
+    // what a knuckle looks like from the camera's side of the hand, and it is
+    // also the only thing that tells two abutting frusta apart.
+    const crease = (r, parent) => {
+      // A hair proud, not inset: geometry cannot be cut here, so the groove has
+      // to be a dark band standing 1% off the surface it divides. It is the
+      // same trick the receiver's panel breaks use, at a tenth of the scale.
+      const c = new THREE.Mesh(
+        new THREE.CylinderGeometry(r * 1.012, r * 1.012, r * 0.44, 10, 1, true), creaseMat,
+      );
+      c.rotation.x = Math.PI / 2;
+      parent.add(c);
+    };
+    // Knuckle: a swelling on the *back* of the joint. Which way that is falls
+    // out of the wrap solve, so it is resolved from the grip axis later.
+    const knuckle = (r, parent) => {
+      const k = new THREE.Mesh(new THREE.SphereGeometry(r * 1.10, 8, 6), material);
+      k.scale.set(0.92, 1.0, 0.72);
+      parent.add(ao(k, i));
+      dorsal.push({ node: parent, mesh: k, out: r * 0.38, along: 0, flat: false });
+      return k;
+    };
+
+    const rMid = radii[0] * 0.90;
+    const rDist = radii[1] * 0.92;
+    // Metacarpal head. Anatomically it is the knuckle you punch with; here it
+    // also closes the open base of the proximal frustum.
+    const mcp = new THREE.Mesh(new THREE.SphereGeometry(radii[0] * 1.06, 8, 6), material);
+    mcp.scale.set(0.94, 1.0, 0.86);
+    root.add(ao(mcp, i));
+    const prox = seg(radii[0], rMid, lens[0], root, 0);
+    const mid = seg(rMid, rDist, lens[1], prox, th[1] - th[0]);
     mid.position.z = -lens[0];
-    const tip = seg(radii[2], lens[2], mid, th[2] - th[1]);
+    const tip = seg(rDist, radii[2] * 0.86, lens[2], mid, th[2] - th[1]);
     tip.position.z = -lens[1];
+    crease(rMid, mid);
+    crease(rDist, tip);
+    knuckle(rMid, mid);
+    knuckle(rDist, tip);
+
+    // Fingertip: a rounded cap so the digit does not end on a cut circle, and a
+    // nail plate on the back of it.
+    const capMesh = new THREE.Mesh(new THREE.SphereGeometry(radii[2] * 0.86, 8, 6), material);
+    capMesh.position.z = -lens[2];
+    capMesh.scale.set(1, 1, 1.25);
+    tip.add(ao(capMesh, i));
+    // Nail plate: a flat shell on the back of the last joint. On a gloved hand
+    // it is the fingertip reinforcement, which is in the same place and reads
+    // the same way — a hard, slightly darker cap the light breaks across.
+    const nailPlate = new THREE.Mesh(new THREE.SphereGeometry(radii[2] * 0.66, 8, 5), nailMat);
+    nailPlate.scale.set(0.94, 0.30, 1.50);
+    dorsal.push({ node: tip, mesh: nailPlate, out: radii[2] * 0.62, along: -lens[2] * 0.60, flat: true });
+    tip.add(nailPlate);
+
     hand.add(root);
+    roots.push({ root, lens, radii, th });
+  }
+
+  // Webbing. Between two fingers there has to be something that is neither
+  // finger nor sky; without it the inter-digital channel shows whatever is
+  // behind the hand and measures brighter than the crowns it sits between.
+  // These slabs sit a good 2 mm inside the finger radius, so all the camera
+  // ever sees of them is a recessed surface at the bottom of a slot.
+  for (let i = 0; i < 3; i++) {
+    // An extended trigger finger has left the fist; there is no channel between
+    // it and its neighbour to fill.
+    if (trigger && i === 0) continue;
+    const a = roots[i]; const b = roots[i + 1];
+    const dx = (KNUCKLE_X(i + 1) - KNUCKLE_X(i)) / 2;
+    const rr = Math.min(a.radii[0], b.radii[0]);
+    const web = new THREE.Mesh(new THREE.BoxGeometry(Math.abs(dx) * 2.1, rr * 1.30, 0.030), material);
+    web.position.set(dx, 0, -0.014);
+    web.rotation.x = clamp((b.th[0] - a.th[0]) * 0.5, -0.25, 0.25);
+    a.root.add(ao(web, -1));
   }
 
   // Thumb. On the support hand it lies forward along the held axis, rolled up
@@ -639,19 +812,37 @@ function glovedHand(material, plate, sleeveMat, {
     thumbPivot.position.set(-s * 0.032, 0.004, FRONT + 0.006);
     thumbPivot.rotation.set(-0.52, -s * 0.82, s * 0.34);
   }
-  const meta = new THREE.Mesh(new THREE.CapsuleGeometry(0.0110, 0.024, 3, 8), material);
+  // The thumb takes the same treatment as the digits: tapered sections that
+  // meet without a step, a crease at the joint and a nail on the back of it.
+  const meta = new THREE.Mesh(new THREE.CylinderGeometry(0.0116, 0.0102, 0.038, 10, 1, true), material);
   meta.rotation.x = Math.PI / 2;
   meta.position.z = -0.019;
-  thumb.add(meta);
+  thumb.add(ao(meta));
   const distal = new THREE.Group();
   distal.position.z = -0.036;
   distal.rotation.x = thumbForward ? -0.24 : -0.78;
-  const distalMesh = new THREE.Mesh(new THREE.CapsuleGeometry(0.0096, 0.019, 3, 8), material);
+  const thumbBase = new THREE.Mesh(new THREE.SphereGeometry(0.0120, 8, 6), material);
+  thumb.add(ao(thumbBase));
+  const thumbCrease = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0104, 0.0104, 0.0046, 10, 1, true), creaseMat,
+  );
+  thumbCrease.rotation.x = Math.PI / 2;
+  distal.add(thumbCrease);
+  const distalMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.0102, 0.0084, 0.028, 10, 1, true), material);
   distalMesh.rotation.x = Math.PI / 2;
   distalMesh.position.z = -0.014;
-  distal.add(distalMesh);
-  const nail = bevelBox(0.014, 0.010, 0.004, 0.001, plate);
-  nail.position.set(0, 0.008, -0.020);
+  distal.add(ao(distalMesh));
+  const thumbTip = new THREE.Mesh(new THREE.SphereGeometry(0.0084, 8, 6), material);
+  thumbTip.position.z = -0.028;
+  thumbTip.scale.z = 1.3;
+  distal.add(ao(thumbTip));
+  // Placed in the thumb's own frame, not by the grip solve. The four digits
+  // wrap the handguard so "outward from the held axis" is their dorsal side;
+  // the thumb lies *along* that axis, where the same rule points sideways and
+  // lays the plate across the back of the wrist as a 20 mm dark blade.
+  const nail = new THREE.Mesh(new THREE.SphereGeometry(0.0058, 8, 5), nailMat);
+  nail.scale.set(0.92, 0.32, 1.35);
+  nail.position.set(0, 0.0062, -0.019);
   distal.add(nail);
   thumb.add(distal);
   hand.add(thumbPivot);
@@ -686,6 +877,74 @@ function glovedHand(material, plate, sleeveMat, {
   armEnd.scale.z = 0.86;
   arm.add(armEnd);
   hand.add(arm);
+
+  // The palm takes the bake; the wrist does not, because `poseHand` re-aims the
+  // whole arm after this runs and a bake done in the pre-aim frame would be a
+  // shadow pointing the wrong way.
+  ao(palm);
+
+  // --- resolve the back of the hand ---------------------------------------
+  // Which way is "dorsal" for a given phalanx is an output of the wrap solve,
+  // not something that can be written down as a sign: the finger turns through
+  // most of a half circle on its way round the handguard. So it is read back
+  // from the finished pose — outward from the gripped axis — and the knuckles
+  // and nails are placed along it.
+  hand.updateMatrixWorld(true);
+  const toLocal = new THREE.Matrix4().copy(hand.matrixWorld).invert();
+  const _p = new THREE.Vector3(); const _d = new THREE.Vector3();
+  const _z = new THREE.Vector3(); const _x = new THREE.Vector3();
+  const _m4 = new THREE.Matrix4(); const _m3 = new THREE.Matrix3();
+  for (const d of dorsal) {
+    _m4.copy(toLocal).multiply(d.node.matrixWorld);
+    _p.setFromMatrixPosition(_m4);
+    _d.set(0, _p.y - holdY, _p.z - holdZ);
+    if (_d.lengthSq() < 1e-9) _d.set(0, 1, 0);
+    _d.normalize().applyMatrix3(_m3.setFromMatrix4(_m4).invert()).normalize();
+    d.mesh.position.set(_d.x * d.out, _d.y * d.out, _d.z * d.out + d.along);
+    if (d.flat) {
+      // Lay the plate on the back of the joint: its thin axis along the
+      // outward normal, its long axis down the finger.
+      _z.set(0, 0, -1).addScaledVector(_d, _d.z);
+      if (_z.lengthSq() > 1e-6) {
+        _z.normalize();
+        _x.crossVectors(_d, _z).normalize();
+        d.mesh.quaternion.setFromRotationMatrix(_m4.identity().makeBasis(_x, _d, _z));
+      }
+    }
+  }
+
+  // --- bake the occlusion --------------------------------------------------
+  hand.updateMatrixWorld(true);
+  const SPREAD = Math.abs(KNUCKLE_X(1) - KNUCKLE_X(0));
+  for (const { mesh, fi } of aoMesh) {
+    _m4.copy(toLocal).multiply(mesh.matrixWorld);
+    paintAO(mesh, _m4, (x, y, z) => {
+      let a = 1;
+      if (fi >= 0) {
+        // Cavity between digits: how close this surface is to the axis of the
+        // nearest *other* finger. The crown of a finger has no neighbour within
+        // half a spread and stays open; the flank of the channel is buried.
+        let near = 0;
+        for (let j = 0; j < 4; j++) {
+          if (j === fi) continue;
+          const t = (x - KNUCKLE_X(j)) / (SPREAD * 0.60);
+          near = Math.max(near, Math.exp(-t * t));
+        }
+        a -= 0.38 * near;
+      } else if (fi === -1) {
+        a -= 0.42;                       // webbing lives at the bottom of a slot
+      }
+      // Contact: anything within a couple of millimetres of the gripped
+      // cylinder is in a closed crevice against it, and that crevice is what
+      // tells an eye the hand is *on* the handguard rather than beside it.
+      const dr = Math.hypot(y - holdY, z - holdZ);
+      a -= 0.30 * smoothstep(R + 0.010, R - 0.003, dr);
+      // A general drop toward the palmar side, which never sees the sky.
+      a -= 0.14 * smoothstep(FRONT + 0.006, FRONT - 0.010, z);
+      return clamp(a, 0.32, 1);
+    });
+  }
+  hand.traverse((c) => { if (c.isMesh) whiteAO(c); });
 
   // The held axis and the sleeve, published in the parent's units so `poseHand`
   // stays correct when the hand is scaled.
@@ -929,33 +1188,85 @@ function buildViewmodel(id, textures) {
   });
   // Coyote-brown nomex. Gloves the same value as the weapon are gloves nobody
   // sees; this is the warmest, lightest surface in the frame on purpose.
+  // `vertexColors` is on for every surface of the hand, because the viewmodel
+  // is drawn into its own scene after a depth clear and so is invisible to the
+  // frame's occlusion pass: the only cavity shading it will ever have is the
+  // one baked into these attributes.
   const glove = std(sheets.nomex, 4, {
     color: 0xb3a385, metalness: 0.0, roughness: 0.80, normalScale: v2(0.85),
+    vertexColors: true,
   });
-  // The glove's hard shell — knuckle guard, back panel, cuff — a value below it.
+  // Flexion creases and the inter-digital channels: the same leather a stop
+  // darker and rougher, so a joint reads as a line and not as a step.
+  const gloveCrease = std(sheets.nomex, 7, {
+    color: 0x6b5f4c, metalness: 0.0, roughness: 0.92, normalScale: v2(1.1),
+    vertexColors: true,
+  });
+  // The glove's hard shell — knuckle guard, back panel, cuff, nail plates — a
+  // value below the leather.
   const gloveShell = std(sheets.polymer, 5.5, {
     color: 0x34322a, metalness: 0.04, roughness: 0.52, normalScale: v2(1.0),
+    vertexColors: true,
+  });
+  // Nail plates / fingertip reinforcement. In the shell's near-black these read
+  // as hard sticks laid on the digits rather than as part of them; one stop
+  // under the leather is what a reinforcement patch actually is.
+  const gloveHard = std(sheets.nomex, 6, {
+    color: 0x7c7259, metalness: 0.03, roughness: 0.55, normalScale: v2(0.9),
+    vertexColors: true,
   });
   // Combat-shirt sleeve past the glove cuff: olive ripstop, a clear value and
   // hue step off the coyote glove so the wrist reads as a cuff and not as skin.
   const sleeveCloth = std(sheets.nomex, 3.2, {
     color: 0x5d6046, metalness: 0.0, roughness: 0.90, normalScale: v2(1.1),
+    vertexColors: true,
+  });
+  // Shadow line. Every panel break on this weapon is a strip of this standing a
+  // fraction of a millimetre proud of the surface it divides: a near-black,
+  // near-dielectric matte that returns almost nothing under any key. It is what
+  // a 2 mm gap between two castings looks like, and there were none anywhere on
+  // the 400 mm of receiver flank the camera actually points at.
+  const seam = std(sheets.alloy, 8, {
+    color: 0x2a2c33, metalness: 0.18, roughness: 0.90, normalScale: v2(0.25),
+  });
+  // The rail's web, under the ribs. Darker than the rib crowns so every slot
+  // has a floor that reads as a floor.
+  const railWeb = std(sheets.alloy, 5, {
+    color: 0x3d3b35, metalness: 0.62, roughness: 0.56, normalScale: v2(0.25),
+  });
+  // Combustion soot: what the last 60 mm of any barrel and the whole of a flash
+  // hider actually look like after a magazine. Blacker and far rougher than the
+  // parkerising it sits on, so the muzzle end stops matching the receiver.
+  const carbon = std(sheets.alloy, 9, {
+    color: 0x17161a, metalness: 0.30, roughness: 0.95, normalScale: v2(0.55),
+  });
+  // Hard-anodised optic housing. It used to wear the handguard's glass-filled
+  // nylon, whose mould pebble is the coarsest normal detail on the weapon and
+  // has no business on a machined sight body.
+  const anodised = std(sheets.alloy, 6, {
+    color: 0x33332e, metalness: 0.52, roughness: 0.42, normalScale: v2(0.34),
   });
 
   const barrelLen = smg ? 0.20 : 0.30;
-  const SIGHT_Y = 0.058;   // optical axis height above the receiver centreline
+  // Optical axis height above the receiver centreline. The rail crown sits at
+  // 0.0513, so anything under about 0.068 puts the optic's own tube *inside*
+  // the rail it is supposed to be clamped to — which is what the last build
+  // shipped, and most of why the sight read as painted on rather than mounted.
+  const SIGHT_Y = 0.0795;
+  const RAIL_Y = 0.041;                    // rail origin above the centreline
+  const RAIL_TOP = RAIL_Y + RAIL_CROWN;    // the crown a mount clamps onto
 
   // --- receiver -----------------------------------------------------------
-  const upper = bevelBox(0.046, 0.040, 0.235, 0.0028, body);
+  const upper = bevelBox(0.046, 0.040, 0.235, 0.0058, body);
   upper.position.set(0, 0.019, -0.02);
   g.add(upper);
 
-  const lower = bevelBox(0.042, 0.036, 0.150, 0.0028, body);
+  const lower = bevelBox(0.042, 0.036, 0.150, 0.0050, body);
   lower.position.set(0, -0.015, 0.020);
   g.add(lower);
 
   // Magazine well flares outward at the bottom — a strong silhouette cue.
-  const magwell = bevelBox(0.040, 0.046, 0.062, 0.003, body);
+  const magwell = bevelBox(0.040, 0.046, 0.062, 0.0050, body);
   magwell.position.set(0, -0.034, -0.012);
   g.add(magwell);
 
@@ -981,13 +1292,16 @@ function buildViewmodel(id, textures) {
   g.add(chargeLatch);
 
   // Safety selector and magazine release.
-  const selector = new THREE.Mesh(new THREE.CylinderGeometry(0.0055, 0.0055, 0.030, 10), body);
+  // The selector shaft is 30 mm long in a 42 mm lower, so both ends of it used
+  // to stop 6 mm inside the casting: there was no selector on the weapon at
+  // all, on either flank. It is an ambidextrous shaft that comes through.
+  const selector = new THREE.Mesh(new THREE.CylinderGeometry(0.0058, 0.0058, 0.050, 12), body);
   selector.rotation.z = Math.PI / 2;
   selector.position.set(0, -0.008, 0.052);
   g.add(selector);
-  const selectorLever = bevelBox(0.006, 0.006, 0.020, 0.0008, body);
-  selectorLever.position.set(-0.020, -0.012, 0.050);
-  selectorLever.rotation.x = 0.5;
+  const selectorLever = bevelBox(0.007, 0.008, 0.024, 0.0010, body);
+  selectorLever.position.set(-0.0272, -0.013, 0.049);
+  selectorLever.rotation.x = 0.42;
   g.add(selectorLever);
   const magRelease = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.008, 8), body);
   magRelease.rotation.z = Math.PI / 2;
@@ -1013,27 +1327,91 @@ function buildViewmodel(id, textures) {
     pin.position.set(-0.023, -0.004, pz);
     g.add(pin);
   }
-  // Magwell fence and the chamfer strip along the top of the upper. A thin
-  // polished edge catching the key is what separates machined aluminium from a
-  // box, and there was not one anywhere on the weapon before.
+  // Chamfer strip along the top of the upper. A thin polished edge catching the
+  // key is what separates machined aluminium from a box.
   for (const sx of [-1, 1]) {
-    const fence = bevelBox(0.004, 0.030, 0.056, 0.001, body);
-    fence.position.set(sx * 0.021, -0.030, -0.012);
-    g.add(fence);
     const edge = new THREE.Mesh(new THREE.BoxGeometry(0.0032, 0.0032, 0.230), steel);
     edge.rotation.z = Math.PI / 4;
     edge.position.set(sx * 0.0225, 0.0355, -0.020);
     g.add(edge);
   }
+  // Magazine-release fence, on the right where the release is. It used to be a
+  // 30 by 56 mm slab down *both* flanks, which did not fence anything: it just
+  // widened the magwell into one more face of the same unbroken plane and
+  // buried every panel line placed on it.
+  const fence = bevelBox(0.005, 0.020, 0.026, 0.001, body);
+  fence.position.set(0.0212, -0.019, 0.004);
+  g.add(fence);
   // Dust cover, hinged along the upper: a long hard line down the receiver.
   const dustCover = bevelBox(0.010, 0.024, 0.086, 0.0012, body);
   dustCover.position.set(0.020, 0.020, -0.040);
   dustCover.rotation.z = -0.35;
   g.add(dustCover);
 
+  // --- panel breaks --------------------------------------------------------
+  // The receiver is not one casting and must not read as one. An AR is an upper
+  // and a lower pinned together with a magazine well hanging off the front of
+  // the lower, and the two horizontal gaps between those three parts are the
+  // longest hard lines anywhere on the weapon. Without them the flank is a
+  // 400-pixel unbroken plane, which is the single loudest thing in the frame
+  // that no photograph of a rifle has ever contained.
+  const strip = (mat, x, y, z, w, h, d) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z);
+    g.add(m);
+    return m;
+  };
+  for (const sx of [-1, 1]) {
+    // Upper-to-lower joint, the full length of the receiver.
+    strip(seam, sx * 0.0223, 0.0018, 0.020, 0.0036, 0.0030, 0.150);
+    // Lower-to-magwell joint.
+    strip(seam, sx * 0.0216, -0.0118, -0.012, 0.0036, 0.0026, 0.062);
+    // Front face of the lower against the magwell's rear flare.
+    strip(seam, sx * 0.0212, -0.032, 0.0195, 0.0034, 0.044, 0.0026);
+    // Roll-mark panel on the magwell flank: a shallow recessed rectangle with
+    // two engraved lines in it. At this scale the eye reads "there is writing
+    // there", which is all a roll mark ever does at arm's length.
+    strip(seam, sx * 0.0208, -0.0315, -0.010, 0.0032, 0.0230, 0.0400);
+    strip(steel, sx * 0.0219, -0.0262, -0.012, 0.0022, 0.0022, 0.0330);
+    strip(steel, sx * 0.0219, -0.0362, -0.016, 0.0022, 0.0020, 0.0230);
+    // Machined relief along the top of the upper — two long parallel lines a
+    // grazing key can travel down.
+    strip(seam, sx * 0.0236, 0.0300, -0.028, 0.0024, 0.0022, 0.176);
+    // Magwell mouth: a polished lip, the brightest wear edge on the weapon.
+    strip(steel, sx * 0.0206, -0.0552, -0.012, 0.0032, 0.0034, 0.0620);
+  }
+  // Mouth lip across the front and back of the magwell, so it closes.
+  for (const dz of [-0.0435, 0.0195]) {
+    strip(steel, 0, -0.0552, dz, 0.0410, 0.0034, 0.0032);
+  }
+  // Recessed surrounds behind the left-hand controls. A control the same value
+  // as the casting it sits on is not a control, it is a bump.
+  strip(seam, -0.0216, -0.0050, 0.0330, 0.0034, 0.0250, 0.0460);
+  for (const pz of [0.070, -0.052]) {
+    const ring = new THREE.Mesh(new THREE.CylinderGeometry(0.0094, 0.0094, 0.0032, 12), seam);
+    ring.rotation.z = Math.PI / 2;
+    ring.position.set(-0.0218, -0.004, pz);
+    g.add(ring);
+  }
+  // Selector boss and its two position marks.
+  const selBoss = new THREE.Mesh(new THREE.CylinderGeometry(0.0112, 0.0112, 0.0030, 14), seam);
+  selBoss.rotation.z = Math.PI / 2;
+  selBoss.position.set(-0.0216, -0.008, 0.052);
+  g.add(selBoss);
+  for (const [my, mz] of [[0.0022, 0.0086], [-0.0086, 0.0022]]) {
+    strip(steel, -0.0228, -0.008 + my, 0.052 + mz, 0.0018, 0.0028, 0.0028);
+  }
+  // Trigger and hammer pins through the lower.
+  for (const pz of [0.030, 0.050]) {
+    const tp = new THREE.Mesh(new THREE.CylinderGeometry(0.0034, 0.0034, 0.0040, 10), steel);
+    tp.rotation.z = Math.PI / 2;
+    tp.position.set(-0.0212, -0.019, pz);
+    g.add(tp);
+  }
+
   // --- top rail + optic ----------------------------------------------------
-  const topRail = picatinnyRail(0.215, rail);
-  topRail.position.set(0, 0.041, -0.02);
+  const topRail = picatinnyRail(0.215, rail, railWeb);
+  topRail.position.set(0, RAIL_Y, -0.02);
   g.add(topRail);
 
   // Red-dot sight. The old build put an opaque additive disc *in front* of the
@@ -1044,14 +1422,41 @@ function buildViewmodel(id, textures) {
   // that gives the emitter the glow a real illuminated reticle has.
   const optic = new THREE.Group();
   optic.position.set(0, SIGHT_Y - 0.004, -0.010);
-  const opticBase = bevelBox(0.026, 0.016, 0.048, 0.0018, darkPolymer);
-  opticBase.position.y = -0.019;
+  // Mount. Everything below is measured off the rail crown rather than guessed,
+  // so the tube stands clear of the ribs on a leg that visibly straddles them
+  // instead of intersecting the rail it is nominally clamped to.
+  const mountY = RAIL_TOP - optic.position.y;      // rail crown, in optic-local
+  // Top of the leg, buried a few millimetres into the tube so its corners meet
+  // the curve rather than stopping short of it and leaving a notch.
+  const legTop = -0.0168;
+  const opticBase = bevelBox(0.021, legTop - mountY, 0.026, 0.0018, anodised);
+  opticBase.position.y = (mountY + legTop) / 2;
+  opticBase.position.z = -0.0060;
   optic.add(opticBase);
-  // The mount clamp — a hard bright edge where the optic meets the rail.
-  const opticClamp = bevelBox(0.030, 0.007, 0.014, 0.0012, rail);
-  opticClamp.position.set(0, -0.026, -0.014);
+  // The clamp straddles the rail: a jaw either side of the crown, joined under
+  // it by a cross-bolt. This is the joint the review said was missing.
+  const opticClamp = bevelBox(0.030, 0.017, 0.020, 0.0012, rail);
+  opticClamp.position.set(0, mountY - 0.0055, -0.014);
   optic.add(opticClamp);
-  const hood = new THREE.Mesh(new THREE.CylinderGeometry(0.0170, 0.0170, 0.044, 20, 1, true), darkPolymer);
+  for (const jx of [-1, 1]) {
+    const jaw = bevelBox(0.0042, 0.0130, 0.0200, 0.0010, rail);
+    jaw.position.set(jx * 0.0129, mountY - 0.0045, -0.014);
+    optic.add(jaw);
+  }
+  // Ring: the mount holds the tube in a band, not by butting a post against
+  // the bottom of the glass. Without it the leg had to reach up past the
+  // objective's lower edge and cut across the lens.
+  const mountBand = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0183, 0.0183, 0.0110, 20, 1, true), rail,
+  );
+  mountBand.rotation.x = Math.PI / 2;
+  mountBand.position.set(0, 0, -0.0060);
+  optic.add(mountBand);
+  const clampNut = new THREE.Mesh(new THREE.CylinderGeometry(0.0040, 0.0040, 0.0060, 8), steel);
+  clampNut.rotation.z = Math.PI / 2;
+  clampNut.position.set(-0.0150, mountY - 0.0060, -0.014);
+  optic.add(clampNut);
+  const hood = new THREE.Mesh(new THREE.CylinderGeometry(0.0170, 0.0170, 0.044, 20, 1, true), anodised);
   hood.rotation.x = Math.PI / 2;
   optic.add(hood);
 
@@ -1060,7 +1465,7 @@ function buildViewmodel(id, textures) {
   // is a hard convex edge in a place the key can find.
   const turret = (px, py, pz, rot) => {
     const t = new THREE.Group();
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.0072, 0.0080, 0.011, 14), darkPolymer);
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.0072, 0.0080, 0.011, 14), anodised);
     t.add(barrel);
     const capMesh = new THREE.Mesh(new THREE.CylinderGeometry(0.0064, 0.0072, 0.008, 14), steel);
     capMesh.position.y = 0.0092;
@@ -1068,12 +1473,12 @@ function buildViewmodel(id, textures) {
     // Knurling: eight ribs is enough to read as a milled edge at this size.
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * Math.PI * 2;
-      const r = new THREE.Mesh(new THREE.BoxGeometry(0.0016, 0.008, 0.0016), darkPolymer);
+      const r = new THREE.Mesh(new THREE.BoxGeometry(0.0016, 0.008, 0.0016), anodised);
       r.position.set(Math.cos(a) * 0.0068, 0.0092, Math.sin(a) * 0.0068);
       r.rotation.y = -a;
       t.add(r);
     }
-    const slot = new THREE.Mesh(new THREE.BoxGeometry(0.0090, 0.0016, 0.0022), darkPolymer);
+    const slot = new THREE.Mesh(new THREE.BoxGeometry(0.0090, 0.0016, 0.0022), anodised);
     slot.position.y = 0.0129;
     t.add(slot);
     t.position.set(px, py, pz);
@@ -1084,13 +1489,13 @@ function buildViewmodel(id, textures) {
   turret(0, 0.0168, -0.004, [0, 0, 0]);                     // elevation, on top
   turret(0.0168, 0.0004, -0.004, [0, 0, -Math.PI / 2]);     // windage, right side
   // Rotary brightness dial on the left, which is the side the camera sees.
-  const dial = new THREE.Mesh(new THREE.CylinderGeometry(0.0098, 0.0098, 0.0075, 16), darkPolymer);
+  const dial = new THREE.Mesh(new THREE.CylinderGeometry(0.0098, 0.0098, 0.0075, 16), anodised);
   dial.rotation.z = Math.PI / 2;
   dial.position.set(-0.0180, 0.0006, 0.0075);
   optic.add(dial);
   for (let i = 0; i < 12; i++) {
     const a = (i / 12) * Math.PI * 2;
-    const d = new THREE.Mesh(new THREE.BoxGeometry(0.0026, 0.0016, 0.0016), darkPolymer);
+    const d = new THREE.Mesh(new THREE.BoxGeometry(0.0026, 0.0016, 0.0016), anodised);
     d.position.set(-0.0212, Math.sin(a) * 0.0092, 0.0075 + Math.cos(a) * 0.0092);
     d.rotation.x = -a;
     optic.add(d);
@@ -1103,7 +1508,7 @@ function buildViewmodel(id, textures) {
   for (const bz of [-0.020, -0.008]) {
     const bolt = new THREE.Mesh(new THREE.CylinderGeometry(0.0034, 0.0034, 0.032, 10), steel);
     bolt.rotation.z = Math.PI / 2;
-    bolt.position.set(0, -0.026, bz);
+    bolt.position.set(0, mountY - 0.0090, bz);
     optic.add(bolt);
   }
 
@@ -1150,6 +1555,15 @@ function buildViewmodel(id, textures) {
   // the parallax that made it read as paint on the outside of the objective.
   reticle.position.z = 0.0005;
   optic.add(reticle);
+  // An illuminated reticle is only visible to an eye behind the tube. At the
+  // hip pose the camera looks at this optic from about forty degrees off its
+  // optical axis, where a real emitter returns nothing at all — so the dot that
+  // was burning there in every shipped frame was not a reticle, it was a red
+  // sticker on the objective bezel, which is exactly how the review read it.
+  // It is faded in with the aim blend instead.
+  g.userData.reticle = [dotMat, ringMat, halo.material].map((m) => ({ m, o: m.opacity }));
+  for (const r of g.userData.reticle) r.m.opacity = 0;
+  reticle.visible = false;
 
   // Glass last, so it composites over the reticle behind it.
   const lensMat = new THREE.MeshPhysicalMaterial({
@@ -1180,16 +1594,23 @@ function buildViewmodel(id, textures) {
     optic.add(bezel);
   }
   g.add(optic);
+  g.userData.reticleNode = reticle;
 
-  // Backup iron sights, folded down beside the optic.
+  // Backup irons, folded flat onto the rail — which is where a folded BUIS
+  // lives. They used to float at the optic's height with nothing under them.
   const rearIron = new THREE.Mesh(new THREE.TorusGeometry(0.0072, 0.0018, 6, 14), body);
-  rearIron.position.set(0, SIGHT_Y, 0.082);
+  rearIron.rotation.x = 1.32;
+  rearIron.position.set(0, RAIL_TOP + 0.0055, 0.079);
   g.add(rearIron);
-  const frontPostBase = bevelBox(0.010, 0.014, 0.010, 0.001, body);
-  frontPostBase.position.set(0, SIGHT_Y - 0.006, -0.222);
+  const rearIronBase = bevelBox(0.0230, 0.0090, 0.0180, 0.0012, body);
+  rearIronBase.position.set(0, RAIL_TOP - 0.0010, 0.086);
+  g.add(rearIronBase);
+  const frontPostBase = bevelBox(0.0230, 0.0100, 0.0160, 0.0012, body);
+  frontPostBase.position.set(0, RAIL_TOP - 0.0010, -0.222);
   g.add(frontPostBase);
-  const frontPost = new THREE.Mesh(new THREE.BoxGeometry(0.0022, 0.013, 0.0022), body);
-  frontPost.position.set(0, SIGHT_Y + 0.002, -0.222);
+  const frontPost = new THREE.Mesh(new THREE.BoxGeometry(0.0070, 0.0030, 0.0180), body);
+  frontPost.rotation.x = -1.28;
+  frontPost.position.set(0, RAIL_TOP + 0.0055, -0.229);
   g.add(frontPost);
 
   // --- barrel group --------------------------------------------------------
@@ -1207,11 +1628,23 @@ function buildViewmodel(id, textures) {
   gasTube.position.set(0, 0.030, -0.148);
   g.add(gasTube);
 
-  // Flash hider with cut prongs.
-  const hider = new THREE.Mesh(new THREE.CylinderGeometry(0.0135, 0.0115, 0.040, 14), body);
+  // Flash hider with cut prongs. Carbon, not parkerising: after one magazine
+  // the muzzle device and the last few centimetres of barrel behind it are the
+  // blackest, flattest thing on the weapon, and a muzzle that matches the
+  // receiver is the reason every part read as one uniform semigloss.
+  const hider = new THREE.Mesh(new THREE.CylinderGeometry(0.0135, 0.0115, 0.040, 14), carbon);
   hider.rotation.x = Math.PI / 2;
   hider.position.set(0, 0.012, barrelZ - barrelLen * 0.5 - 0.018);
   g.add(hider);
+  const soot = new THREE.Mesh(new THREE.CylinderGeometry(0.0106, 0.0098, 0.050, 14), carbon);
+  soot.rotation.x = Math.PI / 2;
+  soot.position.set(0, 0.012, barrelZ - barrelLen * 0.5 + 0.026);
+  g.add(soot);
+  // Crush washer: one bright turned ring behind the black device.
+  const crushWasher = new THREE.Mesh(new THREE.CylinderGeometry(0.0124, 0.0124, 0.0034, 14), steel);
+  crushWasher.rotation.x = Math.PI / 2;
+  crushWasher.position.set(0, 0.012, barrelZ - barrelLen * 0.5 + 0.0035);
+  g.add(crushWasher);
   for (let i = 0; i < 4; i++) {
     const slot = new THREE.Mesh(new THREE.BoxGeometry(0.0032, 0.016, 0.024), darkPolymer);
     const a = (i / 4) * Math.PI * 2 + Math.PI / 8;
@@ -1220,10 +1653,21 @@ function buildViewmodel(id, textures) {
     g.add(slot);
   }
 
-  // Free-float handguard with M-LOK slots cut along both flanks.
+  // Free-float handguard with M-LOK slots cut along both flanks. The tube is
+  // heavily segmented because its vertex colours carry the hand's contact
+  // shadow — see the grip-shadow bake below.
   const hgLen = barrelLen * 0.78;
   const hgZ = -0.115 - hgLen * 0.5 + 0.012;
-  const handguard = new THREE.Mesh(new THREE.CylinderGeometry(0.0225, 0.0235, hgLen, 12), polymer);
+  const UPPER_FACE = -0.1375;              // front face of the upper receiver
+  const gripShade = std(sheets.polymer, 3, {
+    color: 0x83836c, metalness: 0.02, roughness: 0.60, normalScale: v2(0.80),
+    vertexColors: true,
+  });
+  // Radii the right way round: the tube tapers *toward* the muzzle. Local +Y
+  // maps to model +Z, so radiusTop is the rear.
+  const handguard = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0236, 0.0224, hgLen, 22, 14), gripShade,
+  );
   handguard.rotation.x = Math.PI / 2;
   handguard.position.set(0, 0.013, hgZ);
   g.add(handguard);
@@ -1236,29 +1680,53 @@ function buildViewmodel(id, textures) {
       g.add(slot);
     }
   }
-  const hgRail = picatinnyRail(hgLen - 0.02, rail);
-  hgRail.position.set(0, 0.035, hgZ);
+  // Top deck: the flat the rail is machined onto. A round tube with a rail bar
+  // hovering over it is two objects; a flat deck with the rail standing on it
+  // and screws down its length is one part, which is what the review was asking
+  // for when it said the handguard and the rail never interface.
+  const deckTop = RAIL_Y - RAIL_WEB_H / 2;
+  const deck = bevelBox(0.0300, deckTop - 0.0250, hgLen - 0.004, 0.0018, polymer);
+  deck.position.set(0, (deckTop + 0.0250) / 2, hgZ);
+  g.add(deck);
+  for (const sx of [-1, 1]) {
+    strip(seam, sx * 0.0152, deckTop - 0.0035, hgZ, 0.0024, 0.0060, hgLen - 0.006);
+  }
+  // The handguard rail butts against the receiver rail; the joint between them
+  // is a real one on a free-float rifle and gets a real shadow line.
+  const railJoint = -0.1305;               // where the two rails butt
+  const hgRailLen = railJoint - (hgZ - hgLen / 2);
+  const hgRail = picatinnyRail(hgRailLen, rail, railWeb);
+  hgRail.position.set(0, RAIL_Y, hgZ - hgLen / 2 + hgRailLen / 2);
   g.add(hgRail);
+  strip(seam, 0, RAIL_Y, railJoint + 0.0016, 0.0218, RAIL_WEB_H + 0.0086, 0.0028);
 
   // Barrel nut: the machined ring where the handguard meets the receiver, with
-  // its ring of index teeth. A free-float tube that simply stops has no joint.
-  const barrelNut = new THREE.Mesh(new THREE.CylinderGeometry(0.0262, 0.0262, 0.016, 16), rail);
+  // its ring of index teeth. It used to sit 30 mm *inside* the upper, so the
+  // tube simply vanished into the receiver with no joint anywhere. It is cut
+  // away over the top because the rail passes across it there — which is also
+  // true of the rifle.
+  const nutZ = UPPER_FACE - 0.0090;
+  const barrelNut = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0268, 0.0268, 0.018, 18, 1, false, -Math.PI * 0.70, Math.PI * 1.40),
+    rail,
+  );
   barrelNut.rotation.x = Math.PI / 2;
-  barrelNut.position.set(0, 0.013, hgZ + hgLen * 0.5 - 0.004);
+  barrelNut.position.set(0, 0.013, nutZ);
   g.add(barrelNut);
-  for (let i = 0; i < 8; i++) {
-    const a = (i / 8) * Math.PI * 2;
-    const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.0038, 0.0030, 0.014), darkPolymer);
-    tooth.position.set(Math.cos(a) * 0.0258, 0.013 + Math.sin(a) * 0.0258, hgZ + hgLen * 0.5 - 0.004);
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2;
+    if (Math.abs(a - Math.PI / 2) < 0.95) continue;   // clear of the rail
+    const tooth = new THREE.Mesh(new THREE.BoxGeometry(0.0042, 0.0034, 0.016), seam);
+    tooth.position.set(Math.cos(a) * 0.0262, 0.013 + Math.sin(a) * 0.0262, nutZ);
     tooth.rotation.z = a;
     g.add(tooth);
   }
-  // Anti-rotation screws along the handguard's top rail.
+  // Anti-rotation screws down the near flank of the deck, where they are in
+  // shot — they used to be on the right, which the camera never sees.
   for (let i = 0; i < 4; i++) {
-    const screw = new THREE.Mesh(new THREE.CylinderGeometry(0.0026, 0.0026, 0.005, 8), steel);
-    screw.rotation.x = Math.PI / 2;
-    screw.position.set(0.0225, 0.030, hgZ - hgLen * 0.5 + 0.035 + i * 0.050);
+    const screw = new THREE.Mesh(new THREE.CylinderGeometry(0.0030, 0.0030, 0.006, 8), steel);
     screw.rotation.z = Math.PI / 2;
+    screw.position.set(-0.0152, deckTop - 0.0060, hgZ - hgLen * 0.5 + 0.040 + i * 0.052);
     g.add(screw);
   }
 
@@ -1291,8 +1759,36 @@ function buildViewmodel(id, textures) {
   // QD sling socket in the handguard's rear flank.
   const qd = new THREE.Mesh(new THREE.CylinderGeometry(0.0056, 0.0056, 0.005, 12), steel);
   qd.rotation.z = Math.PI / 2;
-  qd.position.set(-0.0222, 0.005, hgZ + hgLen * 0.5 - 0.032);
+  // Forward of the barrel nut: at its old station it was 2 mm inside the upper.
+  qd.position.set(-0.0224, 0.005, hgZ + hgLen * 0.5 - 0.062);
   g.add(qd);
+
+  // Contact shadow for the support hand.
+  //
+  // The hand closes right round this tube, and the viewmodel is drawn into its
+  // own scene after a depth clear, so nothing in the frame — not the shadow
+  // map, not the AO pass — can put any darkness under it. Without this the
+  // fingers meet the handguard at a join that measures the same value on both
+  // sides of the contact, which is the difference between a hand gripping
+  // something and a hand parked next to it. The occlusion is baked straight
+  // into the tube's vertex colours instead.
+  {
+    const pos = handguard.geometry.attributes.position;
+    const col = new Float32Array(pos.count * 3);
+    const gripL = -0.026;              // hand centre along the tube, tube-local
+    for (let i = 0; i < pos.count; i++) {
+      // Tube-local -> model: rotation.x = PI/2 sends +Y to +Z and +Z to -Y.
+      const mx = pos.getX(i);
+      const my = -pos.getZ(i);
+      const axial = smoothstep(0.058, 0.012, Math.abs(pos.getY(i) - gripL));
+      const r = Math.max(1e-4, Math.hypot(mx, my));
+      // Straight down is deepest in the fist; the far flank carries the palm.
+      const wrap = clamp(0.34 + 0.40 * (-my / r) + 0.24 * (mx / r), 0, 1);
+      const a = clamp(1 - 0.48 * axial * wrap, 0, 1);
+      col[i * 3] = a; col[i * 3 + 1] = a; col[i * 3 + 2] = a;
+    }
+    handguard.geometry.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  }
 
   // Handstop, forward of the support hand. The angled foregrip it replaces sat
   // exactly where the fingers now wrap, so the hand could only ever be posed
@@ -1399,10 +1895,27 @@ function buildViewmodel(id, textures) {
   mag.position.set(0, -0.044, -0.010);
   g.add(mag);
 
-  // Sling loop at the rear — small, but it breaks up the stock silhouette.
-  const slingLoop = new THREE.Mesh(new THREE.TorusGeometry(0.010, 0.0022, 6, 12), body);
+  // Sling attachment. This used to be a bare torus hanging 4 mm clear of the
+  // buffer tube with nothing joining the two — a ring floating in space beside
+  // the weapon, which is exactly the kind of thing an eye finds in well under a
+  // second. It is now the four parts it is on the rifle: a socket let into the
+  // tube, a push-button swivel in the socket, the swivel's eye, and a webbing
+  // loop through the eye.
+  const slingSocket = new THREE.Mesh(new THREE.CylinderGeometry(0.0074, 0.0074, 0.0060, 12), body);
+  slingSocket.rotation.z = Math.PI / 2;
+  slingSocket.position.set(-0.0172, 0.012, 0.150);
+  g.add(slingSocket);
+  const swivel = new THREE.Mesh(new THREE.CylinderGeometry(0.0044, 0.0050, 0.0130, 10), steel);
+  swivel.rotation.z = Math.PI / 2;
+  swivel.position.set(-0.0248, 0.012, 0.150);
+  g.add(swivel);
+  const swivelEye = new THREE.Mesh(new THREE.TorusGeometry(0.0058, 0.0021, 6, 12), steel);
+  swivelEye.rotation.y = Math.PI / 2;
+  swivelEye.position.set(-0.0302, 0.0062, 0.150);
+  g.add(swivelEye);
+  const slingLoop = new THREE.Mesh(new THREE.TorusGeometry(0.0104, 0.0026, 6, 14), rubber);
   slingLoop.rotation.y = Math.PI / 2;
-  slingLoop.position.set(-0.020, 0.006, 0.150);
+  slingLoop.position.set(-0.0302, -0.0050, 0.150);
   g.add(slingLoop);
 
   // --- hands ---------------------------------------------------------------
@@ -1420,7 +1933,7 @@ function buildViewmodel(id, textures) {
   // one. The two flags used to be the wrong way round, which is why the support
   // hand's fingers swept round the barrel in the wrong direction no matter what
   // it was rolled to.
-  const rightHand = glovedHand(glove, gloveShell, sleeveCloth, {
+  const rightHand = glovedHand(glove, gloveShell, sleeveCloth, gloveCrease, gloveHard, {
     mirror: true, trigger: true, gripRadius: 0.022, holdY: 0.004, scale: HAND_SCALE,
   });
   poseHand(
@@ -1442,8 +1955,12 @@ function buildViewmodel(id, textures) {
   // side instead, the palm hangs off the flank in open air, which is the
   // cutting-board read; rolled with the old (inverted) chirality the fingers
   // swept the wrong way and only their tips ever crested the tube.
-  const leftHand = glovedHand(glove, gloveShell, sleeveCloth, {
-    thumbForward: true, gripRadius: 0.0248, holdY: 0.010, scale: HAND_SCALE,
+  // The grip radius has to be the tube's own radius at the point the hand takes
+  // it, plus a fraction of a millimetre for the leather. At 24.8 mm the fingers
+  // solved onto a circle a millimetre and a half clear of the handguard, so the
+  // whole hand floated off the thing it was gripping.
+  const leftHand = glovedHand(glove, gloveShell, sleeveCloth, gloveCrease, gloveHard, {
+    thumbForward: true, gripRadius: 0.0234, holdY: 0.010, scale: HAND_SCALE,
   });
   poseHand(
     leftHand,
@@ -1495,7 +2012,10 @@ function buildViewmodel(id, textures) {
   // Every kit material now shares one tiled set, so every mesh wearing one needs
   // the same box projection — the rail, the buttpad and the gloves included, or
   // their normal detail lands at a texel density nothing else on the model uses.
-  const projected = new Set([body, rail, steel, polymer, darkPolymer, rubber, glove, gloveShell, sleeveCloth]);
+  const projected = new Set([
+    body, rail, railWeb, steel, seam, carbon, polymer, gripShade, darkPolymer, rubber,
+    anodised, glove, gloveCrease, gloveShell, gloveHard, sleeveCloth,
+  ]);
   g.traverse((c) => {
     if (!c.isMesh) return;
     c.castShadow = false;

@@ -316,6 +316,48 @@ function skyRadianceJS(rd, sd, opts) {
   return out;
 }
 
+/**
+ * Cosine-weighted sky irradiance onto an up-facing surface:
+ *
+ *   E = integral over the upper hemisphere of L(w) * cos(theta) dw
+ *
+ * This is the quantity a fill light's colour and intensity together represent,
+ * and it is emphatically NOT a weighted average of a handful of probes. The
+ * horizon toward a setting sun is the brightest thing in the sky — twenty-five
+ * times the zenith at 17.2h — but it arrives at grazing incidence and subtends
+ * little solid angle, so cos(theta) all but deletes it. Averaging four probes
+ * with hand-picked weights gave it 32% of the vote instead, which is why the
+ * fill came out hue 28 (orange, four degrees off the sun's own hue) where the
+ * integral says 216 (blue). Shadowed ground then carried the key's colour and
+ * the frame lost its entire warm/cool separation.
+ *
+ * 6 elevation rings x 12 azimuths lands within 1% of a 512-sample reference and
+ * costs ~2 ms. It runs once per time-of-day change, never per frame.
+ *
+ * The ring elevations are stratified on the polar angle and each ring is
+ * weighted by sin(el)*cos(el): cos(el) is the ring's solid angle, sin(el) is
+ * the cosine of the angle to the surface normal.
+ */
+function skyIrradianceJS(sd, opts, rings = 6, sectors = 12) {
+  const out = [0, 0, 0];
+  let wsum = 0;
+  for (let i = 0; i < rings; i++) {
+    const el = ((i + 0.5) / rings) * (Math.PI / 2);
+    const ce = Math.cos(el);
+    const se = Math.sin(el);
+    const w = se * ce;
+    for (let j = 0; j < sectors; j++) {
+      const az = ((j + 0.5) / sectors) * 2 * Math.PI;
+      const L = skyRadianceJS([ce * Math.cos(az), se, ce * Math.sin(az)], sd, opts);
+      for (let c = 0; c < 3; c++) out[c] += L[c] * w;
+      wsum += w;
+    }
+  }
+  // The weights sum to the hemisphere's projected solid angle once scaled by
+  // pi, which is the radiance -> irradiance factor for a uniform hemisphere.
+  return out.map((x) => (x / wsum) * Math.PI);
+}
+
 // ---------------------------------------------------------------------------
 // Periodic gradient noise. Every octave wraps on an integer lattice period so
 // the baked cloud tile is seamless — including after domain warping, because
@@ -1038,15 +1080,27 @@ export class Sky {
 
   /**
    * Solar position for an equinox day at ~40 deg latitude with solar noon at
-   * 11.6h, chosen so the golden-hour pose (17.2h) puts the sun a few degrees
-   * above the horizon rather than halfway up the sky. The compass is then spun
-   * about Y so the sun sets forward-left of the level's default view direction
-   * and rises behind it, which front-lights the block in the morning poses.
+   * 11.95h, chosen so the golden-hour pose (17.2h) puts the sun low without
+   * putting it *on* the horizon. The compass is then spun about Y so the sun
+   * sets forward-left of the level's default view direction and rises behind
+   * it, which front-lights the block in the morning poses.
+   *
+   * Solar noon used to sit at 11.6h, which put 17.2h at 4.6 degrees of
+   * elevation. That is below the angle at which a street can hold any light at
+   * all: cos(N,L) on flat ground is 0.080, so the road received a direct
+   * irradiance of 0.44 against a fill of 0.49 and the sun stopped being the
+   * dominant source in its own frame — no cast-shadow structure, no warm/cool
+   * split, and no highlight for the post stack to work with (an extra stop of
+   * exposure moved 86 pixels above code 200). 11.95h puts it at 8.6 degrees:
+   * 2.5x the direct irradiance on horizontal ground and 1.6x the sky, while the
+   * beam is still deeply reddened at (1, 0.61, 0.27). The cost is 3.5 degrees
+   * off the morning sun, which lengthens the hero shadows by about 15% and
+   * takes 1.3% off the key — the trade is heavily in the frame's favour.
    */
   setTimeOfDay(hours) {
     this.timeOfDay = hours;
 
-    const H = (hours - 11.6) * (Math.PI / 12); // hour angle, 0 at solar noon
+    const H = (hours - 11.95) * (Math.PI / 12); // hour angle, 0 at solar noon
     const cosLat = 0.766, sinLat = 0.643;      // ~40 deg N, declination 0
     const east = -Math.sin(H);
     const north = -sinLat * Math.cos(H);
@@ -1089,15 +1143,12 @@ export class Sky {
     // --- key light -----------------------------------------------------------
     const tr = sunTransmittanceJS([0, ATMO.rGround + ATMO.viewAltitude, 0], sd, mieScale);
     const peak = Math.max(tr[0], tr[1], tr[2]) || 1e-4;
-    // Normalised so the key stays a full-strength white lamp when the sun is
-    // high, then dims and reddens as the slant path grows.
-    const dim = (0.25 + 0.75 * smoothstepJS(0.02, 0.42, elevation)) * above;
-    // Unit-peak chromaticity only. `dim` belongs to the magnitude, and it is
-    // applied to sunIntensity below — multiplying it in here as well scaled the
-    // key by dim squared, which at golden hour is about 0.16x and is why that
-    // pose contained no cast shadows at all.
+    // Unit-peak chromaticity only: normalised so the key stays a full-strength
+    // white lamp when the sun is high and reddens as the slant path grows. The
+    // magnitude lives entirely in sunIntensity below. A `dim` factor used to be
+    // folded in here as well, which scaled the key by dim squared — about 0.16x
+    // at golden hour, and why that pose contained no cast shadows at all.
     this.sunColor.setRGB(tr[0] / peak, tr[1] / peak, tr[2] / peak);
-
 
     // --- sky probes ----------------------------------------------------------
     const horiz = Math.hypot(sd[0], sd[2]) || 1e-4;
@@ -1106,59 +1157,56 @@ export class Sky {
     const zenith = skyRadianceJS([0, 1, 0], sd, opts);
     const hSun = skyRadianceJS(toSun, sd, opts);
     const hAway = skyRadianceJS(awaySun, sd, opts);
-    const upSun = skyRadianceJS(normalize3([sd[0], 1.0, sd[2]]), sd, opts);
 
     // --- hemisphere fill -----------------------------------------------------
-    // Weighted average of the probes. The sky is the dominant fill light in any
-    // exterior, and getting its colour right is what stops shadowed surfaces
-    // reading as flat grey.
-    // Weighted average of the probes, then radiance -> irradiance: a hemisphere
-    // of uniform radiance L delivers pi*L onto a surface facing it, and that
-    // irradiance is what a HemisphereLight's colour actually represents.
-    // Clamped rather than normalised so the fill still dims into the evening
-    // instead of staying at full strength in a different hue.
-    const ambRadiance = [0, 1, 2].map((c) =>
-      zenith[c] * 0.42 + upSun[c] * 0.26 + hSun[c] * 0.18 + hAway[c] * 0.14);
-    // Clamping pinned green and blue at 1.0 and threw the hue away — measured
-    // (0.881, 1, 1), a flat cyan-white that flattens every shadowed surface.
+    // The sky is the dominant fill light in any exterior, and getting its
+    // colour right is what stops shadowed surfaces reading as flat grey — or,
+    // as measured at golden hour, as the same orange as the key.
+    //
+    // This used to be a weighted average of the four probes above, 0.42 zenith
+    // / 0.26 upSun / 0.18 hSun / 0.14 hAway. Those weights are not a hemisphere
+    // integral: they hand a third of the fill to two probes sitting 3.4 degrees
+    // above the horizon. At 17.2h the sun-side horizon is 25x the zenith, so it
+    // took 78% of the red channel and the fill came out (1, 0.67, 0.38) — hue
+    // 28.0, four degrees from the sun's own 22.3, when the true cosine-weighted
+    // irradiance is hue 215.7. Every shadow in the frame was therefore lit by a
+    // second, dimmer copy of the key, and the whole warm/cool separation that
+    // makes a low sun read as a low sun was gone. It was 2.4x too bright as
+    // well, which is what HEMI_SHARE over in Lighting was quietly correcting.
+    const skyE = skyIrradianceJS(sd, opts);
     // A light's colour is chromaticity and its intensity is magnitude, so
-    // normalise to unit maximum and let ambientIntensity below carry the
-    // strength. The fill still dims into the evening, because that dimming
-    // lives in the intensity rather than in a desaturating colour.
-    const ambMax = Math.max(ambRadiance[0], ambRadiance[1], ambRadiance[2], 1e-6);
-    this.ambientColor.setRGB(
-      ambRadiance[0] / ambMax, ambRadiance[1] / ambMax, ambRadiance[2] / ambMax,
-    );
-    // Published for a rig that wants magnitude and hue separated; the colour
-    // above already carries the magnitude for one that does not.
-    // The clamp used to sit at 1.8 and the term was pinned against it in every
-    // daylight pose, so SUN_TO_SKY below was never the ratio the frame actually
-    // received — the fill simply stopped tracking the sky. Raised well clear so
-    // the ratio is the thing that governs.
-    this.ambientIntensity = Math.min(4.5, ambRadiance[1] * Math.PI * 1.1 + 0.15);
+    // normalise to unit maximum and let ambientIntensity carry the strength;
+    // colour * intensity then reproduces the irradiance exactly. Clamping
+    // instead pinned green and blue at 1.0 and threw the hue away.
+    const eMax = Math.max(skyE[0], skyE[1], skyE[2], 1e-6);
+    this.ambientColor.setRGB(skyE[0] / eMax, skyE[1] / eMax, skyE[2] / eMax);
+    // Published for a rig that wants magnitude and hue separated. This is the
+    // peak channel rather than green precisely so that the product above is the
+    // irradiance and not something 1.5x off it; the small floor keeps a usable
+    // fill under a sun that has gone below the horizon.
+    this.ambientIntensity = Math.min(4.5, eMax + 0.15);
 
-    // Publish the key's magnitude from the same integral that drives the fill,
-    // so the sun and the sky are derived the same way instead of one being
-    // physical and the other a hand-set constant.
+    // The key's magnitude, from the beam's own transmittance rather than as a
+    // multiple of the fill. Expressing it as ambientIntensity * ratio * dim
+    // reapplied the elevation falloff a second time, because ambientIntensity
+    // already tracks the sun's height, and the key collapsed at low sun.
     //
-    // This ratio is what decides whether anything in the frame casts a shadow.
-    // With the key pinned at a constant while ambientIntensity tracked the sky,
-    // a rooftop cube measured 1.17:1 between its sun-facing and side faces — an
-    // overcast ratio under a clear morning sun. The constant had been chosen
-    // while the IBL probe was dead, so it was compensating for missing indirect
-    // light; once the probe was fixed the fill doubled and nothing rebalanced
-    // the key. SUN_TO_SKY targets the clear-day direct:indirect irradiance
-    // ratio on a horizontal surface, where real values run 4:1 to 8:1.
-    // Derived from the solar beam's own transmittance, NOT as a multiple of the
-    // fill. Expressing it as ambientIntensity * ratio * dim reapplied the
-    // elevation falloff a second time, because ambientIntensity already tracks
-    // the sun's height — so the key still collapsed at low sun even after `dim`
-    // came out of sunColor. Same dim-squared shape, new home.
-    //
-    // SUN_SCALE converts unit transmittance into the renderer's intensity units
-    // and is the only hand-set number here; `peak` carries the atmosphere's own
-    // extinction, which is what should dim the key as the slant path grows.
-    const SUN_SCALE = 11.0;
+    // `peak` carries the atmosphere's own extinction, which is what should dim
+    // the key as the slant path grows: 0.890 at 27 degrees of elevation against
+    // 0.618 at 9, so the key falls to 0.69x and not to nothing. `above` only
+    // fades the last few degrees around the horizon and is 1.0 at both — the
+    // suspected double falloff is not there. SUN_SCALE converts unit
+    // transmittance into the renderer's intensity units and is the only
+    // hand-set number here.
+    // 11.0 was calibrated against a 30.8-degree morning sun. Moving solar noon
+    // to 11.95h drops that to 27.3 and takes 10.6% off cos(N,L) on every
+    // horizontal surface in the four daytime poses — measured, hero lost 8.6%
+    // of its mean luminance and the alley 18%. Holding the delivered irradiance
+    // constant across the two changes is what keeps the golden-hour fix from
+    // being paid for by the rest of the day: 11.0 * 0.5125 / 0.4583 = 12.3
+    // reproduces the old horizontal irradiance at 8.4h to within 1.5%, and the
+    // low sun keeps its 2.5x gain on top.
+    const SUN_SCALE = 12.3;
     this.sunIntensity = Math.max(0.05, peak * SUN_SCALE * above);
 
     // --- dome uniforms -------------------------------------------------------

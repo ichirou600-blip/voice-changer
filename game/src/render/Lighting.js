@@ -93,7 +93,14 @@ const WORLD_ENV = 0.78;
 // See the note in update(): with all three carriers at full strength the fill
 // matched the key and the frame had no directional structure at all.
 const _neutralKey = new THREE.Color(1.0, 0.97, 0.94);
-const HEMI_SHARE = 0.34;
+// HEMI_SHARE was 0.34 while Sky published an ambient built from a four-probe
+// weighted average that over-counted the sun-side horizon by 2.4x; the share
+// was the knob that took that inflation back out. Sky now publishes the real
+// cosine-weighted hemisphere irradiance, so the share is free to be what it is
+// supposed to be: the part of the sky's irradiance the PMREM probe does not
+// already deliver. The probe runs at WORLD_ENV, and this covers the remainder
+// plus the low-frequency gaps a 32-pixel convolution leaves behind.
+const HEMI_SHARE = 0.45;
 const BOUNCE_SHARE = 0.30;
 
 let _patched = false;
@@ -670,6 +677,16 @@ export class Lighting {
   _updateViewRig() {
     const sky = this.sky;
     const cam = this.engine.camera;
+    // The sky's published fill level. This used to read a local named `amb`
+    // that lives in update(), which is a ReferenceError in strict mode — and an
+    // ES module is always strict. It threw on the first frame of every session,
+    // before RenderPipeline (registered after Lighting) had run once, so the
+    // frame loop spun at 60 fps drawing nothing and __GAME_READY__ was never
+    // set. Every capture since has been a blank page held to the harness's
+    // timeout. Worth stating plainly: a reference to a variable that is not in
+    // scope is not a lighting bug that shows up as a slightly wrong colour, it
+    // is a hard stop, and nothing downstream of this call site ran at all.
+    const amb = sky.ambientIntensity ?? this.hemi.intensity;
 
     // Swing the key to follow the world sun so the weapon's shading agrees with
     // the scene, but never let it fall below the horizon of the view space: a
@@ -714,7 +731,11 @@ export class Lighting {
     // being cut to a residual as well, and the shadow side went to clipped
     // black — the viewmodel's sub-code-4 area roughly tripled. Restored partway
     // and scaled with the sky, since it is the only thing holding that side up.
-    this.viewFill.intensity = (0.42 + day * 0.24) * (1.0 + 0.85 * amb / 1.5);
+    // Read from sky, not from update()'s local — `amb` lives in a different
+    // method and referencing it here threw on the first frame, so the game
+    // never signalled ready and every capture returned the loading screen.
+    const skyAmb = sky.ambientIntensity ?? 1.5;
+    this.viewFill.intensity = (0.42 + day * 0.24) * (1.0 + 0.85 * skyAmb / 1.5);
     this.viewRim.color.copy(sky.ambientColor).lerp(_coolRim, 0.55);
     this.viewRim.intensity = 1.30 + day * 0.55;
     this.viewBounce.color.copy(sky.ambientColor).lerp(_warmBounce, 0.62);
