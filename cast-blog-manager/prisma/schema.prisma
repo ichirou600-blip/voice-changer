@@ -1,0 +1,234 @@
+// =============================================================
+// cast-blog-manager データベーススキーマ（設計 v4 確定版）
+// -------------------------------------------------------------
+// 方針:
+// - 開発・本番とも PostgreSQL（環境差によるバグを排除）
+// - 営業日 (businessDate) は "YYYY-MM-DD" 文字列で保存
+//   （JST・店舗ごとの区切り時刻で書き込み時に確定。TZ混入の余地を残さない）
+// - 実績データ (BlogPost) は物理削除せず論理無効化 (voidedAt) で監査可能に
+// - LINE送信は LineMessageLog の claim → 結果更新方式で
+//   冪等性（二重送信防止）とリトライ（FAILED再試行）を両立
+// - 本アプリは外部サイトへの自動投稿・自動ログイン・スクレイピングを行わない
+// =============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------
+// enum 定義
+// ---------------------------------------------------------
+
+/// 管理ユーザーの権限
+enum Role {
+  ADMIN // 全店舗管理
+  MANAGER // 店長（自店舗のみ）
+  STAFF // スタッフ（自店舗のみ・閲覧と記録）
+}
+
+/// キャストの在籍状態（退店は RETIRED の論理削除で履歴を保全する）
+enum CastStatus {
+  ACTIVE // 在籍
+  INACTIVE // 休止
+  RETIRED // 退店
+}
+
+/// キャストの LINE 連携状態
+enum LineStatus {
+  NOT_LINKED // 未連携
+  LINKED // 連携済み
+  BLOCKED // ブロックされた（送信対象から自動除外）
+}
+
+/// 招待リンクの用途
+enum InvitationPurpose {
+  INVITE // スタッフ招待
+  PASSWORD_RESET // パスワード再設定
+}
+
+/// ブログ更新記録の入力元
+enum PostSource {
+  CAST_LINE // キャスト本人の LINE 自己申告
+  STAFF_ENTRY // スタッフによる管理画面からの入力
+}
+
+/// LINE 送信メッセージの種別
+enum MessageKind {
+  REMINDER // 更新リマインド
+  LINK_CONFIRM // 連携完了通知
+  SYSTEM // その他システム通知
+}
+
+/// LINE 送信結果（PENDING で claim し、送信後に更新する）
+enum MessageResult {
+  PENDING // 送信予約（claim 済み・未送信）
+  SENT // 送信成功
+  FAILED // 送信失敗（attemptCount 上限まで再試行可）
+  SKIPPED_QUOTA // 月間送信数上限のためスキップ
+  SKIPPED_BLOCKED // ブロック等で送信不能のためスキップ
+}
+
+// ---------------------------------------------------------
+// モデル定義
+// ---------------------------------------------------------
+
+/// 店舗
+model Store {
+  id   String @id @default(cuid())
+  name String
+
+  /// 営業日の区切り時刻（JST・0-23時）。既定 = 朝6時。
+  /// 例: 6 なら「7/28 05:59 の更新」は営業日 7/27 として扱う
+  businessDayStart Int @default(6)
+
+  /// リマインド送信時刻（JST・0-23時）。cron はキャッチアップ型のため
+  /// この時刻「以降」の最初の tick で送信される
+  reminderHour Int @default(17)
+
+  /// 直近この営業日数の間に更新が無いキャストをリマインド対象とする
+  daysStaleThreshold Int @default(2)
+
+  users User[]
+  casts Cast[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// 管理ユーザー（オーナー・店長・スタッフ）
+model User {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  passwordHash String
+  name         String
+  role         Role    @default(STAFF)
+  storeId      String?
+  store        Store?  @relation(fields: [storeId], references: [id])
+
+  /// 退職スタッフは無効化する（物理削除しない）
+  isActive Boolean @default(true)
+
+  recordedPosts     BlogPost[]   @relation("PostRecordedBy")
+  voidedPosts       BlogPost[]   @relation("PostVoidedBy")
+  invitationsIssued Invitation[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// スタッフ招待・パスワード再設定（リンク手渡し方式・メール基盤不要）
+/// トークンは平文で保存しない（URL 提示時のみ生成し、ハッシュを保存）
+model Invitation {
+  id        String            @id @default(cuid())
+  tokenHash String            @unique
+  purpose   InvitationPurpose
+  email     String
+  role      Role              @default(STAFF)
+  storeId   String?
+
+  issuedById String
+  issuedBy   User   @relation(fields: [issuedById], references: [id])
+
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+}
+
+/// キャスト（在籍者）
+model Cast {
+  id      String     @id @default(cuid())
+  storeId String
+  store   Store      @relation(fields: [storeId], references: [id], onDelete: Restrict)
+  name    String // 源氏名
+  status  CastStatus @default(ACTIVE)
+
+  // --- LINE 連携 ---
+  lineStatus            LineStatus @default(NOT_LINKED)
+  lineUserId            String?    @unique
+  lineLinkCode          String?    @unique // ワンタイム連携コード（紐付け完了で null）
+  lineLinkCodeExpiresAt DateTime?
+
+  targets     CastTarget[]
+  blogPosts   BlogPost[]
+  messageLogs LineMessageLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([storeId, name]) // 同一店舗内の源氏名重複を防止
+}
+
+/// 週次目標の履歴。
+/// 「effectiveFrom（営業日）以降に開始する週」から適用され、
+/// 過去週の達成判定は目標変更の影響を受けない
+model CastTarget {
+  id            String @id @default(cuid())
+  castId        String
+  cast          Cast   @relation(fields: [castId], references: [id], onDelete: Cascade)
+  postsPerWeek  Int
+  effectiveFrom String // "YYYY-MM-DD"（営業日）
+
+  createdAt DateTime @default(now())
+
+  @@index([castId, effectiveFrom])
+}
+
+/// ブログ更新記録（手動記録・本人自己申告のみ。自動取得は行わない）
+model BlogPost {
+  id     String @id @default(cuid())
+  castId String
+  cast   Cast   @relation(fields: [castId], references: [id], onDelete: Restrict)
+
+  title    String?
+  url      String?
+  postedAt DateTime // 実際の更新日時
+
+  /// 営業日 "YYYY-MM-DD"（書き込み時に店舗設定から算出・確定。集計はこれ基準）
+  businessDate String
+
+  /// businessDate が属する週の月曜 "YYYY-MM-DD"（週次集計用）
+  businessWeekStart String
+
+  source       PostSource
+  recordedById String?
+  recordedBy   User?      @relation("PostRecordedBy", fields: [recordedById], references: [id], onDelete: SetNull)
+
+  // --- 論理無効化（物理削除は行わない。実績の改ざん防止と監査のため） ---
+  voidedAt   DateTime?
+  voidedById String?
+  voidedBy   User?     @relation("PostVoidedBy", fields: [voidedById], references: [id], onDelete: SetNull)
+  voidReason String?
+
+  createdAt DateTime @default(now())
+
+  @@index([castId, businessDate])
+  @@index([castId, businessWeekStart])
+}
+
+/// LINE 送信ログ = 月間送信数のカウンタ 兼 冪等性の担保。
+/// 先に PENDING で行を claim し、送信後に result を更新する。
+/// ユニーク制約により SENT 済みの再送はブロックされ、
+/// FAILED は同一行の更新として再試行できる（上限 attemptCount 3 回）
+model LineMessageLog {
+  id     String @id @default(cuid())
+  castId String
+  cast   Cast   @relation(fields: [castId], references: [id], onDelete: Cascade)
+
+  kind         MessageKind
+  businessDate String // "YYYY-MM-DD"
+  result       MessageResult @default(PENDING)
+  attemptCount Int           @default(0)
+  errorDetail  String?
+  sentAt       DateTime? // 実送信時刻（成功時のみ）
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([castId, kind, businessDate]) // 1キャスト1営業日1通（種別ごと）を DB 制約で強制
+  @@index([sentAt]) // 月間送信数の集計用
+}
