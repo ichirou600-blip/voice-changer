@@ -74,7 +74,8 @@ enum MessageResult {
   SENT // 送信成功
   FAILED // 送信失敗（attemptCount 上限まで再試行可）
   SKIPPED_QUOTA // 月間送信数上限のためスキップ
-  SKIPPED_BLOCKED // ブロック等で送信不能のためスキップ
+  SKIPPED_BLOCKED // ブロックされているためスキップ
+  SKIPPED_NOT_LINKED // LINE 未連携のためスキップ
 }
 
 // ---------------------------------------------------------

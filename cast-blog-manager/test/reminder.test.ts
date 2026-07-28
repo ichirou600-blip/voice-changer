@@ -207,15 +207,42 @@ describe("runReminders", () => {
     expect(log?.result).toBe("SKIPPED_QUOTA");
   });
 
-  it("未連携・ブロック中のキャストには送らない", async () => {
-    await prisma.cast.update({
-      where: { id: castId },
-      data: { lineStatus: "BLOCKED" },
-    });
+  it("ブロック中のキャストには送らず SKIPPED_BLOCKED を記録する", async () => {
+    await prisma.cast.update({ where: { id: castId }, data: { lineStatus: "BLOCKED" } });
     const result = await runReminders(NOW);
     expect(result.sent).toBe(0);
     expect(result.skipped.BLOCKED).toBe(1);
     expect(pushMock).not.toHaveBeenCalled();
+    expect((await prisma.lineMessageLog.findFirst())?.result).toBe("SKIPPED_BLOCKED");
+  });
+
+  it("未連携のキャストは SKIPPED_NOT_LINKED として記録される", async () => {
+    await prisma.cast.update({
+      where: { id: castId },
+      data: { lineStatus: "NOT_LINKED", lineUserId: null },
+    });
+    const result = await runReminders(NOW);
+    expect(result.sent).toBe(0);
+    expect(result.skipped.NOT_LINKED).toBe(1);
+    expect((await prisma.lineMessageLog.findFirst())?.result).toBe("SKIPPED_NOT_LINKED");
+  });
+
+  it("未連携だったキャストが同じ日に連携したら送信される（回復性）", async () => {
+    await prisma.cast.update({
+      where: { id: castId },
+      data: { lineStatus: "NOT_LINKED", lineUserId: null },
+    });
+    await runReminders(NOW);
+    expect(pushMock).not.toHaveBeenCalled();
+
+    // 連携が完了した後の tick では送信される
+    await prisma.cast.update({
+      where: { id: castId },
+      data: { lineStatus: "LINKED", lineUserId: "U-line-user-1" },
+    });
+    const second = await runReminders(NOW);
+    expect(second.sent).toBe(1);
+    expect(await prisma.lineMessageLog.count()).toBe(1);
   });
 
   it("退店したキャストは対象外", async () => {

@@ -2,6 +2,7 @@
 
 import { redirect } from "next/navigation";
 
+import { assertSameOriginRequest, toUserMessage } from "@/lib/auth/authorize";
 import { login } from "@/lib/auth/login";
 import { destroyCurrentSession, clearSessionCookie } from "@/lib/auth/session";
 import { getSessionUser } from "@/lib/auth/session";
@@ -11,6 +12,14 @@ import { loginSchema, parseForm } from "@/lib/validations";
 export type LoginState = { error?: string };
 
 export async function loginAction(_prev: LoginState, formData: FormData): Promise<LoginState> {
+  // 未認証で呼べる Action のため、defineAction を経由しない。
+  // CSRF の二次防御をここで明示的に行う（ログイン CSRF 対策）。
+  try {
+    assertSameOriginRequest();
+  } catch (error) {
+    return { error: toUserMessage(error) };
+  }
+
   const parsed = parseForm(loginSchema, formData);
   // 形式不備でも「どちらが違うか」を漏らさない
   if (!parsed.ok) return { error: "メールアドレスまたはパスワードが違います" };
@@ -22,6 +31,7 @@ export async function loginAction(_prev: LoginState, formData: FormData): Promis
 }
 
 export async function logoutAction(): Promise<void> {
+  assertSameOriginRequest();
   const user = await getSessionUser();
   await destroyCurrentSession();
   clearSessionCookie();

@@ -3,7 +3,7 @@
 import { redirect } from "next/navigation";
 
 import { getClientIp } from "@/lib/audit";
-import { toUserMessage } from "@/lib/auth/authorize";
+import { assertSameOriginRequest, toUserMessage } from "@/lib/auth/authorize";
 import { redeemInvitation } from "@/lib/dal/users";
 import { acceptInvitationSchema, parseForm } from "@/lib/validations";
 
@@ -17,6 +17,13 @@ export type AcceptState = { error?: string };
  *   LINE などのリンクプレビュー bot が URL を踏んでもリンクが切れない）
  */
 export async function acceptAction(_prev: AcceptState, formData: FormData): Promise<AcceptState> {
+  // 未認証で呼べる Action のため、CSRF の二次防御をここで行う
+  try {
+    assertSameOriginRequest();
+  } catch (error) {
+    return { error: toUserMessage(error) };
+  }
+
   const parsed = parseForm(acceptInvitationSchema, formData);
   if (!parsed.ok) return { error: parsed.error };
 

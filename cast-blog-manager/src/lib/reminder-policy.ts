@@ -46,7 +46,14 @@ export type SendDecision =
 
 export type SendDecisionInput = {
   /** claim 済みログの現在の結果（未作成なら null） */
-  existingResult: "PENDING" | "SENT" | "FAILED" | "SKIPPED_QUOTA" | "SKIPPED_BLOCKED" | null;
+  existingResult:
+    | "PENDING"
+    | "SENT"
+    | "FAILED"
+    | "SKIPPED_QUOTA"
+    | "SKIPPED_BLOCKED"
+    | "SKIPPED_NOT_LINKED"
+    | null;
   existingAttemptCount: number;
   lineStatus: "NOT_LINKED" | "LINKED" | "BLOCKED";
   /** 当月これまでの送信済み（SENT）件数 */

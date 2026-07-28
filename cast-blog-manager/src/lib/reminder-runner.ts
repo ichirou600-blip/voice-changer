@@ -6,7 +6,13 @@ import { pushMessage, textMessage } from "@/lib/line/client";
 import { prisma } from "@/lib/prisma";
 import { getMonthlyLimit } from "@/lib/quota";
 import { countMonthlySent } from "@/lib/quota";
-import { decideSend, isReminderTimeReached, isStale, MAX_SEND_ATTEMPTS } from "@/lib/reminder-policy";
+import {
+  decideSend,
+  isReminderTimeReached,
+  isStale,
+  MAX_SEND_ATTEMPTS,
+  type SendDecision,
+} from "@/lib/reminder-policy";
 import { buildWeeklyProgress } from "@/lib/targets";
 import { businessWeekStart } from "@/lib/business-day";
 
@@ -21,6 +27,22 @@ import { businessWeekStart } from "@/lib/business-day";
  *   FAILED は同じ行を更新して再試行できる（上限 MAX_SEND_ATTEMPTS）。
  * - **月間上限**: 実送信数が上限に達したら SKIPPED_QUOTA として記録し送信しない。
  */
+
+/**
+ * スキップ理由 → 記録する結果。
+ * ALREADY_SENT / MAX_ATTEMPTS は既存の結果を保持したいので意図的に含めない
+ * （undefined になり、上書きされない）。
+ */
+const SKIP_RESULT: Partial<
+  Record<
+    Extract<SendDecision, { action: "SKIP" }>["reason"],
+    "SKIPPED_QUOTA" | "SKIPPED_BLOCKED" | "SKIPPED_NOT_LINKED"
+  >
+> = {
+  QUOTA: "SKIPPED_QUOTA",
+  BLOCKED: "SKIPPED_BLOCKED",
+  NOT_LINKED: "SKIPPED_NOT_LINKED",
+};
 
 export type ReminderRunResult = {
   checkedStores: number;
@@ -91,14 +113,13 @@ export async function runReminders(now: Date = new Date()): Promise<ReminderRunR
 
       if (decision.action === "SKIP") {
         bump(decision.reason);
-        // 恒久的にスキップする理由は結果として記録しておく
-        if (decision.reason === "QUOTA" || decision.reason === "BLOCKED" || decision.reason === "NOT_LINKED") {
+        // スキップ理由を正確に記録する。
+        // ALREADY_SENT / MAX_ATTEMPTS は既存の結果を保持したいので上書きしない。
+        const skipResult = SKIP_RESULT[decision.reason];
+        if (skipResult) {
           await prisma.lineMessageLog.update({
             where: { id: log.id },
-            data: {
-              result: decision.reason === "QUOTA" ? "SKIPPED_QUOTA" : "SKIPPED_BLOCKED",
-              errorDetail: decision.reason,
-            },
+            data: { result: skipResult, errorDetail: decision.reason },
           });
         }
         continue;

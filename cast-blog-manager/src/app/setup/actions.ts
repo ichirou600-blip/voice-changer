@@ -3,7 +3,7 @@
 import { redirect } from "next/navigation";
 
 import { getClientIp, getUserAgent, writeAudit } from "@/lib/audit";
-import { toUserMessage } from "@/lib/auth/authorize";
+import { assertSameOriginRequest, toUserMessage } from "@/lib/auth/authorize";
 import { createSession, setSessionCookie } from "@/lib/auth/session";
 import { completeSetup, isSetupCompleted } from "@/lib/auth/setup";
 import { parseForm, setupSchema } from "@/lib/validations";
@@ -16,6 +16,13 @@ export type SetupState = { error?: string };
  * （認証前に呼べる唯一の変更系 Action なので、条件を必ずここで再確認する）
  */
 export async function setupAction(_prev: SetupState, formData: FormData): Promise<SetupState> {
+  // 未認証で呼べる Action のため、CSRF の二次防御をここで行う
+  try {
+    assertSameOriginRequest();
+  } catch (error) {
+    return { error: toUserMessage(error) };
+  }
+
   if (await isSetupCompleted()) {
     return { error: "初期セットアップは既に完了しています" };
   }

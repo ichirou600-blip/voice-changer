@@ -2,7 +2,14 @@ import { createHmac } from "node:crypto";
 
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { normalizeLinkCode } from "@/lib/auth/tokens";
+import {
+  checkAttemptLimit,
+  clearAttempts,
+  linkCodeKey,
+  MAX_LINK_CODE_ATTEMPTS,
+  recordFailedAttempt,
+} from "@/lib/auth/rate-limit";
+import { generateLinkCode, normalizeLinkCode } from "@/lib/auth/tokens";
 import { createPostFromLine } from "@/lib/dal/posts";
 import { isAllowedMutation, isSameOrigin } from "@/lib/http/csrf";
 import { verifyLineSignature } from "@/lib/line/signature";
@@ -44,6 +51,47 @@ describe("連携コードの正規化", () => {
   it("空白・小文字・ハイフン・全角を吸収する", () => {
     expect(normalizeLinkCode(" ab3d-7k9m ")).toBe("AB3D7K9M");
     expect(normalizeLinkCode("ＡＢ３Ｄ７Ｋ９Ｍ")).toBe("AB3D7K9M");
+  });
+});
+
+describe("連携コードの強度と試行制限", () => {
+  it("紛らわしい文字（0/O/1/I/L）を含まない", () => {
+    for (let i = 0; i < 200; i++) {
+      expect(generateLinkCode()).not.toMatch(/[01OIL]/);
+    }
+  });
+
+  it("既定は8桁で、毎回異なる", () => {
+    const codes = new Set(Array.from({ length: 200 }, () => generateLinkCode()));
+    expect(codes.size).toBeGreaterThan(190); // 衝突はほぼ起きない
+    for (const c of codes) expect(c).toHaveLength(8);
+  });
+
+  it("LINE ユーザー単位で試行回数を制限できる", async () => {
+    await resetDatabase();
+    const key = linkCodeKey("U-attacker");
+
+    for (let i = 0; i < MAX_LINK_CODE_ATTEMPTS; i++) {
+      expect((await checkAttemptLimit(key, MAX_LINK_CODE_ATTEMPTS)).allowed).toBe(true);
+      await recordFailedAttempt(key);
+    }
+    // 上限に達したら拒否される
+    expect((await checkAttemptLimit(key, MAX_LINK_CODE_ATTEMPTS)).allowed).toBe(false);
+
+    // 連携成功後は解除される
+    await clearAttempts(key);
+    expect((await checkAttemptLimit(key, MAX_LINK_CODE_ATTEMPTS)).allowed).toBe(true);
+  });
+
+  it("別の LINE ユーザーの試行には影響しない", async () => {
+    await resetDatabase();
+    const attacker = linkCodeKey("U-attacker");
+    for (let i = 0; i < MAX_LINK_CODE_ATTEMPTS; i++) await recordFailedAttempt(attacker);
+
+    expect((await checkAttemptLimit(attacker, MAX_LINK_CODE_ATTEMPTS)).allowed).toBe(false);
+    expect(
+      (await checkAttemptLimit(linkCodeKey("U-innocent"), MAX_LINK_CODE_ATTEMPTS)).allowed,
+    ).toBe(true);
   });
 });
 

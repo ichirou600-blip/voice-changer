@@ -1,6 +1,13 @@
 import { NextResponse } from "next/server";
 
 import { writeAudit } from "@/lib/audit";
+import {
+  checkAttemptLimit,
+  clearAttempts,
+  linkCodeKey,
+  MAX_LINK_CODE_ATTEMPTS,
+  recordFailedAttempt,
+} from "@/lib/auth/rate-limit";
 import { normalizeLinkCode } from "@/lib/auth/tokens";
 import { createPostFromLine } from "@/lib/dal/posts";
 import { replyMessage, selfReportConfirmMessage, textMessage } from "@/lib/line/client";
@@ -118,6 +125,19 @@ async function handleTextMessage(event: LineEvent, lineUserId: string, text: str
     return;
   }
 
+  // 連携コードの総当たり対策。
+  // 探索空間は 31^8（約8500億通り）と十分に広いが、
+  // 商用運用では試行そのものを絞る（LINE ユーザー単位で 15 分に 5 回まで）。
+  const attemptKey = linkCodeKey(lineUserId);
+  const verdict = await checkAttemptLimit(attemptKey, MAX_LINK_CODE_ATTEMPTS);
+  if (!verdict.allowed) {
+    await reply(
+      event,
+      "連携コードの入力を何度も間違えています。しばらく時間をおいてから、お店に正しいコードを確認してください。",
+    );
+    return;
+  }
+
   const cast = await prisma.cast.findFirst({
     where: {
       lineLinkCode: code,
@@ -128,6 +148,7 @@ async function handleTextMessage(event: LineEvent, lineUserId: string, text: str
   });
 
   if (!cast) {
+    await recordFailedAttempt(attemptKey);
     await reply(event, "連携コードが正しくないか、有効期限が切れています。お店にご確認ください。");
     return;
   }
@@ -141,6 +162,8 @@ async function handleTextMessage(event: LineEvent, lineUserId: string, text: str
       lineLinkCodeExpiresAt: null,
     },
   });
+
+  await clearAttempts(attemptKey);
 
   await writeAudit({
     action: "CAST_LINE_LINKED",

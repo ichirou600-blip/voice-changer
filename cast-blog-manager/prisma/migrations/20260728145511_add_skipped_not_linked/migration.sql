@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "MessageResult" ADD VALUE 'SKIPPED_NOT_LINKED';

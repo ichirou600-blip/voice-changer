@@ -36,6 +36,14 @@ export function ipKey(ip: string): string {
   return `ip:${ip}`;
 }
 
+/** LINE 連携コードの試行キー（LINE ユーザー単位） */
+export function linkCodeKey(lineUserId: string): string {
+  return `linkcode:${lineUserId}`;
+}
+
+/** LINE 連携コードの試行上限（15分あたり） */
+export const MAX_LINK_CODE_ATTEMPTS = 5;
+
 /**
  * 失敗回数から可否を判定する純粋関数（テスト用に切り出し）。
  */
@@ -102,6 +110,29 @@ export async function recordLoginAttempt(
   await prisma.loginAttempt.createMany({
     data: keys.map((key) => ({ key, succeeded: false })),
   });
+}
+
+/**
+ * 任意のキーに対する汎用の試行制限。
+ * ログイン以外（LINE 連携コードの総当たり対策など）でも使う。
+ */
+export async function checkAttemptLimit(
+  key: string,
+  max: number,
+  now: Date = new Date(),
+): Promise<RateLimitVerdict> {
+  const { count, oldest } = await countFailures(key, new Date(now.getTime() - WINDOW_MS));
+  return judge(count, max, oldest, now);
+}
+
+/** 任意のキーの失敗を記録する */
+export async function recordFailedAttempt(key: string): Promise<void> {
+  await prisma.loginAttempt.create({ data: { key, succeeded: false } });
+}
+
+/** 任意のキーの失敗履歴を消す（成功時） */
+export async function clearAttempts(key: string): Promise<void> {
+  await prisma.loginAttempt.deleteMany({ where: { key, succeeded: false } });
 }
 
 /** 古い試行記録を掃除する（cron から日次で呼ぶ） */
