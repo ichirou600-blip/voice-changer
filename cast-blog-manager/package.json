@@ -15,7 +15,10 @@
     "db:migrate:dev": "prisma migrate dev",
     "db:seed": "tsx prisma/seed.ts",
     "db:reset-password": "tsx scripts/reset-admin-password.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "line:image": "tsx scripts/generate-rich-menu-image.mts",
+    "line:setup": "tsx scripts/setup-rich-menu.mts",
+    "e2e": "tsx e2e/smoke.mts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
@@ -30,8 +33,10 @@
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "dotenv": "^17.4.2",
     "eslint": "^8",
     "eslint-config-next": "14.2.35",
+    "playwright": "^1.62.0",
     "postcss": "^8",
     "prisma": "^6.19.3",
     "tailwindcss": "^3.4.1",

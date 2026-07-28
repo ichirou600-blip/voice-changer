@@ -6,8 +6,15 @@
 > **重要:** 本ツールは「ポケパラ」等の外部サイトへの **自動投稿・自動ログイン・スクレイピングは一切行いません**。
 > 更新記録は「キャスト本人の LINE 自己申告」または「スタッフの手入力」のみです。
 
-設計の決定内容と、そこに至った理由（4回の設計レビューの記録）は
-[docs/DESIGN.md](./docs/DESIGN.md) を参照してください。
+## ドキュメント
+
+| 文書 | 内容 |
+| --- | --- |
+| [docs/SETUP_GUIDE.md](./docs/SETUP_GUIDE.md) | **導入手順書**（新しい店舗への導入。60〜90分） |
+| [docs/OPERATIONS.md](./docs/OPERATIONS.md) | **運用ガイド**（日常確認・ログ・バックアップ・障害対応） |
+| [docs/DESIGN.md](./docs/DESIGN.md) | 設計書（決定内容と、そこに至った理由） |
+| [docs/TERMS_TEMPLATE.md](./docs/TERMS_TEMPLATE.md) | 利用規約の雛形（要・専門家確認） |
+| [docs/PRIVACY_POLICY_TEMPLATE.md](./docs/PRIVACY_POLICY_TEMPLATE.md) | プライバシーポリシーの雛形（要・専門家確認） |
 
 ---
 
@@ -19,8 +26,11 @@
 | キャスト管理 | 在籍状況（在籍/休止/退店）、週次目標の履歴管理、LINE 連携 |
 | 更新記録 | スタッフ手入力／キャスト本人の LINE 自己申告。物理削除せず論理無効化 |
 | LINE リマインド | 未更新キャストへ自動送信。送信量の上限管理・重複送信防止つき |
+| LINE リッチメニュー | 「投稿したよ」「今週の状況」を1タップで操作 |
+| CSV 出力 | 更新記録を Excel で開ける形式（BOM付きUTF-8）で書き出し |
 | スタッフ管理 | 招待リンク・パスワード再設定リンクの発行、強制ログアウト、無効化 |
 | 監査ログ | 招待・無効化・記録の無効化などを追跡可能に記録 |
+| 死活監視 | `/api/health` でDB接続と設定状況を確認 |
 
 ### 技術スタック
 
@@ -89,9 +99,17 @@ npm run db:seed   # admin@example.com / dev-password-1234
 ```bash
 npm run typecheck   # 型チェック
 npm run lint        # ESLint
-npm test            # テスト（DB 接続が必要）
+npm test            # 単体・統合テスト（DB 接続が必要）
 npm run build       # 本番ビルド
+
+# ブラウザからの通し確認（別ターミナルで本番サーバーを起動しておく）
+npm run build && PORT=3100 npm run start
+npm run db:seed
+npm run e2e
 ```
+
+> **`npm run e2e` は必ず実行してください。** 単体テストは DAL を直接呼ぶため、
+> 「フォームが実際に送信する値」で壊れるバグを検出できません。
 
 ---
 
@@ -141,9 +159,16 @@ curl -X POST "$APP_URL/api/cron/tick" -H "Authorization: Bearer $CRON_SECRET"
 1. LINE Developers で Messaging API チャネルを作成し、
    `LINE_CHANNEL_ACCESS_TOKEN` / `LINE_CHANNEL_SECRET` を `.env` に設定
 2. Webhook URL に `https://<APP_URL>/api/line/webhook` を登録し、Webhook を有効化
-3. 管理画面のキャスト詳細で **連携コードを発行**（24時間有効）
-4. キャスト本人に公式アカウントを友だち追加してもらい、そのコードを送信してもらう
-5. 連携完了。以降はキャストが「投稿したよ」と送ると、
+3. リッチメニューを登録する
+
+   ```bash
+   npm run line:image   # メニュー画像を生成（文言はスクリプト内で変更可）
+   npm run line:setup   # LINE に登録
+   ```
+
+4. 管理画面のキャスト詳細で **連携コードを発行**（24時間有効。MANAGER 以上）
+5. キャスト本人に公式アカウントを友だち追加してもらい、そのコードを送信してもらう
+6. 連携完了。以降はリッチメニューの「投稿したよ」をタップすると、
    〔今日の分〕〔昨日の分〕〔キャンセル〕の確認を経て更新が記録されます
 
 > **開発時の注意:** LINE Webhook には **公開 HTTPS URL が必須** です（localhost は不可）。
@@ -197,12 +222,22 @@ curl -X POST "$APP_URL/api/cron/tick" -H "Authorization: Bearer $CRON_SECRET"
 
 ---
 
+## 販売にあたっての準備
+
+本リポジトリには法務文書の**雛形**を同梱していますが、
+そのままでは使用できません。販売前に以下を必ず行ってください。
+
+- [ ] [LICENSE](./LICENSE) の権利者名を自社名に置き換える
+- [ ] [docs/TERMS_TEMPLATE.md](./docs/TERMS_TEMPLATE.md) の〔　〕を埋め、**弁護士等の確認を受ける**
+- [ ] [docs/PRIVACY_POLICY_TEMPLATE.md](./docs/PRIVACY_POLICY_TEMPLATE.md) の〔　〕を埋め、**弁護士等の確認を受ける**
+      （キャストの源氏名・LINE識別子という個人情報を扱うため必須）
+- [ ] 継続課金で販売する場合は、特定商取引法に基づく表記を用意する
+- [ ] データの保存期間・削除方針を決めてプライバシーポリシーに反映する
+- [ ] サポート範囲・対応時間・連絡先を利用規約に明記する
+
 ## ライセンス
 
 **本ソフトウェアは商用製品です。無断での再配布・転載・二次配布を固く禁じます。**
-
-- 本リポジトリおよびソースコードの著作権はすべて権利者に帰属します。
-- 権利者の書面による許可なく、本ソフトウェアの全部または一部を複製・改変・再配布・販売することを禁止します。
-- 本ソフトウェアは商用販売を予定しており、ソースコードは非公開（プライベート）で管理されます。
+詳細は [LICENSE](./LICENSE) を参照してください。
 
 © cast-blog-manager. All rights reserved.

@@ -12,8 +12,9 @@ import { normalizeLinkCode } from "@/lib/auth/tokens";
 import { createPostFromLine } from "@/lib/dal/posts";
 import { replyMessage, selfReportConfirmMessage, textMessage } from "@/lib/line/client";
 import { verifyLineSignature } from "@/lib/line/signature";
+import { logger, maskId } from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
-import { businessWeekStart } from "@/lib/business-day";
+import { businessWeekStart, currentBusinessDate } from "@/lib/business-day";
 import { notVoided } from "@/lib/dal/posts";
 import { buildWeeklyProgress } from "@/lib/targets";
 
@@ -44,7 +45,15 @@ export async function POST(request: Request) {
   const channelSecret = process.env.LINE_CHANNEL_SECRET;
   const rawBody = await request.text();
 
-  if (!verifyLineSignature(channelSecret ?? "", rawBody, request.headers.get("x-line-signature"))) {
+  if (!channelSecret) {
+    logger.error("line.webhook.misconfigured", undefined, {
+      detail: "LINE_CHANNEL_SECRET が設定されていません",
+    });
+    return NextResponse.json({ error: "not configured" }, { status: 500 });
+  }
+
+  if (!verifyLineSignature(channelSecret, rawBody, request.headers.get("x-line-signature"))) {
+    logger.warn("line.webhook.invalid_signature", { bodyBytes: rawBody.length });
     return NextResponse.json({ error: "invalid signature" }, { status: 400 });
   }
 
@@ -52,15 +61,21 @@ export async function POST(request: Request) {
   try {
     payload = JSON.parse(rawBody);
   } catch {
+    logger.warn("line.webhook.invalid_body", { bodyBytes: rawBody.length });
     return NextResponse.json({ error: "invalid body" }, { status: 400 });
   }
 
   for (const event of payload.events ?? []) {
     try {
       await handleEvent(event);
-    } catch {
+    } catch (error) {
       // 個別イベントの失敗で 500 を返すと LINE 側が再送を繰り返すため、
-      // ログに残して 200 を返す（再送してもユニーク制約と重複ガードで冪等）
+      // ログに残して 200 を返す（再送してもユニーク制約と重複ガードで冪等）。
+      // ここを握りつぶすと障害の原因が追えなくなるので必ず記録する。
+      logger.error("line.webhook.event_failed", error, {
+        eventType: event.type,
+        lineUserId: maskId(event.source?.userId),
+      });
     }
   }
 
@@ -188,7 +203,21 @@ async function handlePostback(event: LineEvent, lineUserId: string, data: string
   // リマインドにも現れないため、作っても本人に不利益になるだけ。
   if (!cast || cast.status !== "ACTIVE") return;
 
-  const which = new URLSearchParams(data).get("report");
+  const params = new URLSearchParams(data);
+
+  // リッチメニューのタップ
+  const menu = params.get("menu");
+  if (menu === "report") {
+    // 「投稿したよ」→ 今日/昨日/キャンセルの確認を出す（誤タップ対策）
+    await replyRaw(event, [selfReportConfirmMessage()]);
+    return;
+  }
+  if (menu === "status") {
+    await reply(event, await buildStatusText(cast.id, cast.store.businessDayStart));
+    return;
+  }
+
+  const which = params.get("report");
   if (which === "cancel") {
     await reply(event, "キャンセルしました。");
     return;
@@ -222,6 +251,24 @@ async function handlePostback(event: LineEvent, lineUserId: string, data: string
       ? `記録しました！（${businessDate}）ありがとうございます！`
       : `記録しました！（${businessDate}）\n今週は ${progress.postCount}/${progress.target} 回目です。`,
   );
+}
+
+/** 「今週の状況」の文面を組み立てる */
+async function buildStatusText(castId: string, businessDayStart: number): Promise<string> {
+  const today = currentBusinessDate(businessDayStart);
+  const weekStart = businessWeekStart(today);
+  const [targets, count] = await Promise.all([
+    prisma.castTarget.findMany({ where: { castId }, orderBy: { effectiveFrom: "desc" } }),
+    prisma.blogPost.count({ where: { castId, businessWeekStart: weekStart, ...notVoided } }),
+  ]);
+  const progress = buildWeeklyProgress(targets, weekStart, count);
+
+  if (progress.target === null) {
+    return `今週（${weekStart}〜）の更新は ${progress.postCount} 回です。`;
+  }
+  return progress.achieved
+    ? `今週（${weekStart}〜）は ${progress.postCount}/${progress.target} 回。目標達成です！`
+    : `今週（${weekStart}〜）は ${progress.postCount}/${progress.target} 回。あと ${progress.remaining} 回です。`;
 }
 
 async function reply(event: LineEvent, text: string): Promise<void> {

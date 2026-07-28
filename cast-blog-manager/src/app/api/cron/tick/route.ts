@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { writeAudit } from "@/lib/audit";
 import { purgeExpiredSessions } from "@/lib/auth/session";
 import { purgeOldLoginAttempts } from "@/lib/auth/rate-limit";
+import { logger } from "@/lib/logger";
 import { runReminders } from "@/lib/reminder-runner";
 
 /**
@@ -35,7 +36,11 @@ function isAuthorized(request: Request): boolean {
 
 async function handle(request: Request) {
   if (!isAuthorized(request)) {
+    logger.warn("cron.unauthorized", { path: new URL(request.url).pathname });
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+  if (!process.env.CRON_SECRET) {
+    logger.error("cron.misconfigured", undefined, { detail: "CRON_SECRET 未設定" });
   }
 
   const started = Date.now();

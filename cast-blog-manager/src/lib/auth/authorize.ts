@@ -4,6 +4,7 @@ import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 
 import { isSameOrigin } from "@/lib/http/csrf";
+import { logger } from "@/lib/logger";
 
 import { getSessionUser, type SessionUser } from "./session";
 
@@ -136,6 +137,15 @@ export function defineAction<TInput, TOutput>(
       const data = await handler({ user }, input);
       return { ok: true, data };
     } catch (error) {
+      // 想定内の拒否（未認証・権限不足・入力不備）以外は障害として記録する。
+      // ここを残さないと、利用者には汎用メッセージしか出ないため原因が追えない。
+      if (
+        !(error instanceof AuthenticationError) &&
+        !(error instanceof AuthorizationError) &&
+        !(error instanceof ValidationError)
+      ) {
+        logger.error("action.failed", error, { minimumRole });
+      }
       return { ok: false, error: toUserMessage(error) };
     }
   };

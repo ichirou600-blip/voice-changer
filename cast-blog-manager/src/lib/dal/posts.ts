@@ -43,9 +43,43 @@ export type PostListItem = {
   voidReason: string | null;
 };
 
+/** 1ページあたりの表示件数 */
+export const POSTS_PAGE_SIZE = 50;
+
+export type PostListPage = {
+  items: PostListItem[];
+  total: number;
+  page: number;
+  pageCount: number;
+};
+
+export async function listPostsPage(
+  user: SessionUser,
+  options: { castId?: string; includeVoided?: boolean; page?: number; pageSize?: number } = {},
+): Promise<PostListPage> {
+  const pageSize = options.pageSize ?? POSTS_PAGE_SIZE;
+  const where = {
+    cast: { ...storeScope(user) },
+    ...(options.castId ? { castId: options.castId } : {}),
+    ...(options.includeVoided ? {} : notVoided),
+  };
+
+  const total = await prisma.blogPost.count({ where });
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(Math.max(1, options.page ?? 1), pageCount);
+
+  const items = await listPosts(user, {
+    ...options,
+    limit: pageSize,
+    skip: (page - 1) * pageSize,
+  });
+
+  return { items, total, page, pageCount };
+}
+
 export async function listPosts(
   user: SessionUser,
-  options: { castId?: string; limit?: number; includeVoided?: boolean } = {},
+  options: { castId?: string; limit?: number; skip?: number; includeVoided?: boolean } = {},
 ): Promise<PostListItem[]> {
   const posts = await prisma.blogPost.findMany({
     where: {
@@ -55,6 +89,7 @@ export async function listPosts(
     },
     orderBy: [{ businessDate: "desc" }, { postedAt: "desc" }],
     take: options.limit ?? 100,
+    skip: options.skip ?? 0,
     include: {
       cast: { select: { name: true } },
       recordedBy: { select: { name: true } },

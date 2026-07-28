@@ -13,6 +13,7 @@ import {
   type SendDecision,
 } from "@/lib/reminder-policy";
 import { buildWeeklyProgress } from "@/lib/targets";
+import { logger, maskId } from "@/lib/logger";
 
 /**
  * リマインド送信の本体。トリガー（GitHub Actions / Vercel Cron / 手動）非依存。
@@ -183,6 +184,7 @@ export async function runReminders(
           data: { result: "SENT", sentAt: new Date(), errorDetail: null },
         });
         result.sent += 1;
+        logger.info("reminder.sent", { castId: maskId(cast.id), businessDate: today });
       } catch (error) {
         await prisma.lineMessageLog.update({
           where: { id: log.id },
@@ -192,10 +194,23 @@ export async function runReminders(
           },
         });
         result.failed += 1;
+        logger.error("reminder.send_failed", error, {
+          castId: maskId(cast.id),
+          businessDate: today,
+          attempt,
+        });
         if (attempt >= MAX_SEND_ATTEMPTS) bump("MAX_ATTEMPTS_REACHED");
       }
     }
   }
+
+  logger.info("reminder.run_finished", {
+    checkedStores: result.checkedStores,
+    targeted: result.targeted,
+    sent: result.sent,
+    failed: result.failed,
+    skipped: result.skipped,
+  });
 
   return result;
 }

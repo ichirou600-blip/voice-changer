@@ -1,19 +1,26 @@
-import { Badge, Card, EmptyState, PageHeader, Table } from "@/components/ui";
+import { Badge, Button, Card, EmptyState, PageHeader, Table } from "@/components/ui";
+import { Pagination } from "@/components/pagination";
 import { hasRole, requireUserOrRedirect } from "@/lib/auth/authorize";
 import { listCasts } from "@/lib/dal/casts";
-import { listPosts } from "@/lib/dal/posts";
+import { listPostsPage } from "@/lib/dal/posts";
 
 import { PostCreateForm } from "./post-create-form";
 import { VoidPostButton } from "./void-post-button";
 
 export const dynamic = "force-dynamic";
 
-export default async function PostsPage() {
+export default async function PostsPage({
+  searchParams,
+}: {
+  searchParams?: { page?: string };
+}) {
   const user = await requireUserOrRedirect();
-  const [casts, posts] = await Promise.all([
+  const page = Number.parseInt(searchParams?.page ?? "1", 10);
+  const [casts, result] = await Promise.all([
     listCasts(user),
-    listPosts(user, { limit: 100, includeVoided: true }),
+    listPostsPage(user, { includeVoided: true, page: Number.isFinite(page) ? page : 1 }),
   ]);
+  const posts = result.items;
   const canVoid = hasRole(user, "MANAGER");
 
   return (
@@ -21,6 +28,13 @@ export default async function PostsPage() {
       <PageHeader
         title="更新記録"
         description="ブログ更新を記録します。外部サイトへの自動投稿は行いません（手動記録のみ）。"
+        action={
+          <a href="/api/export/posts?includeVoided=1" download>
+            <Button variant="secondary" type="button">
+              CSVで書き出す
+            </Button>
+          </a>
+        }
       />
 
       <Card className="mb-6">
@@ -72,6 +86,12 @@ export default async function PostsPage() {
             ))}
           </Table>
         )}
+        <Pagination
+          page={result.page}
+          pageCount={result.pageCount}
+          total={result.total}
+          basePath="/posts"
+        />
       </Card>
     </>
   );

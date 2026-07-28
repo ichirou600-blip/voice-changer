@@ -26,6 +26,19 @@ export const businessDateSchema = z
   .string()
   .refine(isValidBusinessDate, "日付の形式が正しくありません（YYYY-MM-DD）");
 
+/**
+ * 任意入力の営業日。
+ *
+ * HTML フォームは未入力の項目を **空文字** として送信するため、
+ * `.optional()` だけでは「未入力」を弾いてしまう
+ * （実際にこれで更新記録の登録が動かないバグが発生した）。
+ * 空文字を undefined に正規化して受け取る。
+ */
+export const optionalBusinessDateSchema = z
+  .union([businessDateSchema, z.literal("")])
+  .optional()
+  .transform((v) => (v ? v : undefined));
+
 /** 初回セットアップ（最初の管理者 + 店舗を作成） */
 export const setupSchema = z.object({
   storeName: z.string().trim().min(1, "店舗名を入力してください").max(60),
@@ -88,13 +101,13 @@ export const castTargetSchema = z.object({
   castId: z.string().min(1),
   postsPerWeek: z.coerce.number().int().min(0).max(50),
   /** 未指定なら「次に開始する週」から適用 */
-  effectiveFrom: businessDateSchema.optional(),
+  effectiveFrom: optionalBusinessDateSchema,
 });
 
 export const postCreateSchema = z.object({
   castId: z.string().min(1, "キャストを選択してください"),
-  /** 更新日（営業日）。未指定なら現在の営業日 */
-  businessDate: businessDateSchema.optional(),
+  /** 更新日（営業日）。未指定・空文字なら現在の営業日 */
+  businessDate: optionalBusinessDateSchema,
   title: z.string().trim().max(120).optional().or(z.literal("")),
   url: z
     .string()
