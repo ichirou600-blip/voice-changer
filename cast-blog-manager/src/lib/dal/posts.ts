@@ -23,6 +23,12 @@ import { prisma } from "@/lib/prisma";
 /** 有効な（無効化されていない）記録に絞る条件 */
 export const notVoided = { voidedAt: null } as const;
 
+/** 遡及入力を許す日数の上限 */
+export const BACKDATE_LIMIT_DAYS = 60;
+
+/** 1キャスト・1営業日あたりに記録できる最大件数 */
+export const MAX_POSTS_PER_BUSINESS_DAY = 10;
+
 export type PostListItem = {
   id: string;
   castId: string;
@@ -86,13 +92,32 @@ export async function createPostByStaff(
     include: { store: true },
   });
   if (!cast) throw new ValidationError("キャストが見つかりません");
-  if (cast.status === "RETIRED") throw new ValidationError("退店したキャストには記録できません");
+  if (cast.status !== "ACTIVE") {
+    // 在籍中以外の記録はダッシュボードにもリマインドにも現れず、
+    // 「入力したのにどこにも出ない」状態になるため受け付けない
+    throw new ValidationError("在籍中のキャストにのみ記録できます");
+  }
 
   const todayBusinessDate = currentBusinessDate(cast.store.businessDayStart, now);
   const businessDate = input.businessDate ?? todayBusinessDate;
 
   if (businessDate > todayBusinessDate) {
     throw new ValidationError("未来の日付には記録できません");
+  }
+  // 遡及入力の下限。過去週の達成判定を後から書き換えられないようにする
+  if (businessDate < addDays(todayBusinessDate, -BACKDATE_LIMIT_DAYS)) {
+    throw new ValidationError(`${BACKDATE_LIMIT_DAYS}日より前の日付には記録できません`);
+  }
+
+  // 同一営業日の記録数に上限を設ける（実績の水増し防止）。
+  // 実運用の上限をはるかに超える値なので通常操作の妨げにはならない
+  const sameDayCount = await prisma.blogPost.count({
+    where: { castId: cast.id, businessDate, ...notVoided },
+  });
+  if (sameDayCount >= MAX_POSTS_PER_BUSINESS_DAY) {
+    throw new ValidationError(
+      `1日に記録できるのは${MAX_POSTS_PER_BUSINESS_DAY}件までです`,
+    );
   }
 
   // 指定営業日の場合、postedAt はその営業日の開始時刻（JST）を UTC で表したもの
@@ -177,11 +202,15 @@ export async function createPostFromLine(input: {
   const today = toBusinessDate(now, input.storeBusinessDayStart);
   const businessDate = input.which === "today" ? today : addDays(today, -1);
 
-  // 直近ウィンドウ内に同じキャストの自己申告があれば作成しない（連打ガード）
+  // 連打・誤タップのガード。
+  // 実装レビューで「businessDate を条件に入れていないため、
+  // 『今日の分』を記録した直後に『昨日の分』を入れようとすると
+  // 記録されないのに成功したように見える」と指摘されたため営業日ごとに判定する。
   const recent = await prisma.blogPost.findFirst({
     where: {
       castId: input.castId,
       source: "CAST_LINE",
+      businessDate,
       createdAt: { gte: new Date(now.getTime() - SELF_REPORT_DEDUPE_WINDOW_MS) },
       ...notVoided,
     },

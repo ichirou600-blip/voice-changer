@@ -1,3 +1,5 @@
+import { notFound } from "next/navigation";
+
 import { Badge, Card, PageHeader, Table } from "@/components/ui";
 import { hasRole, requireUserOrRedirect } from "@/lib/auth/authorize";
 import { listStores } from "@/lib/dal/stores";
@@ -11,8 +13,13 @@ const ROLE_LABEL = { ADMIN: "管理者", MANAGER: "店長", STAFF: "スタッフ
 
 export default async function UsersPage() {
   const user = await requireUserOrRedirect();
+  // スタッフ一覧には同僚のメールアドレスが含まれる。
+  // STAFF に見せると、それを使ってログインを連続失敗させ
+  // 店長を締め出す（レート制限の悪用）ことができてしまう。
+  if (!hasRole(user, "MANAGER")) notFound();
+
   const [users, stores] = await Promise.all([listUsers(user), listStores(user)]);
-  const canManage = hasRole(user, "MANAGER");
+  const canManage = true;
 
   return (
     <>

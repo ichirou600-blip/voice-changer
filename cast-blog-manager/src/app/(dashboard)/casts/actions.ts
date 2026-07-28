@@ -77,19 +77,30 @@ export const setCastTargetAction = defineAction("MANAGER", async (ctx, formData:
   return { effectiveFrom: target.effectiveFrom };
 });
 
-/** LINE 連携用のワンタイムコードを発行する（キャスト本人に手渡す） */
-export const issueLinkCodeAction = defineAction("STAFF", async (ctx, castId: string) => {
+/**
+ * LINE 連携用のワンタイムコードを発行する（キャスト本人に手渡す）。
+ *
+ * 実装レビューで「STAFF が任意のキャストのコードを発行し、
+ * 自分の LINE を紐付けて実績を捏造できる」と指摘されたため MANAGER 以上に限定した。
+ * （解除も MANAGER のみなので、STAFF は不正な紐付けを作ることも直すこともできない）
+ */
+export const issueLinkCodeAction = defineAction("MANAGER", async (ctx, castId: string) => {
   const cast = await getCast(ctx.user, castId);
   if (!cast) throw new ValidationError("キャストが見つかりません");
   if (cast.lineStatus === "LINKED") throw new ValidationError("既に連携済みです");
 
-  // 衝突しないコードを引き当てる（極めて低確率だが念のため再試行）
-  let code = generateLinkCode();
+  // 衝突しないコードを引き当てる（極めて低確率だが念のため再試行）。
+  // 最終回で衝突したまま抜けないよう、必ず検証してから採用する。
+  let code: string | null = null;
   for (let i = 0; i < 5; i++) {
-    const clash = await prisma.cast.findFirst({ where: { lineLinkCode: code } });
-    if (!clash) break;
-    code = generateLinkCode();
+    const candidate = generateLinkCode();
+    const clash = await prisma.cast.findFirst({ where: { lineLinkCode: candidate } });
+    if (!clash) {
+      code = candidate;
+      break;
+    }
   }
+  if (!code) throw new ValidationError("連携コードを発行できませんでした。再度お試しください。");
 
   await prisma.cast.update({
     where: { id: cast.id },
@@ -135,5 +146,7 @@ export const unlinkLineAction = defineAction("MANAGER", async (ctx, castId: stri
   });
 
   revalidatePath(`/casts/${cast.id}`);
+  revalidatePath("/casts");
+  revalidatePath("/dashboard");
   return { ok: true };
 });

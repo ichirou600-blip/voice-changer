@@ -61,16 +61,24 @@ export async function writeAudit(input: AuditInput): Promise<void> {
 
 /**
  * リクエストのクライアント IP を推定する。
- * Vercel では `x-forwarded-for` の先頭が実クライアント。
+ *
+ * `x-forwarded-for` の先頭はクライアントが送った値がそのまま残る構成
+ * （nginx の $proxy_add_x_forwarded_for など）があるため、
+ * プロキシが自ら付与する `x-real-ip` を優先する。
+ * どちらも信頼できない環境ではレート制限のキーとしては弱いので、
+ * IP 単位の制限に加えてアカウント単位の制限も併用している。
  */
 export function getClientIp(): string | null {
   const h = headers();
+  const realIp = h.get("x-real-ip")?.trim();
+  if (realIp) return realIp;
+
   const xff = h.get("x-forwarded-for");
   if (xff) {
     const first = xff.split(",")[0]?.trim();
     if (first) return first;
   }
-  return h.get("x-real-ip");
+  return null;
 }
 
 export function getUserAgent(): string | null {

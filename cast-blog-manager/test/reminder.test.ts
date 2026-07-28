@@ -54,11 +54,28 @@ afterEach(() => {
 describe("純粋な判定ロジック", () => {
   it("キャッチアップ型: 送信時刻を過ぎていれば何時でも対象", () => {
     // JST 17:00 ちょうど
-    expect(isReminderTimeReached(new Date("2026-07-28T08:00:00Z"), 17)).toBe(true);
+    expect(isReminderTimeReached(new Date("2026-07-28T08:00:00Z"), 17, 6)).toBe(true);
     // JST 23:00（大幅に遅延して実行された場合）→ それでも送る
-    expect(isReminderTimeReached(new Date("2026-07-28T14:00:00Z"), 17)).toBe(true);
+    expect(isReminderTimeReached(new Date("2026-07-28T14:00:00Z"), 17, 6)).toBe(true);
     // JST 16:59 → まだ送らない
-    expect(isReminderTimeReached(new Date("2026-07-28T07:59:00Z"), 17)).toBe(false);
+    expect(isReminderTimeReached(new Date("2026-07-28T07:59:00Z"), 17, 6)).toBe(false);
+  });
+
+  it("送信時刻が営業日の区切りより前でも正しく扱える（深夜リマインド）", () => {
+    // 区切り6時・リマインド3時 = 営業日の終盤（翌カレンダー日の深夜3時）
+    // JST 7/28 06:00（営業日の開始直後）→ まだ送らない
+    expect(isReminderTimeReached(new Date("2026-07-27T21:00:00Z"), 3, 6)).toBe(false);
+    // JST 7/28 23:00 → まだ送らない
+    expect(isReminderTimeReached(new Date("2026-07-28T14:00:00Z"), 3, 6)).toBe(false);
+    // JST 7/29 03:00（営業日の21時間後）→ 送る
+    expect(isReminderTimeReached(new Date("2026-07-28T18:00:00Z"), 3, 6)).toBe(true);
+    // JST 7/29 05:00 → まだ同じ営業日なので送る（キャッチアップ）
+    expect(isReminderTimeReached(new Date("2026-07-28T20:00:00Z"), 3, 6)).toBe(true);
+  });
+
+  it("区切り0時ならカレンダー時刻と一致する", () => {
+    expect(isReminderTimeReached(new Date("2026-07-28T07:59:00Z"), 17, 0)).toBe(false); // JST16:59
+    expect(isReminderTimeReached(new Date("2026-07-28T08:00:00Z"), 17, 0)).toBe(true); // JST17:00
   });
 
   it("直近しきい値日数に更新があればリマインドしない", () => {
@@ -90,6 +107,14 @@ describe("純粋な判定ロジック", () => {
       reason: "QUOTA",
     });
     expect(decideSend({ ...base, existingResult: null })).toEqual({ action: "SEND" });
+    // 他インスタンスが処理中（SENDING かつ猶予内）はスキップ
+    expect(
+      decideSend({ ...base, existingResult: "SENDING", sendingIsFresh: true }),
+    ).toEqual({ action: "SKIP", reason: "IN_PROGRESS" });
+    // 猶予を過ぎた SENDING は回収して再送できる
+    expect(
+      decideSend({ ...base, existingResult: "SENDING", sendingIsFresh: false }),
+    ).toEqual({ action: "SEND" });
     // 失敗後（上限未満）は再試行できる
     expect(
       decideSend({ ...base, existingResult: "FAILED", existingAttemptCount: 1 }),
@@ -121,6 +146,40 @@ describe("runReminders", () => {
     expect(third.sent).toBe(0);
     expect(second.skipped.ALREADY_SENT).toBe(1);
     expect(await prisma.lineMessageLog.count()).toBe(1);
+  });
+
+  it("同時に複数インスタンスが走っても二重送信しない（CAS）", async () => {
+    // 実装レビューで「upsert しただけでは行ロックにならず、
+    // 2プロセスが同じ PENDING を読んで両方送信する」と指摘された箇所の回帰テスト
+    const [a, b, c] = await Promise.all([
+      runReminders(NOW),
+      runReminders(NOW),
+      runReminders(NOW),
+    ]);
+
+    expect(pushMock).toHaveBeenCalledTimes(1);
+    expect(a.sent + b.sent + c.sent).toBe(1);
+    expect(await prisma.lineMessageLog.count()).toBe(1);
+    expect((await prisma.lineMessageLog.findFirst())?.result).toBe("SENT");
+  });
+
+  it("店舗を限定して実行できる（他店舗の枠を消費しない）", async () => {
+    const otherStore = await prisma.store.create({
+      data: { name: "別店", businessDayStart: 6, reminderHour: 17, daysStaleThreshold: 2 },
+    });
+    await prisma.cast.create({
+      data: {
+        storeId: otherStore.id,
+        name: "べつこ",
+        lineStatus: "LINKED",
+        lineUserId: "U-other",
+      },
+    });
+
+    const result = await runReminders(NOW, { storeIds: [otherStore.id] });
+    expect(result.checkedStores).toBe(1);
+    expect(result.sent).toBe(1);
+    expect(pushMock.mock.calls[0][0]).toBe("U-other");
   });
 
   it("送信時刻前は何もしない", async () => {

@@ -91,6 +91,24 @@ export function assertStoreAccess(user: SessionUser, storeId: string | null | un
   }
 }
 
+/**
+ * 「自分と同格以上のユーザーを操作していないか」を検証する。
+ *
+ * 実装レビューで、同じ趣旨のチェックが3箇所に手書きされていて
+ * `revokeSessions` だけ抜けており、MANAGER が同店舗の ADMIN を
+ * 強制ログアウトし続けて締め出せる、という欠陥が見つかった。
+ * ガード漏れが再発しないよう1箇所に集約する。
+ */
+export function assertCanManageUser(
+  actor: SessionUser,
+  target: { id: string; role: Role },
+): void {
+  if (actor.id === target.id) return; // 自分自身への操作は各呼び出し側で判断する
+  if (ROLE_RANK[target.role] >= ROLE_RANK[actor.role]) {
+    throw new AuthorizationError("自分と同じかそれ以上の権限を持つユーザーは操作できません");
+  }
+}
+
 /** Server Action の戻り値。例外を UI に出せる形へ正規化する */
 export type ActionResult<T = void> =
   | { ok: true; data: T }

@@ -32,8 +32,9 @@ export const voidPostAction = defineAction("MANAGER", async (ctx, formData: Form
   if (!parsed.success) {
     throw new ValidationError(parsed.error.issues[0]?.message ?? "理由を入力してください");
   }
-  await voidPost(ctx.user, parsed.data);
+  const voided = await voidPost(ctx.user, parsed.data);
   revalidatePath("/posts");
   revalidatePath("/dashboard");
+  revalidatePath(`/casts/${voided.castId}`);
   return { ok: true };
 });

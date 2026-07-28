@@ -97,9 +97,22 @@ export async function updateCast(
   });
   if (duplicate) throw new ValidationError("同じ源氏名のキャストが既に登録されています");
 
+  // 退店時は LINE 連携も解除する。
+  // 残したままだと、退店者の端末が follow などで反応し続け、
+  // 後で在籍に戻したときに旧端末の紐付けが黙って復活する。
+  const clearLine =
+    input.status === "RETIRED"
+      ? {
+          lineUserId: null,
+          lineStatus: "NOT_LINKED" as const,
+          lineLinkCode: null,
+          lineLinkCodeExpiresAt: null,
+        }
+      : {};
+
   return prisma.cast.update({
     where: { id: cast.id },
-    data: { name: input.name, status: input.status },
+    data: { name: input.name, status: input.status, ...clearLine },
   });
 }
 

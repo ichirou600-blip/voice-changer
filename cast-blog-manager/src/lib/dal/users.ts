@@ -1,7 +1,12 @@
 import "server-only";
 
 import { writeAudit } from "@/lib/audit";
-import { assertStoreAccess, storeScope, ValidationError } from "@/lib/auth/authorize";
+import {
+  assertCanManageUser,
+  assertStoreAccess,
+  storeScope,
+  ValidationError,
+} from "@/lib/auth/authorize";
 import { hashPassword } from "@/lib/auth/password";
 import { destroyAllSessionsForUser, type SessionUser } from "@/lib/auth/session";
 import { generateToken, hashToken } from "@/lib/auth/tokens";
@@ -50,8 +55,17 @@ export async function issueInvitation(
     assertStoreAccess(actor, targetStoreId);
   }
 
+  // メールアドレスは全体で一意なので存在確認は避けられないが、
+  // 自分のスコープ外のユーザーの登録有無までは確定させない
   const existing = await prisma.user.findUnique({ where: { email: input.email } });
-  if (existing) throw new ValidationError("このメールアドレスは既に登録されています");
+  if (existing) {
+    const visible = actor.role === "ADMIN" || existing.storeId === actor.storeId;
+    throw new ValidationError(
+      visible
+        ? "このメールアドレスは既に登録されています"
+        : "このメールアドレスは招待できません。管理者にお問い合わせください。",
+    );
+  }
 
   const token = generateToken();
   const expiresAt = new Date(Date.now() + INVITE_TTL_MS);
@@ -89,9 +103,7 @@ export async function issuePasswordReset(
   });
   if (!target) throw new ValidationError("対象ユーザーが見つかりません");
   if (!target.isActive) throw new ValidationError("無効化されたユーザーには発行できません");
-  if (target.role === "ADMIN" && actor.role !== "ADMIN") {
-    throw new ValidationError("管理者のパスワードを再設定できるのは管理者のみです");
-  }
+  assertCanManageUser(actor, target);
 
   const token = generateToken();
   const expiresAt = new Date(Date.now() + RESET_TTL_MS);
@@ -217,9 +229,7 @@ export async function setUserActive(
     where: { id: targetUserId, ...(actor.role === "ADMIN" ? {} : storeScope(actor)) },
   });
   if (!target) throw new ValidationError("対象ユーザーが見つかりません");
-  if (target.role === "ADMIN" && actor.role !== "ADMIN") {
-    throw new ValidationError("管理者を操作できるのは管理者のみです");
-  }
+  assertCanManageUser(actor, target);
 
   // 最後の有効な管理者を無効化して締め出されるのを防ぐ
   if (!isActive && target.role === "ADMIN") {
@@ -247,6 +257,7 @@ export async function listSessionsForUser(actor: SessionUser, targetUserId: stri
     where: { id: targetUserId, ...(actor.role === "ADMIN" ? {} : storeScope(actor)) },
   });
   if (!target) throw new ValidationError("対象ユーザーが見つかりません");
+  assertCanManageUser(actor, target);
 
   return prisma.session.findMany({
     where: { userId: target.id, idleExpiresAt: { gt: new Date() } },
@@ -261,6 +272,7 @@ export async function revokeSessions(actor: SessionUser, targetUserId: string): 
     where: { id: targetUserId, ...(actor.role === "ADMIN" ? {} : storeScope(actor)) },
   });
   if (!target) throw new ValidationError("対象ユーザーが見つかりません");
+  assertCanManageUser(actor, target);
 
   const count = await destroyAllSessionsForUser(target.id);
   await writeAudit({

@@ -232,6 +232,41 @@ describe("LINE 自己申告（連打・誤タップ対策）", () => {
     expect(await prisma.blogPost.count()).toBe(1);
   });
 
+  it("「今日の分」の直後に「昨日の分」を入れられる（別営業日はガードしない）", async () => {
+    // 実装レビューで「businessDate を条件に入れていないため、
+    // 昨日の分が記録されないのに成功したように見える」と指摘された箇所の回帰テスト
+    const now = new Date("2026-07-28T17:00:00Z");
+    const today = await createPostFromLine({
+      castId,
+      storeBusinessDayStart: 6,
+      which: "today",
+      now,
+    });
+    const yesterday = await createPostFromLine({
+      castId,
+      storeBusinessDayStart: 6,
+      which: "yesterday",
+      now: new Date(now.getTime() + 30_000),
+    });
+
+    expect(today).toEqual({ created: true, businessDate: "2026-07-28" });
+    expect(yesterday).toEqual({ created: true, businessDate: "2026-07-27" });
+    expect(await prisma.blogPost.count()).toBe(2);
+  });
+
+  it("同じ営業日の連打は引き続きガードされる", async () => {
+    const now = new Date("2026-07-28T17:00:00Z");
+    await createPostFromLine({ castId, storeBusinessDayStart: 6, which: "yesterday", now });
+    const again = await createPostFromLine({
+      castId,
+      storeBusinessDayStart: 6,
+      which: "yesterday",
+      now: new Date(now.getTime() + 30_000),
+    });
+    expect(again.created).toBe(false);
+    expect(await prisma.blogPost.count()).toBe(1);
+  });
+
   it("重複ウィンドウを過ぎれば1日複数回の記録は正当に受け付ける", async () => {
     const now = new Date("2026-07-28T17:00:00Z");
     await createPostFromLine({ castId, storeBusinessDayStart: 6, which: "today", now });

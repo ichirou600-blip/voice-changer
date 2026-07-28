@@ -80,7 +80,12 @@ export default async function CastDetailPage({ params }: { params: { castId: str
         lineStatus={cast.lineStatus}
         canManage={canManage}
         pendingLinkCode={
-          cast.lineLinkCode && cast.lineLinkCodeExpiresAt && cast.lineLinkCodeExpiresAt > new Date()
+          // 連携コードは MANAGER 以上にしか表示しない。
+          // STAFF に見せると、キャスト本人より先に自分の LINE を紐付けられてしまう。
+          canManage &&
+          cast.lineLinkCode &&
+          cast.lineLinkCodeExpiresAt &&
+          cast.lineLinkCodeExpiresAt > new Date()
             ? cast.lineLinkCode
             : null
         }

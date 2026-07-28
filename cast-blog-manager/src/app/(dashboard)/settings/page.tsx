@@ -10,8 +10,12 @@ export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
   const user = await requireUserOrRedirect();
-  const [stores, quota] = await Promise.all([listStores(user), getQuotaStatus()]);
   const canManage = hasRole(user, "MANAGER");
+  // 送信数は店舗横断の情報なので STAFF には出さない
+  const [stores, quota] = await Promise.all([
+    listStores(user),
+    canManage ? getQuotaStatus() : Promise.resolve(null),
+  ]);
 
   return (
     <>
@@ -20,7 +24,7 @@ export default async function SettingsPage() {
         description="営業日の区切り時刻やリマインドの条件を店舗ごとに設定します。"
       />
 
-      {canManage ? (
+      {canManage && quota ? (
         <Card className="mb-6">
           <h2 className="mb-3 text-sm font-semibold">リマインド</h2>
           <ReminderPanel quota={quota} />

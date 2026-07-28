@@ -14,7 +14,12 @@ import { runReminders } from "@/lib/reminder-runner";
  * 冪等なので、押しすぎても二重送信にはならない。
  */
 export const runRemindersNowAction = defineAction("MANAGER", async (ctx) => {
-  const result = await runReminders();
+  // 非 ADMIN が押したときに他店舗のリマインドまで発火し、
+  // 共有の月間送信枠を消費してしまわないよう自店舗に限定する
+  const result = await runReminders(
+    new Date(),
+    ctx.user.role === "ADMIN" ? {} : { storeIds: ctx.user.storeId ? [ctx.user.storeId] : [] },
+  );
   await writeAudit({
     actorUserId: ctx.user.id,
     action: "REMINDER_RUN",
@@ -24,4 +29,4 @@ export const runRemindersNowAction = defineAction("MANAGER", async (ctx) => {
   return result;
 });
 
-export const getQuotaAction = defineAction("STAFF", async () => getQuotaStatus());
+export const getQuotaAction = defineAction("MANAGER", async () => getQuotaStatus());

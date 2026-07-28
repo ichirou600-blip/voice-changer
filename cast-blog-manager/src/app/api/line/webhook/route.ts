@@ -82,6 +82,10 @@ async function handleEvent(event: LineEvent): Promise<void> {
 
   if (event.type === "follow") {
     const cast = await prisma.cast.findUnique({ where: { lineUserId } });
+    if (cast && cast.status !== "ACTIVE") {
+      // 退店・休止中は連携を復帰させない
+      return;
+    }
     if (cast) {
       // ブロック解除で戻ってきた場合は連携を復帰させる
       await prisma.cast.update({ where: { id: cast.id }, data: { lineStatus: "LINKED" } });
@@ -180,7 +184,9 @@ async function handleTextMessage(event: LineEvent, lineUserId: string, text: str
 
 async function handlePostback(event: LineEvent, lineUserId: string, data: string): Promise<void> {
   const cast = await prisma.cast.findUnique({ where: { lineUserId }, include: { store: true } });
-  if (!cast || cast.status === "RETIRED") return;
+  // 在籍中のみ受け付ける。休止・退店中の記録はダッシュボードにも
+  // リマインドにも現れないため、作っても本人に不利益になるだけ。
+  if (!cast || cast.status !== "ACTIVE") return;
 
   const which = new URLSearchParams(data).get("report");
   if (which === "cancel") {

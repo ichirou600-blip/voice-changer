@@ -70,7 +70,8 @@ enum MessageKind {
 
 /// LINE 送信結果（PENDING で claim し、送信後に更新する）
 enum MessageResult {
-  PENDING // 送信予約（claim 済み・未送信）
+  PENDING // 行だけ作成された状態（未 claim）
+  SENDING // claim 済み・送信処理中（クラッシュ時は一定時間後に回収される）
   SENT // 送信成功
   FAILED // 送信失敗（attemptCount 上限まで再試行可）
   SKIPPED_QUOTA // 月間送信数上限のためスキップ
