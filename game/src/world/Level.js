@@ -173,6 +173,13 @@ const NO_CAST = new Set(['dark', 'glass', 'sign', 'lamp', 'horizon']);
 const SPARSE = new Set(['glass', 'sign', 'lamp', 'panel', 'rubber', 'fabric', 'sheet', 'metal', 'dark', 'granular', 'hessian', 'horizon']);
 
 /**
+ * Batches whose UVs mean something and must not be slid about: the shop
+ * signage picks a quadrant out of a four-entry atlas, so an offset would show
+ * a corner of two different signs at once.
+ */
+const UV_ANCHORED = new Set(['sign']);
+
+/**
  * Distinct prototype shapes per scatter kind. One prototype means every chunk
  * in a pile is the same solid at a different angle, which is exactly what the
  * eye picks out at close range; four costs three extra draw calls.
@@ -234,66 +241,101 @@ function cylGeo(rTop, rBot, h, seg = 10, density = 0.42) {
  *
  *   1. subdivide to `detail` (80 faces at 1, 320 at 2) and squash on three
  *      hashed axes, so the silhouette is never spherical;
- *   2. displace by two octaves of lattice noise — the coarse octave makes
- *      lobes and hollows, the fine one chips the edges;
- *   3. cut with four to seven random half-spaces, snapping everything outside
+ *   2. displace radially by three octaves of hashed lattice noise — the coarse
+ *      octave makes lobes and hollows, the finer ones chip the edges;
+ *   3. cut with three to six random half-spaces, snapping everything outside
  *      each one flat onto it. That is what makes a fracture plane: a genuinely
  *      planar face whose boundary is a hard crease in the silhouette, and
- *      several of them at unrelated angles so no two catch the key alike;
- *   4. split every triangle onto its own vertices so the facets shade as
- *      facets — a fracture face that shades smoothly into the rough ground
- *      beside it is a pebble, not a broken block.
+ *      several of them at unrelated angles so no two catch the key alike.
+ *      Each plane is placed against the lump's own support along its normal,
+ *      so a cut always takes a real slab off instead of shaving a cap that
+ *      leaves the thing a sphere;
+ *   4. leave it non-indexed and recompute normals, so every triangle shades as
+ *      its own facet — a fracture face that shades smoothly into the rough
+ *      ground beside it is a pebble, not a broken block.
  *
- * UVs are world-derived at the end so the concrete map keeps constant texel
- * density instead of the icosahedron's spherical parameterisation, which
- * pinches to nothing at the poles.
+ * UVs are the polyhedron's own, scaled. `worldUV` is wrong here: it picks a
+ * projection axis per triangle from the face normal, and on a lump whose
+ * normals swing through every direction that flips the axis all over the
+ * surface. The concrete map has shuttering-board joints running along V, so
+ * every flip turns those lines through ninety degrees and the chunk comes out
+ * wearing a grid.
  */
 function rockGeo(radius, rnd, detail = 2) {
-  const g = new THREE.IcosahedronGeometry(1, detail).toNonIndexed();
+  const g = new THREE.IcosahedronGeometry(1, detail);
   const p = g.attributes.position;
 
-  // Two independent noise lattices, sampled by direction. Cheap, seeded per
-  // chunk, and continuous across the sphere because it is a function of the
-  // vertex position rather than of the parameterisation.
-  const H = [];
-  for (let i = 0; i < 64; i++) H.push(rnd());
-  const lat = (x, y, z, f, o) => {
-    const s = Math.sin((x * 12.9898 + y * 78.233 + z * 37.719) * f + o);
-    const t = Math.sin((x * 39.346 + y * 11.135 + z * 83.155) * f * 1.7 + o * 2.3);
-    return (s * 0.62 + t * 0.38);
+  // A seeded 3D value-noise lattice. Sums of sines were tried here and are not
+  // adequate: they are smooth and separable, so they make a gently swollen
+  // sphere rather than a lump with hollows in it.
+  const perm = new Uint8Array(512);
+  for (let i = 0; i < 256; i++) perm[i] = i;
+  for (let i = 255; i > 0; i--) {
+    const j = (rnd() * (i + 1)) | 0; const t = perm[i]; perm[i] = perm[j]; perm[j] = t;
+  }
+  for (let i = 0; i < 256; i++) perm[i + 256] = perm[i];
+  const gv = (i, j, k) => perm[(perm[(perm[i & 255] + j) & 255] + k) & 255] * (1 / 255);
+  const vn = (x, y, z) => {
+    const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+    const fx = x - xi, fy = y - yi, fz = z - zi;
+    const u = fx * fx * (3 - 2 * fx), v = fy * fy * (3 - 2 * fy), w = fz * fz * (3 - 2 * fz);
+    const L = (a, b, t) => a + (b - a) * t;
+    const c00 = L(gv(xi, yi, zi), gv(xi + 1, yi, zi), u);
+    const c10 = L(gv(xi, yi + 1, zi), gv(xi + 1, yi + 1, zi), u);
+    const c01 = L(gv(xi, yi, zi + 1), gv(xi + 1, yi, zi + 1), u);
+    const c11 = L(gv(xi, yi + 1, zi + 1), gv(xi + 1, yi + 1, zi + 1), u);
+    return L(L(c00, c10, v), L(c01, c11, v), w);
   };
 
-  const sx = 0.80 + rnd() * 0.46, sy = 0.48 + rnd() * 0.36, sz = 0.80 + rnd() * 0.46;
-  const a0 = H[0] * 6.28, a1 = H[1] * 6.28;
+  const sx = 0.80 + rnd() * 0.44, sy = 0.50 + rnd() * 0.34, sz = 0.80 + rnd() * 0.44;
+  const o1 = rnd() * 40, o2 = rnd() * 40, o3 = rnd() * 40;
 
-  // Fracture planes: unit normal plus an offset that always leaves the chunk
-  // with a core, so a cut can never eat the whole thing.
-  const planes = [];
-  const nP = 4 + ((rnd() * 4) | 0);
-  for (let i = 0; i < nP; i++) {
-    const cz = rnd() * 2 - 1, ang = rnd() * Math.PI * 2, r = Math.sqrt(Math.max(0, 1 - cz * cz));
-    planes.push([Math.cos(ang) * r, cz, Math.sin(ang) * r, 0.52 + rnd() * 0.30]);
+  // 1-2 — squash and displace, into a scratch buffer so the cuts below can be
+  // placed against the shape that actually exists.
+  const n = p.count;
+  const V = new Float64Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const rr = 1
+      + (vn(x * 2.30 + o1, y * 2.30 + o1, z * 2.30 + o1) - 0.5) * 0.46
+      + (vn(x * 5.10 + o2, y * 5.10 + o2, z * 5.10 + o2) - 0.5) * 0.21
+      + (vn(x * 11.3 + o3, y * 11.3 + o3, z * 11.3 + o3) - 0.5) * 0.13;
+    V[i * 3] = x * sx * rr; V[i * 3 + 1] = y * sy * rr; V[i * 3 + 2] = z * sz * rr;
   }
 
-  for (let i = 0; i < p.count; i++) {
-    let x = p.getX(i), y = p.getY(i), z = p.getZ(i);
-    // 2 — relief, applied radially so it cannot fold the surface through itself.
-    const n1 = lat(x, y, z, 2.15, a0);
-    const n2 = lat(x, y, z, 6.40, a1);
-    const rr = 1 + n1 * 0.17 + n2 * 0.075;
-    x *= sx * rr; y *= sy * rr; z *= sz * rr;
-    // 3 — fracture planes.
-    for (const [nx, ny, nz, d] of planes) {
-      const t = x * nx + y * ny + z * nz;
-      if (t > d) { x -= nx * (t - d); y -= ny * (t - d); z -= nz * (t - d); }
+  // 3 — fracture planes, each placed at 60-88% of the lump's support along its
+  // own normal. A fixed offset cannot do this: on a shape whose radius runs
+  // from 0.4 to 1.3 the same offset is a deep cut in one direction and no cut
+  // at all in another, which is why the first attempt came out spherical.
+  const nP = 3 + ((rnd() * 4) | 0);
+  for (let k = 0; k < nP; k++) {
+    const cz = rnd() * 2 - 1, ang = rnd() * Math.PI * 2;
+    const r = Math.sqrt(Math.max(0, 1 - cz * cz));
+    const nx = Math.cos(ang) * r, ny = cz, nz = Math.sin(ang) * r;
+    let sup = -Infinity;
+    for (let i = 0; i < n; i++) {
+      const t = V[i * 3] * nx + V[i * 3 + 1] * ny + V[i * 3 + 2] * nz;
+      if (t > sup) sup = t;
     }
-    p.setXYZ(i, x * radius, y * radius, z * radius);
+    const d = sup * (0.50 + rnd() * 0.30);
+    for (let i = 0; i < n; i++) {
+      const t = V[i * 3] * nx + V[i * 3 + 1] * ny + V[i * 3 + 2] * nz;
+      if (t > d) {
+        const e = t - d;
+        V[i * 3] -= nx * e; V[i * 3 + 1] -= ny * e; V[i * 3 + 2] -= nz * e;
+      }
+    }
   }
+
+  for (let i = 0; i < n; i++) {
+    p.setXYZ(i, V[i * 3] * radius, V[i * 3 + 1] * radius, V[i * 3 + 2] * radius);
+  }
+  // Flat facets: the polyhedron is already one vertex per corner per face, so
+  // recomputing normals here gives per-face normals and nothing is smoothed
+  // across a fracture crease.
   g.computeVertexNormals();
-  // ~2 tiles of the concrete map across a chunk, which is the same texel
-  // density convention boxGeo uses and keeps the map from either smearing or
-  // showing its own repeat on a prop the camera can walk up to.
-  worldUV(g, 1.9);
+  const uv = g.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) * 5.2, uv.getY(i) * 5.2);
   g.computeBoundingBox();
   return g;
 }
@@ -639,6 +681,24 @@ export class Level {
     geo.computeBoundingBox();
     const bb = geo.boundingBox;
     const mx = (bb.min.x + bb.max.x) * 0.5, mz = (bb.min.z + bb.max.z) * 0.5;
+    // Every helper in this file lays UVs out from the geometry's own corner:
+    // boxGeo runs u from 0 to w*density starting at zero, cylGeo the same, and
+    // `wallSolids` chops an elevation into a dozen separate piers and
+    // spandrels. So every panel in the city sampled the SAME corner of its map,
+    // and the plaster's handful of distinctive dark marks landed at the same
+    // place on all of them — which is what reads as twenty identical decals
+    // flicked onto the walls from a one-entry atlas. Sliding each panel's UVs
+    // by a hash of where it stands costs nothing at run time and means no two
+    // panels show the same piece of the texture. The panel joins were already
+    // texture discontinuities (each one restarted at zero), so this cannot
+    // introduce a seam that was not there.
+    if (!UV_ANCHORED.has(PALETTE[key]?.batch || key) && geo.attributes.uv) {
+      const h = Math.sin(bb.min.x * 21.71 + bb.min.y * 7.13 + bb.min.z * 43.37) * 43758.5453;
+      const h2 = Math.sin(bb.min.x * 5.19 + bb.min.y * 31.9 + bb.min.z * 11.77) * 24634.6345;
+      const ou = (h - Math.floor(h)) * 16.0, ov = (h2 - Math.floor(h2)) * 16.0;
+      const uv = geo.attributes.uv;
+      for (let i = 0; i < uv.count; i++) uv.setXY(i, uv.getX(i) + ou, uv.getY(i) + ov);
+    }
     // Two-tier grid. Inside the playable core the fine cells buy real frustum
     // culling; the skyline filler beyond it is on screen in every pose that can
     // see it at all, so culling there costs draw calls and returns nothing.
@@ -677,15 +737,25 @@ export class Level {
       const ny = nrm ? nrm.getY(i) : 0;
       // Broad tonal drift so two buildings sharing a material never match.
       const macro = fbm2(n, x * 0.031, z * 0.031, 3) * 0.5 + 0.5;
-      // High frequency across, low along height: reads as rain/rust streaking.
-      const streak = fbm2(n, (x + z) * 0.42, y * 0.075, 3) * 0.5 + 0.5;
+      // Rain and rust run-off. This used to be one octave stack at 0.42/m
+      // across and 0.075/m up, applied to every vertex on every elevation at
+      // full strength: 2-3 m wide vertical bands running unbroken from parapet
+      // to pavement, on every wall in the city. That is not weathering, it is
+      // plank grain, and it is what the review is calling wood.
+      //
+      // Real run-off is narrow — a 20-40 cm tail below whatever shed the water
+      // — and it is patchy, because it only happens under a coping defect or a
+      // blocked outlet. So: four times the horizontal frequency, and gated by a
+      // slow mask so most of the wall carries none of it at all.
+      const streak = fbm2(n, (x + z) * 1.05, y * 0.055, 3) * 0.5 + 0.5;
+      const runoff = clamp(fbm2(n, (x + z) * 0.13, y * 0.022, 2) * 1.9 - 0.42, 0, 1);
       const ground = 1 - smoothstep(0.0, 3.0, y);      // splash-back grime
       const up = clamp(ny, 0, 1);                       // dust settles on ledges
       const down = clamp(-ny, 0, 1);                    // contact shadow under trim
 
       let v = 0.80 + macro * 0.30;
       v *= 1 - ground * 0.34 * (0.35 + streak * 0.85);
-      v *= 1 - (1 - streak) * 0.11;
+      v *= 1 - (1 - streak) * 0.15 * runoff;
       v *= 1 - down * 0.32;
       v *= 1 + up * 0.06;
       const dust = up * (0.35 + macro * 0.45);
@@ -1499,11 +1569,11 @@ float gKerb(vec2 P) {
           + 'vec3 aTex = texture2D(map, vSplatUV*0.72).rgb;\n'
           + 'float aggr = texture2D(map, vSplatUV*1.63 + 0.37).g;\n'
           + 'float aLum = clamp(0.10 + 18.0*dot(aTex, vec3(0.3333)), 0.0, 2.4);\n'
-          + 'float grit = mix(1.0, aLum, 0.34) * (0.90 + 0.22*aggr);\n'
+          + 'float grit = mix(1.0, aLum, 0.42) * (0.90 + 0.24*aggr);\n'
           // Multi-scale carriageway: 6 m of old seal and shade, 1.6 m of sweep,
           // a longitudinal streak left by the paver, 18 cm of mottle. The
           // pedestal carries the mean the map's weight cut gave up.
-          + 'float rbase = 0.103;\n'
+          + 'float rbase = 0.099;\n'
           + 'rbase *= 0.62 + 0.80 * gFbm(vSplatUV * 0.17);\n'
           + 'rbase *= 0.84 + 0.34 * gNoise(vSplatUV * 0.62);\n'
           + 'rbase *= 0.90 + 0.20 * gNoise(vSplatUV * vec2(0.22, 2.4));\n'
@@ -1516,8 +1586,8 @@ float gKerb(vec2 P) {
           // tone term is zero wherever the pixel is on bare binder, which is
           // roughly half of the surface, so the eye reads a matrix with
           // something embedded in it rather than a mosaic.
-          + 'rbase *= 1.0 + plA.x * 0.30 + plB.x * (0.24 + ravel * 0.34);\n'
-          + 'rbase *= 1.0 - plA.y * 0.24 - plB.y * (0.10 + ravel * 0.20);\n'
+          + 'rbase *= 1.0 + plA.x * 0.34 + plB.x * (0.28 + ravel * 0.34);\n'
+          + 'rbase *= 1.0 - plA.y * 0.28 - plB.y * (0.13 + ravel * 0.20);\n'
           + 'rbase *= 1.0 - ravel * 0.15;\n'
           + 'vec3 cRoad = vec3(1.09,1.02,0.90) * rbase * grit;\n'
           + 'cRoad *= 1.0 - rd.x * 0.20;\n'                      // polished paths sit darker
@@ -2205,19 +2275,25 @@ float gKerb(vec2 P) {
       // Head soffit — the darkest surface on the whole elevation, and the one
       // that tells the eye how thick the wall is.
       { c: [[xl, yt, -D], [xr, yt, -D], [xr, yt, 0], [xl, yt, 0]],
-        s: [0.15, 0.15, 0.44, 0.44] },
+        s: [0.11, 0.11, 0.40, 0.40] },
       // Jambs. One of the two always catches the key, and the pair of them
       // straddling a dark void is what gives the opening its solid angle.
+      //
+      // The arris values are pushed harder than they were. Past about fifteen
+      // metres the four quads are two or three pixels wide between them and
+      // the resolve averages them against the wall, so whatever contrast is
+      // authored here is what is left after that averaging — 1.26 against a
+      // wall of 1.0 survived as roughly nothing.
       { c: [[xl, yb, -D], [xl, yt, -D], [xl, yt, 0], [xl, yb, 0]],
-        s: [0.28, 0.28, 1.26, 1.26] },
+        s: [0.22, 0.22, 1.50, 1.50] },
       { c: [[xr, yb, 0], [xr, yt, 0], [xr, yt, -D], [xr, yb, -D]],
-        s: [1.26, 1.26, 0.28, 0.28] },
+        s: [1.50, 1.50, 0.22, 0.22] },
     ];
     // Sill bed: bright at the nose where it is rain-washed, dirty at the back
     // of the reveal where nothing ever reaches it.
     if (!doorway) {
       q.push({ c: [[xl, yb, 0], [xr, yb, 0], [xr, yb, -D], [xl, yb, -D]],
-        s: [1.30, 1.30, 0.44, 0.44] });
+        s: [1.54, 1.54, 0.40, 0.40] });
     }
 
     // The sill's own shade on the wall under it, and the two drip stains that
@@ -2225,11 +2301,15 @@ float gKerb(vec2 P) {
     // wall they are painted on.
     const half = o.w / 2 + (simple ? 0.13 : 0.17);
     const y0 = o.y - (simple ? 0.09 : 0.10);
-    const drop = Math.min(0.38, y0 - 0.04);
+    // A dark band under a sill is the one facade cue that stays legible when
+    // the reveal itself is down to two pixels: it lies flat on the wall, so it
+    // never foreshortens, and it is the full width of the opening. Taller and
+    // darker than it was, for exactly that reason.
+    const drop = Math.min(0.46, y0 - 0.04);
     if (!doorway && drop >= 0.08) {
       q.push({ c: [[cx - half, y0 - drop, 0.006], [cx + half, y0 - drop, 0.006],
         [cx + half, y0, 0.006], [cx - half, y0, 0.006]],
-        s: [0.98, 0.98, 0.38, 0.38] });
+        s: [0.99, 0.99, 0.30, 0.30] });
       // Drip stains vary per opening or a terrace turns into a barcode. The
       // jitter is hashed off the opening's own coordinates so it is stable
       // across rebuilds without threading an RNG down here.
@@ -2690,9 +2770,19 @@ float gKerb(vec2 P) {
    *
    * Returns geometry in local space: x centred on 0, z running 0 (wall) to dp.
    */
-  _canopyGeo(w, dp, yBack, yFront, sagU, sagV, t, density = 1.15) {
-    const NU = 7, NV = 4;
+  _canopyGeo(w, dp, yBack, yFront, sagU, sagV, t, density = 1.15, wrink = 0) {
+    // Seven spans across was not enough to draw a catenary: with sagV left at
+    // zero as well, the surface between wall and front bar was ruled straight
+    // and the whole thing measured as a chamfered slab. Twelve by five, and the
+    // slack the canvas actually carries — a run of shallow longitudinal
+    // wrinkles pulled between the arms, deepest where the cloth is least
+    // supported — is what turns a coloured card into fabric.
+    const NU = 12, NV = 5;
     const P = [];
+    // Two incommensurate lobe counts, not one. A single sine across a hanging
+    // cloth is corrugated iron — a failure this kit has already made once with
+    // the laundry — whereas two that never line up read as slack.
+    const lobes = 1.5 + w * 0.62;
     for (let j = 0; j <= NV; j++) {
       const v = j / NV;
       for (let i = 0; i <= NU; i++) {
@@ -2704,7 +2794,12 @@ float gKerb(vec2 P) {
         // fabric is least supported.
         const y = lerp(yBack, yFront, v)
           - sagU * 4 * u * (1 - u) * (0.30 + 0.70 * v)
-          - sagV * 4 * v * (1 - v);
+          - sagV * 4 * v * (1 - v)
+          // Slack: wrinkles running down the fall line, pinned at the wall and
+          // at the hem bar, so they belly in between.
+          - wrink * (Math.sin(u * Math.PI * lobes) * 0.66
+                     + Math.sin(u * Math.PI * lobes * 1.63 + 1.1) * 0.34)
+            * Math.sin(v * Math.PI) * (0.45 + 0.55 * v);
         P.push(x, y, z);
       }
     }
@@ -2747,10 +2842,12 @@ float gKerb(vec2 P) {
       new THREE.Color(0.35, 0.55, 0.32), new THREE.Color(0.9, 0.78, 0.5),
     ][(rnd() * 4) | 0];
 
-    // Canvas over the frame: 4 cm thick, bellied between the arms and sagging
-    // toward the front bar it is lashed to.
-    const sagU = 0.06 + rnd() * 0.055;
-    const g = this._canopyGeo(w, dp, y - 0.06, y - 0.06 - drop, sagU, 0.0, 0.038, 1.15);
+    // Canvas over the frame: 4 cm thick, bellied between the arms, bellied
+    // again between the wall and the front bar it is lashed to, and slack
+    // enough to wrinkle. sagV was zero, which made the fall dead straight.
+    const sagU = 0.075 + rnd() * 0.055;
+    const g = this._canopyGeo(w, dp, y - 0.06, y - 0.06 - drop, sagU,
+      0.030 + rnd() * 0.028, 0.038, 1.15, 0.012 + rnd() * 0.008);
     g.translate(cx, 0, 0.10);
     this._stage('fabric', g, m, tint);
 
@@ -3788,9 +3885,13 @@ float gKerb(vec2 P) {
     }
     this._box('wood', w + 0.2, 0.1, 0.09, 0, postH, dp / 2, m, null, 1.6);
     this._box('wood', w + 0.2, 0.1, 0.09, 0, postH + 0.35, -dp / 2, m, null, 1.6);
-    // Single-pitch canvas roof falling toward the customer side.
-    const roof = boxGeo(w + 0.5, 0.04, dp + 0.85, 1.0);
-    roof.applyMatrix4(mat(0, postH + 0.2, 0.15, 0, -0.2));
+    // Single-pitch canvas roof falling toward the customer side. It was a
+    // tilted box — six flat faces, four hard chamfers, nothing a length of
+    // cloth over two rails has ever done. Same two-skin canopy the shop awnings
+    // use, with the sag between the rails and the slack across them.
+    const roof = this._canopyGeo(w + 0.5, dp + 0.85, postH + 0.36, postH + 0.02,
+      0.080 + rnd() * 0.050, 0.055 + rnd() * 0.035, 0.035, 1.0, 0.015 + rnd() * 0.010);
+    roof.translate(0, 0, -(dp / 2 + 0.42));
     this._stage('fabric', roof.applyMatrix4(m), null, tint);
     this._box('fabric', w + 0.5, 0.34, 0.02, 0, postH - 0.12, dp / 2 + 0.42, m, tint, 1.4);
     // Counter and a stack of produce boxes on it.
@@ -3825,10 +3926,19 @@ float gKerb(vec2 P) {
    */
   _scatterProto(kind, rnd, variant = 0) {
     switch (kind) {
-      // Subdivision 2 on the big chunks, 1 on the small: 320 faces on the
-      // things that get within a couple of metres of the lens, 80 on the fill.
-      // Across 435 rubble and 258 brick instances that is about 130k triangles
-      // against a 1.8 M budget, and it retires the twenty-face d20.
+      // Subdivision 2 on half the chunks, 1 on the rest: 180 faces on the
+      // things that get within a couple of metres of the lens, 80 on the fill,
+      // which across 435 rubble and 258 brick instances is about 73k triangles
+      // against a 1.8 M budget. Subdivision 3 was measured and rejected: at 320
+      // faces the fine noise octaves round the fracture planes off again and
+      // the chunk goes back to being a potato, so the extra triangles bought a
+      // worse read as well as costing more.
+      //
+      // The map is tiled hard (5.2x) on purpose. The concrete set carries a
+      // crack network authored for a wall; at one tile per chunk those cracks
+      // are chunk-sized closed curves and read as contour lines inked onto the
+      // rock; at a fifth of that they are a craze, which is what a broken
+      // lump of concrete actually wears.
       case 'rubble': return {
         geo: rockGeo(0.5, rnd, variant < 2 ? 2 : 1), mat: 'concrete', cast: true, bed: 0.035,
       };
