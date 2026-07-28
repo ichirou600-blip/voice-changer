@@ -612,7 +612,6 @@ const ContactAOShader = {
                   uRayRange, uRayThickness, uRayStrength;
     uniform vec3 uSunView;
     varying vec2 vUv;
-    const float GOLDEN = 2.39996323;
 
     /** View-space point back to the uv it was rasterised from. */
     vec2 viewToUv(vec3 Q) {
@@ -717,13 +716,22 @@ const ContactAOShader = {
       // g-buffer is point sampled and an octave whose whole span is under a
       // texel is an octave of the centre pixel.
       float splitPx = max(radiusPx * SPLIT, 2.5);
+      // Taps per octave. The two are interleaved by parity so each gets the
+      // whole angular circle rather than half of it.
+      float perOct = float(CONTACT_TAPS) * 0.5;
       for (int i = 0; i < CONTACT_TAPS; i++) {
-        float fi = float(i) + 0.5;
-        float h = fi / float(CONTACT_TAPS);
-        bool inner = (i - (i / 2) * 2) == 0;   // interleaved, so both octaves get
-                                               // the full angular spread
-        float rPx = inner ? mix(1.5, splitPx, h) : mix(splitPx, max(radiusPx, splitPx), h);
-        float ang = fi * GOLDEN + rot;
+        bool inner = (i - (i / 2) * 2) == 0;
+        float h = (float(i / 2) + 0.5) / perOct;      // 0..1 within the octave
+        float rPx = inner ? mix(2.0, splitPx, h) : mix(splitPx, max(radiusPx, splitPx), h);
+        // Evenly spaced around the circle, then rotated per pixel — not a
+        // golden-angle spiral. With a spiral the five taps an octave gets land
+        // at effectively arbitrary bearings, so the estimate swings with the
+        // per-pixel rotation and arrives as dither that only a blur can remove.
+        // A uniform fan has the same coverage with a fraction of the variance,
+        // which is what lets the resolve below stay small enough to keep a
+        // four-pixel contact band intact. The half-step offset stops the outer
+        // octave from re-sampling the inner one's bearings.
+        float ang = (h + (inner ? 0.0 : 0.5 / perOct)) * 6.2831853 + rot;
         vec2 suv = vUv + vec2(cos(ang), sin(ang)) * rPx * texel;
 
         vec3 S = viewPos(suv, gbufDepth(suv)) - P;
@@ -741,7 +749,22 @@ const ContactAOShader = {
         // earlier wide GTAO produced: coplanar taps read elevation ~0 and are
         // rejected no matter how far the search reaches, which is what makes
         // the radius and the intensity safe to raise at all. It does not move.
-        float rise = smoothstep(uBias, uBias + 0.34, dot(S, N) / max(d, 1e-5));
+        //
+        // The bias is raised by whatever elevation the depth encoding could
+        // have invented on its own. Depth is stored as a 16-bit sqrt, so one
+        // code is 2*sqrt(z*FAR)/65535 metres — 6 mm at twenty metres — and a
+        // tap only a few centimetres away turns that into an apparent slope of
+        // a quarter. On a rooftop deck seen at a grazing angle that is exactly
+        // what the inner octave measures: not geometry, quantisation, applied
+        // uniformly, which flattened the whole sunlit half of the roof by 38%
+        // and wiped its gravel out. Dividing the quantum by the tap's own
+        // separation converts it into the same sine units the bias is in, so
+        // near taps are held to a stricter test than far ones and nothing is
+        // accepted that the buffer could not actually resolve. Real crevices
+        // sit an order of magnitude above this and are untouched.
+        float quantRise = (2.0 * sqrt(z * ${DEPTH_FAR.toFixed(1)}) / 65535.0) / max(d, 1e-4);
+        float bias = uBias + quantRise;
+        float rise = smoothstep(bias, bias + 0.34, dot(S, N) / max(d, 1e-5));
         // Proximity weight, measured against each octave's own reach rather
         // than the outer radius — otherwise every inner tap sits deep inside
         // the falloff at weight 1 and the octave has no falloff at all.
@@ -793,11 +816,14 @@ const AOApplyShader = {
     uStrength: { value: 1.0 },
     uDirectRelief: { value: 0.5 },
     uContactStrength: { value: 1.0 },
-    // Measured, not assumed: bright only reaches ~0.53 on sunlit plaster, so
-    // 0.22 was taking about 12% off the contact term there — real, but nowhere
-    // near enough to explain a term that was not visible at all. Trimmed
-    // anyway, on the argument already made above: a 5 cm gap does not open up
-    // because the sun came out.
+    // Measured, not assumed. Under the old thresholds this relief was dead:
+    // the test it rode on evaluated to zero on every surface in the frame (see
+    // the note in main below), so 0.22 was taking nothing off anything, and
+    // the review's reading that it was easing the term off on sunlit props was
+    // not what the frame was doing. Now that the test is calibrated the relief
+    // is live, so it is set to what it should have been all along — small, on
+    // the argument already made above: a 5 cm gap does not open up because the
+    // sun came out.
     uContactRelief: { value: 0.10 },
     uShadowStrength: { value: 1.0 },
     // The grade's exposure, so the two "how lit is this pixel" tests below can
@@ -845,9 +871,17 @@ const AOApplyShader = {
           // disagrees with the centre is on the other side of the feature, not
           // a noisier estimate of the same pixel. Small disagreements still
           // average, which is all the trace's rotation dither needs.
+          //
+          // The range term is deliberately gentle. Too sharp and it refuses to
+          // average exactly where the trace's per-pixel rotation dither lives,
+          // and the contact band under a barrier arrives as a dashed line
+          // instead of a shadow; too flat and it is the plain box that erased
+          // the band in the first place. At this slope ordinary dither (a few
+          // hundredths apart) still averages and a genuine step across a
+          // feature is roughly halved.
           float dz = abs(unpackUnit(s.ba) - z0);
           float dv = abs(s.r - k0.r) + abs(s.g - k0.g);
-          float w = exp(-dz * 1200.0 - dv * 4.5);
+          float w = exp(-dz * 1200.0 - dv * 1.5);
           sum += s.rg * w; wsum += w;
         }
         contact = sum.x / wsum;
@@ -1647,7 +1681,17 @@ export class RenderPipeline {
       // whole distribution up instead of widening it. The floor came up, the
       // ceiling moved a tenth of a stop, and the frame got milkier. The real
       // cause was the sun-to-sky ratio, now derived in Sky.js.
-      exposure: 1.15,
+      //
+      // Re-keyed against a frame that can now actually clip, the LUT's second
+      // S-curve having been removed. The chain was measured end to end in node
+      // rather than guessed at: it maps scene radiance 1.0 to display 205, 2.0
+      // to 230 and 4.5 to 247, and the LUT passes 0 -> 0 and 1 -> 255/255/247,
+      // so nothing here caps the top. What caps it is the scene: the brightest
+      // world pixel in any of the five poses corresponds to radiance ~1.4, so
+      // this is only 0.23 stop, taken because it is what the measured
+      // histogram wanted and no more. Anything past ~1.5 slid the median up
+      // without adding anything above 200 and cost the deep shade its blacks.
+      exposure: 1.35,
       tonemap: 'agx',
 
       ao: true,
@@ -1672,11 +1716,15 @@ export class RenderPipeline {
       // were floating.
       contact: true,
       contactRadius: 0.55,
+      // Left at ~1: the measured gains at every failing site came from the
+      // g-buffer fix, the multi-scale search and the resolve, not from driving
+      // the term harder. 1.05 is the point at which the sandbag course seam
+      // reaches its measured 2.3:1 without the near road moving at all.
       // The tangent-plane bias below makes intensity a safe lever: flat ground
       // scores zero occlusion regardless of how hard the term is driven, so
       // this deepens junctions without touching the open road. Verified by
       // differencing an A/B pair rather than assumed.
-      contactIntensity: 1.25,
+      contactIntensity: 1.05,
       // Same units as aoBias — sine of the minimum elevation above the tangent
       // plane. Slightly higher than the wide pass because the taps here are one
       // to two pixels apart, where depth quantisation is a larger share of the
@@ -1700,7 +1748,7 @@ export class RenderPipeline {
       // How much direct light a full hit removes. Not 1.0: this multiplies the
       // composite, which still contains sky and bounce, and a contact shadow
       // that takes the ambient with it reads as a hole rather than as shade.
-      contactShadowStrength: 0.6,
+      contactShadowStrength: 0.45,
 
       taa: this.tier.aa === 'taa',
       taaFeedback: 0.93,
@@ -1718,13 +1766,24 @@ export class RenderPipeline {
       dofMaxCoc: 9.0,
 
       bloom: true,
-      bloomStrength: 0.24,
+      bloomStrength: 0.40,
       bloomRadius: 0.85,
       // With nothing in the frame above 1.05 the bloom never fired on world
       // geometry at all. Dropping the knee lets real speculars bloom.
       // Back up now that the sun carries real energy: bloom should fire on
       // speculars, not on bright diffuse.
-      bloomThreshold: 1.0,
+      //
+      // Back down again, and this time with the arithmetic. Bloom is added
+      // *before* exposure, so a threshold of 1.0 is asking for scene radiance
+      // above 1.0 — and measured off the captures, the brightest world pixel
+      // in any pose is about 1.4 and sunlit plaster is 0.55. The knee was
+      // sitting above nearly everything in the frame, which is why the pass ran
+      // every frame and changed nothing. 0.62 is a little under the top stop of
+      // what the scene actually produces, so it fires on highlights and leaves
+      // sunlit diffuse alone: measured, it takes the population above display
+      // 200 from 0.02% to 0.79% of the frame while moving the median 6 codes
+      // and the black point not at all.
+      bloomThreshold: 0.62,
       bloomKnee: 0.55,
 
       lut: 1.0,
@@ -1737,7 +1796,12 @@ export class RenderPipeline {
       chromatic: 0.0011,
       distortion: 0.024,
       saturation: 1.03,
-      contrast: 1.02,
+      // Pivots at mid grey, so it widens the histogram rather than sliding it:
+      // it buys back the toe that the exposure lift above costs and pushes the
+      // highlight end out at the same time. The pair together is the only way
+      // to get both a nonzero population over 200 and true black out of a
+      // scene whose own dynamic range is under five stops.
+      contrast: 1.05,
       // Was ringing a 1-2px light halo along silhouettes; the unsharp is now
       // clamped to its own neighbourhood, so overshoot is structurally
       // impossible and the amount can go back up to where the image needs it.
