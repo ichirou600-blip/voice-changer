@@ -366,7 +366,7 @@ export class EnemyManager {
     // smooth grey-blue plastic. Nothing on a soldier is that glossy.
     const FABRIC = 0.90;
 
-    const M = (color, roughness, metalness, sheet, normalScale = 1) => {
+    const M = (color, roughness, metalness, sheet, normalScale = 1, env = 1) => {
       const mat = new THREE.MeshStandardMaterial({
         color,
         roughness,
@@ -376,6 +376,14 @@ export class EnemyManager {
         roughnessMap: sheet.roughnessMap,
       });
       mat.normalScale.set(normalScale, normalScale);
+      // The sky probe is a hemisphere of bright blue and every dielectric takes
+      // a broad specular off it whether its albedo is 0.08 or 0.02. On the kit
+      // that term is albedo-independent and therefore pure contrast loss: with
+      // it at full strength the carrier rendered 0.63 of the uniform's
+      // luminance on the shaded side where its albedo ratio is 0.36. Knocking it
+      // back on the nylon and the polymer — which are matte, and none of which
+      // is a mirror — is what lets the value ladder survive into the frame.
+      mat.envMapIntensity = env;
       return mat;
     };
 
@@ -398,15 +406,15 @@ export class EnemyManager {
       camoArm: M(0xffffff, FABRIC, 0.0, s.clothArm),
       camoLeg: M(0xffffff, FABRIC, 0.0, s.clothLeg),
       camoWorn: M(0xb8b4a6, 0.96, 0.0, s.clothFine),     // pads, cargo pockets
-      gaiter: M(0x2f302a, FABRIC, 0.0, s.nylonFine, 0.7),
-      plate: M(0x282a22, 0.70, 0.03, s.nylon),
-      pouch: M(0x33362b, 0.76, 0.02, s.nylon),
-      webbing: M(0x1e201a, 0.70, 0.02, s.nylonFine),
+      gaiter: M(0x2f302a, FABRIC, 0.0, s.nylonFine, 0.7, 0.72),
+      plate: M(0x282a22, 0.74, 0.02, s.nylon, 1, 0.68),
+      pouch: M(0x2e3126, 0.78, 0.01, s.nylon, 1, 0.68),
+      webbing: M(0x1e201a, 0.74, 0.01, s.nylonFine, 1, 0.68),
       // Helmet cover, not a painted shell: same print as the uniform, one step
       // down in value, which stops the head reading as the brightest single mass
       // on the soldier (it measured 2.6x the uniform before).
       helmet: M(0xcfcdbe, 0.88, 0.0, s.clothHelm, 0.8),
-      gear: M(0x212320, 0.55, 0.12, s.nylonFine, 0.5),
+      gear: M(0x212320, 0.66, 0.06, s.nylonFine, 0.5, 0.62),
       skin: M(0xb08466, 0.62, 0.0, s.nylonFine, 0.22),
       glove: M(0x2c2d28, 0.66, 0.03, s.rubber),
       boot: M(0x35322b, 0.60, 0.04, s.rubber),
