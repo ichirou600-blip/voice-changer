@@ -78,7 +78,10 @@ const NORMAL_BIAS = [0.4, 0.85, 1.15, 1.3];
 // at 45 degrees, which is what a five-tap PCF disc needs to stay clean.
 const SLOPE_BIAS = 1.9;
 // Viewmodel IBL multiplier. See the note where it is applied.
-const VIEW_ENV = 0.6;
+// The viewmodel's IBL was BELOW the world's (0.6 against WORLD_ENV 0.78) even
+// though the rig exists to keep the weapon brighter than the scene. Raised
+// clear of it — this is the term that keeps the shadow side off the floor.
+const VIEW_ENV = 1.05;
 // World IBL multiplier. The probe carries the sky's own neat chromaticity, and
 // at full strength it lands undiluted on every up-facing normal — a rooftop
 // unit's top face measured B-R +23.2 against +14.9 on its sides, making
@@ -89,6 +92,7 @@ const WORLD_ENV = 0.78;
 // Shares of the sky's irradiance carried by the hemisphere and bounce fills.
 // See the note in update(): with all three carriers at full strength the fill
 // matched the key and the frame had no directional structure at all.
+const _neutralKey = new THREE.Color(1.0, 0.97, 0.94);
 const HEMI_SHARE = 0.34;
 const BOUNCE_SHARE = 0.30;
 
@@ -677,11 +681,22 @@ export class Lighting {
       Math.max(0.45, _sunView.y),
       _sunView.z * 0.7 + 0.60,
     );
-    this.viewKey.color.copy(sky.sunColor);
-    // Track the sky's own level so the weapon dims at dusk instead of staying
-    // stuck at noon exposure, but hold a floor so it never goes to silhouette.
+    // Pulled toward white rather than copied. At golden hour sunColor has almost
+    // no blue left in it, and copying it rendered the support hand at srgb
+    // [27, 3, 0] — two channels sitting on the quantisation floor, which is a
+    // clipped channel rather than a warm look. The world can take the full
+    // chromaticity because it has sky fill to balance it; the viewmodel's fill
+    // is a fraction of that, so the key has to carry its own neutrality.
+    this.viewKey.color.copy(sky.sunColor).lerp(_neutralKey, 0.42);
     const day = THREE.MathUtils.clamp(sky.sunDirection.y * 1.6, 0, 1);
-    this.viewKey.intensity = 2.4 + day * 2.0;
+    // Linked to the world key's actual magnitude. The rig's whole premise is
+    // that it is brighter than the world on purpose, but it was a hand-set
+    // 2.4-4.4 while the world sun moved to a derived value near 8.4 — measured,
+    // the weapon came out 3.2x DARKER than the scene's median, and it lost a
+    // further 13-21 codes at p95 when the sky's triple-counted fill was cut.
+    // Tracking the sun keeps the stated relationship true as the sky changes.
+    const worldKey = sky.sunIntensity ?? 4.0;
+    this.viewKey.intensity = Math.max(2.4, worldKey * 0.62) + day * 0.6;
     // Re-asserted every frame: Sky.js reassigns viewScene.environment on every
     // probe re-bake, and a future change there could reset the multiplier.
     this.engine.viewScene.environmentIntensity = VIEW_ENV;
@@ -694,7 +709,12 @@ export class Lighting {
     // black. The rim is the other half of the fix — at 0.55 it could not
     // separate the barrel from the background at all.
     this.viewFill.color.copy(sky.ambientColor);
-    this.viewFill.intensity = 0.42 + day * 0.24;
+    // The fill was cut to a third when the view rig was flattening the model.
+    // That was right, but it then had to absorb the world's hemi and bounce
+    // being cut to a residual as well, and the shadow side went to clipped
+    // black — the viewmodel's sub-code-4 area roughly tripled. Restored partway
+    // and scaled with the sky, since it is the only thing holding that side up.
+    this.viewFill.intensity = (0.42 + day * 0.24) * (1.0 + 0.85 * amb / 1.5);
     this.viewRim.color.copy(sky.ambientColor).lerp(_coolRim, 0.55);
     this.viewRim.intensity = 1.30 + day * 0.55;
     this.viewBounce.color.copy(sky.ambientColor).lerp(_warmBounce, 0.62);
