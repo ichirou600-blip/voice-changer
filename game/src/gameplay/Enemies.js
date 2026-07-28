@@ -416,16 +416,23 @@ export class EnemyManager {
       gaiter: M(0x2f302a, FABRIC, 0.0, s.nylonFine, 0.7, 0.60),
       plate: M(0x282a22, 0.74, 0.02, s.nylon, 1, 0.52),
       pouch: M(0x2e3126, 0.78, 0.01, s.nylon, 1, 0.52),
-      webbing: M(0x1e201a, 0.74, 0.01, s.nylonFine, 1, 0.52),
+      webbing: M(0x2b2e25, 0.74, 0.01, s.nylonFine, 1, 0.52),
       // Helmet cover, not a painted shell: same print as the uniform, one step
       // down in value, which stops the head reading as the brightest single mass
       // on the soldier (it measured 2.6x the uniform before).
       helmet: M(0xcfcdbe, 0.88, 0.0, s.clothHelm, 0.8),
-      gear: M(0x212320, 0.66, 0.06, s.nylonFine, 0.5, 0.48),
+      gear: M(0x2e302c, 0.66, 0.06, s.nylonFine, 0.5, 0.48),
       skin: M(0xb08466, 0.62, 0.0, s.nylonFine, 0.22),
-      glove: M(0x2c2d28, 0.66, 0.03, s.rubber),
-      boot: M(0x35322b, 0.60, 0.04, s.rubber),
-      sole: M(0x141412, 0.95, 0.0, s.rubber, 1.4),
+      // Measured against the forearm it joins: the glove rendered at 32.1 while
+      // camoArm beside it rendered 46.5, on a soldier whose whole material set
+      // spans 15 to 57. A hand 14 codes under the sleeve it emerges from has no
+      // edge to be read by, so the arm looked truncated at the elbow — the
+      // forearm and glove are both there and rendering (11.5% and 1.6% of the
+      // soldier's pixels), they simply had no separation. Gloves are also
+      // usually a shade LIGHTER than a dark sleeve, not darker.
+      glove: M(0x4a4a42, 0.62, 0.03, s.rubber),
+      boot: M(0x443f36, 0.60, 0.04, s.rubber),
+      sole: M(0x1e1e1b, 0.95, 0.0, s.rubber, 1.4),
       lens: new THREE.MeshStandardMaterial({
         color: 0x101a18, roughness: 0.12, metalness: 0.1,
         emissive: 0x0a1512, emissiveIntensity: 0.3,
