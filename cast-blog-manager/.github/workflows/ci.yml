@@ -66,3 +66,23 @@ jobs:
         # 開発用ツールの脆弱性は本番成果物に含まれないため、
         # 実行時依存のみを対象にする（ここは0件を維持する）
         run: npm audit --omit=dev --audit-level=high
+
+      # ブラウザからの通し確認。
+      # 単体テストは DAL を直接呼ぶため、「フォームが実際に送る値」で
+      # 壊れるバグを検出できない（実際にそれで中核機能が動かないバグが出た）。
+      - name: Playwright のブラウザを取得
+        run: npx playwright install --with-deps chromium
+
+      - name: 本番サーバーを起動
+        run: |
+          npm run db:seed
+          PORT=3100 npm run start &
+          npx wait-on http://localhost:3100/api/health --timeout 60000
+        env:
+          APP_URL: http://localhost:3100
+          CRON_SECRET: ci-test-cron-secret
+
+      - name: E2E（通し確認・権限境界）
+        run: npm run e2e:all
+        env:
+          E2E_BASE_URL: http://localhost:3100

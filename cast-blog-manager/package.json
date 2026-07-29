@@ -18,7 +18,9 @@
     "typecheck": "tsc --noEmit",
     "line:image": "tsx scripts/generate-rich-menu-image.mts",
     "line:setup": "tsx scripts/setup-rich-menu.mts",
-    "e2e": "tsx e2e/smoke.mts"
+    "e2e": "tsx e2e/smoke.mts",
+    "e2e:permissions": "tsx e2e/permissions.mts",
+    "e2e:all": "npm run e2e && npm run e2e:permissions"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
@@ -42,7 +44,8 @@
     "tailwindcss": "^3.4.1",
     "tsx": "^4.23.1",
     "typescript": "^5",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "wait-on": "^9.1.0"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

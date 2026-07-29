@@ -106,14 +106,21 @@ npm run build       # 本番ビルド
 # ブラウザからの通し確認（別ターミナルで本番サーバーを起動しておく）
 npm run build && PORT=3100 npm run start
 npm run db:seed
-npm run e2e
+npm run e2e:all      # 通し確認 + 権限境界
 ```
+
+| コマンド | 検証内容 |
+| --- | --- |
+| `npm test` | 単体・統合テスト（営業日計算、認可、リマインド、LINE API の通信内容 等） |
+| `npm run e2e` | ログイン→記録→ダッシュボード反映→無効化→CSV→キャスト登録→連携コード→ログアウト |
+| `npm run e2e:permissions` | 招待フローと権限境界（STAFF に見えてはいけないものが見えないか） |
 
 > **`npm run e2e` は必ず実行してください。** 単体テストは DAL を直接呼ぶため、
 > 「フォームが実際に送信する値」で壊れるバグを検出できません。
 
-これらは [CI](./.github/workflows/ci.yml) でも自動実行されます
-（PostgreSQL サービスコンテナ上で型チェック・ESLint・テスト・ビルド・脆弱性チェック）。
+これらは [CI](./.github/workflows/ci.yml) ですべて自動実行されます
+（PostgreSQL サービスコンテナ上で型チェック・ESLint・テスト・ビルド・
+脆弱性チェック・E2E）。依存パッケージの更新は Dependabot が毎週提案します。
 
 ### 依存パッケージの脆弱性について
 

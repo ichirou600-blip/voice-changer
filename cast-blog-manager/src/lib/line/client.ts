@@ -7,7 +7,11 @@ import "server-only";
  * `sendReminderIfAllowed`（quota 判定込み）経由で行うこと。
  */
 
-const LINE_API_BASE = "https://api.line.me/v2/bot";
+/**
+ * LINE API のベース URL。
+ * 通常は既定値のままだが、検証時にモックサーバーへ向けられるようにしている。
+ */
+const LINE_API_BASE = process.env.LINE_API_BASE ?? "https://api.line.me/v2/bot";
 
 export class LineApiError extends Error {
   readonly status: number;

@@ -10,8 +10,9 @@ import { logger } from "@/lib/logger";
  * （LINE 側にメニューが登録され、全友だちの既定メニューになる）。
  */
 
-const LINE_API_BASE = "https://api.line.me/v2/bot";
-const LINE_DATA_API_BASE = "https://api-data.line.me/v2/bot";
+// 検証時にモックサーバーへ向けられるよう環境変数で上書き可能にしている
+const LINE_API_BASE = process.env.LINE_API_BASE ?? "https://api.line.me/v2/bot";
+const LINE_DATA_API_BASE = process.env.LINE_DATA_API_BASE ?? "https://api-data.line.me/v2/bot";
 
 /** リッチメニューの領域定義（2分割・幅2500 × 高さ843 = LINE の compact サイズ） */
 export const RICH_MENU_WIDTH = 2500;
