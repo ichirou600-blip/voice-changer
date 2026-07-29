@@ -68,8 +68,8 @@ export async function writeAudit(input: AuditInput): Promise<void> {
  * どちらも信頼できない環境ではレート制限のキーとしては弱いので、
  * IP 単位の制限に加えてアカウント単位の制限も併用している。
  */
-export function getClientIp(): string | null {
-  const h = headers();
+export async function getClientIp(): Promise<string | null> {
+  const h = await headers();
   const realIp = h.get("x-real-ip")?.trim();
   if (realIp) return realIp;
 
@@ -81,6 +81,6 @@ export function getClientIp(): string | null {
   return null;
 }
 
-export function getUserAgent(): string | null {
-  return headers().get("user-agent");
+export async function getUserAgent(): Promise<string | null> {
+  return (await headers()).get("user-agent");
 }

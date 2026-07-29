@@ -12,10 +12,11 @@ export const dynamic = "force-dynamic";
 export default async function PostsPage({
   searchParams,
 }: {
-  searchParams?: { page?: string };
+  searchParams?: Promise<{ page?: string }>;
 }) {
   const user = await requireUserOrRedirect();
-  const page = Number.parseInt(searchParams?.page ?? "1", 10);
+  const params = await searchParams;
+  const page = Number.parseInt(params?.page ?? "1", 10);
   const [casts, result] = await Promise.all([
     listCasts(user),
     listPostsPage(user, { includeVoided: true, page: Number.isFinite(page) ? page : 1 }),

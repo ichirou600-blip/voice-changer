@@ -13,9 +13,14 @@ import { CastDetailForms } from "./cast-detail-forms";
 
 export const dynamic = "force-dynamic";
 
-export default async function CastDetailPage({ params }: { params: { castId: string } }) {
+export default async function CastDetailPage({
+  params,
+}: {
+  params: Promise<{ castId: string }>;
+}) {
+  const { castId } = await params;
   const user = await requireUserOrRedirect();
-  const cast = await getCast(user, params.castId);
+  const cast = await getCast(user, castId);
   if (!cast) notFound();
 
   const today = currentBusinessDate(cast.store.businessDayStart);

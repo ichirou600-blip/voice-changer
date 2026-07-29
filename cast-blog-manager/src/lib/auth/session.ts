@@ -85,8 +85,8 @@ export async function createSession(
  * Cookie にセッショントークンを載せる。
  * **Route Handler か Server Action からのみ呼べる**（Server Component では例外になる）。
  */
-export function setSessionCookie(session: CreatedSession): void {
-  cookies().set(SESSION_COOKIE_NAME, session.token, {
+export async function setSessionCookie(session: CreatedSession): Promise<void> {
+  (await cookies()).set(SESSION_COOKIE_NAME, session.token, {
     httpOnly: true,
     secure: IS_PROD,
     sameSite: "lax",
@@ -96,8 +96,8 @@ export function setSessionCookie(session: CreatedSession): void {
 }
 
 /** Cookie からセッションを削除する（Route Handler / Server Action 限定） */
-export function clearSessionCookie(): void {
-  cookies().set(SESSION_COOKIE_NAME, "", {
+export async function clearSessionCookie(): Promise<void> {
+  (await cookies()).set(SESSION_COOKIE_NAME, "", {
     httpOnly: true,
     secure: IS_PROD,
     sameSite: "lax",
@@ -113,7 +113,7 @@ export function clearSessionCookie(): void {
  * 1画面で何度呼んでも DB アクセスは1回で済む。
  */
 export const getSessionUser = requestCache(async (): Promise<SessionUser | null> => {
-  const token = cookies().get(SESSION_COOKIE_NAME)?.value;
+  const token = (await cookies()).get(SESSION_COOKIE_NAME)?.value;
   if (!token) return null;
 
   const session = await prisma.session.findUnique({
@@ -164,7 +164,7 @@ export const getSessionUser = requestCache(async (): Promise<SessionUser | null>
 
 /** 現在のセッションを破棄する（ログアウト） */
 export async function destroyCurrentSession(): Promise<void> {
-  const token = cookies().get(SESSION_COOKIE_NAME)?.value;
+  const token = (await cookies()).get(SESSION_COOKIE_NAME)?.value;
   if (token) {
     await prisma.session.deleteMany({ where: { tokenHash: hashToken(token) } });
   }

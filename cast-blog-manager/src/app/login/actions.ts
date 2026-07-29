@@ -15,7 +15,7 @@ export async function loginAction(_prev: LoginState, formData: FormData): Promis
   // 未認証で呼べる Action のため、defineAction を経由しない。
   // CSRF の二次防御をここで明示的に行う（ログイン CSRF 対策）。
   try {
-    assertSameOriginRequest();
+    await assertSameOriginRequest();
   } catch (error) {
     return { error: toUserMessage(error) };
   }
@@ -31,12 +31,12 @@ export async function loginAction(_prev: LoginState, formData: FormData): Promis
 }
 
 export async function logoutAction(): Promise<void> {
-  assertSameOriginRequest();
+  await assertSameOriginRequest();
   const user = await getSessionUser();
   await destroyCurrentSession();
-  clearSessionCookie();
+  await clearSessionCookie();
   if (user) {
-    await writeAudit({ actorUserId: user.id, action: "LOGOUT", ip: getClientIp() });
+    await writeAudit({ actorUserId: user.id, action: "LOGOUT", ip: await getClientIp() });
   }
   redirect("/login");
 }

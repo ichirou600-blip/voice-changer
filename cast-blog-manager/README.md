@@ -36,10 +36,11 @@
 
 | 項目 | 採用技術 |
 | --- | --- |
-| フレームワーク | Next.js 14（App Router） |
+| フレームワーク | Next.js 16（App Router） |
 | 言語 | TypeScript |
 | スタイリング | Tailwind CSS |
 | DB / ORM | PostgreSQL（Neon 推奨） + Prisma 6 |
+| React | React 19 |
 | 認証 | 自前の DB セッション（argon2id + httpOnly Cookie） |
 | 通知 | LINE Messaging API |
 | テスト | Vitest（単体 + 実 DB 統合テスト） |
@@ -110,6 +111,21 @@ npm run e2e
 
 > **`npm run e2e` は必ず実行してください。** 単体テストは DAL を直接呼ぶため、
 > 「フォームが実際に送信する値」で壊れるバグを検出できません。
+
+これらは [CI](./.github/workflows/ci.yml) でも自動実行されます
+（PostgreSQL サービスコンテナ上で型チェック・ESLint・テスト・ビルド・脆弱性チェック）。
+
+### 依存パッケージの脆弱性について
+
+```bash
+npm audit --omit=dev   # 実行時依存のみ → 0件を維持する
+npm audit              # 開発ツールを含む
+```
+
+**実行時依存（本番成果物に含まれるもの）の脆弱性は0件です。**
+`npm audit` に残る指摘は ESLint のツールチェーン内のもので、
+本番成果物には含まれません（`.next` に混入していないことを確認済み）。
+CI では `npm audit --omit=dev --audit-level=high` で実行時依存のみを検査します。
 
 ---
 

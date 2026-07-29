@@ -19,7 +19,7 @@ export type AcceptState = { error?: string };
 export async function acceptAction(_prev: AcceptState, formData: FormData): Promise<AcceptState> {
   // 未認証で呼べる Action のため、CSRF の二次防御をここで行う
   try {
-    assertSameOriginRequest();
+    await assertSameOriginRequest();
   } catch (error) {
     return { error: toUserMessage(error) };
   }
@@ -31,7 +31,7 @@ export async function acceptAction(_prev: AcceptState, formData: FormData): Prom
     await redeemInvitation({
       token: parsed.data.token,
       password: parsed.data.password,
-      ip: getClientIp(),
+      ip: await getClientIp(),
     });
   } catch (error) {
     return { error: toUserMessage(error) };

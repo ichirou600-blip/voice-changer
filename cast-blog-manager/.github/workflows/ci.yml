@@ -1,0 +1,68 @@
+name: CI
+
+# 商用製品として保守を続けるため、変更のたびに自動検証する。
+on:
+  push:
+    branches: ["**"]
+    paths: ["cast-blog-manager/**", ".github/workflows/ci.yml"]
+  pull_request:
+    paths: ["cast-blog-manager/**"]
+  workflow_dispatch: {}
+
+defaults:
+  run:
+    working-directory: cast-blog-manager
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: cast_blog_manager
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/cast_blog_manager
+      DIRECT_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/cast_blog_manager
+      APP_URL: http://localhost:3000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: cast-blog-manager/package-lock.json
+
+      - name: 依存パッケージのインストール
+        run: npm ci
+
+      - name: データベースの初期化
+        run: npm run db:migrate
+
+      - name: 型チェック
+        run: npm run typecheck
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: テスト（単体・統合）
+        run: npm test
+
+      - name: 本番ビルド
+        run: npm run build
+
+      - name: 本番依存の脆弱性チェック
+        # 開発用ツールの脆弱性は本番成果物に含まれないため、
+        # 実行時依存のみを対象にする（ここは0件を維持する）
+        run: npm audit --omit=dev --audit-level=high

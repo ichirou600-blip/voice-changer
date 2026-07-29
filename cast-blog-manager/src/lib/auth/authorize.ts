@@ -132,7 +132,7 @@ export function defineAction<TInput, TOutput>(
 ): (input: TInput) => Promise<ActionResult<TOutput>> {
   return async (input: TInput): Promise<ActionResult<TOutput>> => {
     try {
-      assertSameOriginRequest();
+      await assertSameOriginRequest();
       const user = await requireRole(minimumRole);
       const data = await handler({ user }, input);
       return { ok: true, data };
@@ -158,8 +158,8 @@ export function defineAction<TInput, TOutput>(
  * middleware バイパス系の不具合に備えて Action 内でも検査する
  * （認可を一箇所に依存させない）。
  */
-export function assertSameOriginRequest(): void {
-  const h = headers();
+export async function assertSameOriginRequest(): Promise<void> {
+  const h = await headers();
   const origin = h.get("origin");
   const host = h.get("host");
 

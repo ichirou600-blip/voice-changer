@@ -205,6 +205,52 @@ cast-blog-manager/
 
 ---
 
+## 第4部: 商用リリース前の整備
+
+### Next.js 16 への移行（セキュリティ)
+
+販売可否の確認時に `npm audit` を実行したところ、Next.js 14.2.35 に
+**未修正の HIGH 脆弱性が多数**残っていることが判明した。
+本アプリの構成に直接該当するものが含まれていたため、16 系へ移行した。
+
+| 該当した主な脆弱性 | 深刻度 | 本アプリへの関係 |
+|---|---|---|
+| Denial of Service in App Router using Server Actions | HIGH | Server Actions を全面的に使用 |
+| HTTP request deserialization DoS (RSC) | HIGH | App Router / RSC を使用 |
+| Denial of Service with Server Components | HIGH | 同上 |
+| Unauthenticated disclosure of internal Server Function endpoints | MODERATE | 認可モデルに直結 |
+| XSS in App Router applications using CSP nonces | MODERATE | CSP を設定済み |
+
+移行にあたって対応した破壊的変更:
+
+- `cookies()` / `headers()` / `params` / `searchParams` が **非同期化**
+  → 全呼び出し箇所で `await` するよう修正（テストスタブも Promise を返す形に）
+- `experimental.serverComponentsExternalPackages` → `serverExternalPackages`
+- `next lint` の廃止 → ESLint のフラット設定（`eslint.config.mjs`）へ移行
+- React 19 へ更新
+
+あわせて、Next.js が同梱する古い `postcss` / `sharp` を `overrides` で
+修正済みバージョンへ引き上げ、**実行時依存の脆弱性を0件**にした。
+
+### ブラウザでの通し確認（E2E）で発見した中核バグ
+
+単体・統合テストが 124 件通っている状態でブラウザから操作したところ、
+**更新記録の登録がまったく動作していなかった**。
+
+原因は、未入力の日付欄が空文字 `""` として送信されるのに対し、
+`businessDateSchema.optional()` が空文字を受け付けなかったこと
+（`title` / `url` には空文字許容があったが `businessDate` だけ抜けていた）。
+
+DAL を直接呼ぶテストでは `businessDate: undefined` を渡していたため、
+スキーマを経由せず検出できなかった。
+
+対策:
+- `optionalBusinessDateSchema` を追加し、空文字を `undefined` に正規化
+- **「フォームが実際に送信する形」で全スキーマを検証するテスト**を追加
+- ブラウザからの通し確認（`npm run e2e`）をリポジトリに追加し、CI 相当の手順に組み込み
+
+---
+
 ## 開発時の注意
 
 - **日付演算は必ず `src/lib/business-day.ts` を経由する**（独自の Date 演算を書かない）

@@ -18,7 +18,7 @@ export type SetupState = { error?: string };
 export async function setupAction(_prev: SetupState, formData: FormData): Promise<SetupState> {
   // 未認証で呼べる Action のため、CSRF の二次防御をここで行う
   try {
-    assertSameOriginRequest();
+    await assertSameOriginRequest();
   } catch (error) {
     return { error: toUserMessage(error) };
   }
@@ -32,14 +32,17 @@ export async function setupAction(_prev: SetupState, formData: FormData): Promis
 
   try {
     const { userId } = await completeSetup(parsed.data);
-    const session = await createSession(userId, { ip: getClientIp(), userAgent: getUserAgent() });
-    setSessionCookie(session);
+    const session = await createSession(userId, {
+      ip: await getClientIp(),
+      userAgent: await getUserAgent(),
+    });
+    await setSessionCookie(session);
     await writeAudit({
       actorUserId: userId,
       action: "SETUP_COMPLETED",
       targetType: "User",
       targetId: userId,
-      ip: getClientIp(),
+      ip: await getClientIp(),
     });
   } catch (error) {
     return { error: toUserMessage(error) };

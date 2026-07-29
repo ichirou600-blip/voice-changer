@@ -25,7 +25,7 @@ export type LoginOutcome =
 const GENERIC_ERROR = "メールアドレスまたはパスワードが違います";
 
 export async function login(email: string, password: string): Promise<LoginOutcome> {
-  const ip = getClientIp();
+  const ip = await getClientIp();
 
   const verdict = await checkLoginRateLimit(email, ip);
   if (!verdict.allowed) {
@@ -55,8 +55,8 @@ export async function login(email: string, password: string): Promise<LoginOutco
 
   // セッション固定対策: 既存セッションを破棄してから新規発行する
   await destroyAllSessionsForUser(user.id);
-  const session = await createSession(user.id, { ip, userAgent: getUserAgent() });
-  setSessionCookie(session);
+  const session = await createSession(user.id, { ip, userAgent: await getUserAgent() });
+  await setSessionCookie(session);
 
   await recordLoginAttempt(email, ip, true);
   await writeAudit({

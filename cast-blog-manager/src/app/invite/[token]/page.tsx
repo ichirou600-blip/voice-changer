@@ -14,8 +14,9 @@ export const dynamic = "force-dynamic";
  *   （Referer 経由でトークンが外部に漏れるのを防ぐ）
  * - GET ではトークンを消費しない（プレビュー bot 対策）
  */
-export default async function InvitePage({ params }: { params: { token: string } }) {
-  const invitation = await peekInvitation(params.token);
+export default async function InvitePage({ params }: { params: Promise<{ token: string }> }) {
+  const { token } = await params;
+  const invitation = await peekInvitation(token);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center px-4 py-10">
@@ -31,7 +32,7 @@ export default async function InvitePage({ params }: { params: { token: string }
           <p className="mb-6 text-sm text-slate-600">
             {invitation.email} のパスワードを設定してください。
           </p>
-          <AcceptForm token={params.token} minPasswordLength={MIN_PASSWORD_LENGTH} />
+          <AcceptForm token={token} minPasswordLength={MIN_PASSWORD_LENGTH} />
         </>
       )}
     </main>

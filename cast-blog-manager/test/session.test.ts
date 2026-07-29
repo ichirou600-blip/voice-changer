@@ -21,7 +21,7 @@ import { prisma } from "@/lib/prisma";
 import { resetDatabase } from "./helpers/db";
 
 // テストスタブの cookie ストアを直接操作する
-import { cookies } from "next/headers";
+import { __setCookie } from "./stubs/next-headers";
 
 /**
  * 認証まわりの統合テスト。
@@ -47,7 +47,7 @@ beforeEach(async () => {
     },
   });
   userId = user.id;
-  cookies().set(SESSION_COOKIE_NAME, "");
+  __setCookie(SESSION_COOKIE_NAME, "");
 });
 
 describe("パスワードハッシュ（argon2id）", () => {
@@ -86,7 +86,7 @@ describe("セッション", () => {
 
   it("有効なトークンでユーザーを解決できる", async () => {
     const session = await createSession(userId);
-    cookies().set(SESSION_COOKIE_NAME, session.token);
+    __setCookie(SESSION_COOKIE_NAME, session.token);
     const user = await getSessionUser();
     expect(user?.id).toBe(userId);
     expect(user?.storeId).toBe(storeId);
@@ -94,7 +94,7 @@ describe("セッション", () => {
 
   it("退職者（isActive=false）は即座に締め出される", async () => {
     const session = await createSession(userId);
-    cookies().set(SESSION_COOKIE_NAME, session.token);
+    __setCookie(SESSION_COOKIE_NAME, session.token);
     expect(await getSessionUser()).not.toBeNull();
 
     await prisma.user.update({ where: { id: userId }, data: { isActive: false } });
@@ -111,7 +111,7 @@ describe("セッション", () => {
       where: { userId },
       data: { idleExpiresAt: new Date(Date.now() - 1000) },
     });
-    cookies().set(SESSION_COOKIE_NAME, session.token);
+    __setCookie(SESSION_COOKIE_NAME, session.token);
     expect(await getSessionUser()).toBeNull();
     expect(await prisma.session.count()).toBe(0);
   });
@@ -122,7 +122,7 @@ describe("セッション", () => {
       where: { userId },
       data: { absoluteExpiresAt: new Date(Date.now() - 1000) },
     });
-    cookies().set(SESSION_COOKIE_NAME, session.token);
+    __setCookie(SESSION_COOKIE_NAME, session.token);
     expect(await getSessionUser()).toBeNull();
   });
 
