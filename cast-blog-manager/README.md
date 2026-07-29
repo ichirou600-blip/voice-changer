@@ -10,7 +10,8 @@
 
 | 文書 | 内容 |
 | --- | --- |
-| [docs/SETUP_GUIDE.md](./docs/SETUP_GUIDE.md) | **導入手順書**（新しい店舗への導入。60〜90分） |
+| [docs/QUICKSTART.md](./docs/QUICKSTART.md) | **ローカル起動手順**（まずはこれ。10分で動きます） |
+| [docs/SETUP_GUIDE.md](./docs/SETUP_GUIDE.md) | **導入手順書**（お客様の環境への導入。60〜90分） |
 | [docs/OPERATIONS.md](./docs/OPERATIONS.md) | **運用ガイド**（日常確認・ログ・バックアップ・障害対応） |
 | [docs/DESIGN.md](./docs/DESIGN.md) | 設計書（決定内容と、そこに至った理由） |
 | [docs/TERMS_TEMPLATE.md](./docs/TERMS_TEMPLATE.md) | 利用規約の雛形（要・専門家確認） |
@@ -47,7 +48,27 @@
 
 ---
 
-## セットアップ手順
+## クイックスタート
+
+```bash
+npm install
+cp .env.example .env          # DATABASE_URL などを設定
+npm run db:migrate            # テーブル作成
+npm run dev                   # http://localhost:3000
+```
+
+初回は自動的に `/setup` へ移動します。そこで最初の店舗と管理者を作成してください
+（この画面はユーザーが0件のときだけ表示され、作成後は 404 になります）。
+
+サンプルデータで試す場合は `npm run db:seed`
+（`admin@example.com` / `dev-password-1234`）。
+
+つまずいた場合は [docs/QUICKSTART.md](./docs/QUICKSTART.md) に
+必要なものと対処法をまとめています。
+
+---
+
+## セットアップ手順（詳細）
 
 ### 1. 依存パッケージのインストール
 
