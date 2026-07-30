@@ -20,7 +20,8 @@
     "line:setup": "tsx scripts/setup-rich-menu.mts",
     "e2e": "tsx e2e/smoke.mts",
     "e2e:permissions": "tsx e2e/permissions.mts",
-    "e2e:all": "npm run e2e && npm run e2e:permissions"
+    "e2e:all": "npm run e2e && npm run e2e:permissions",
+    "docs:overview": "tsx scripts/build-overview-pdf.mts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
