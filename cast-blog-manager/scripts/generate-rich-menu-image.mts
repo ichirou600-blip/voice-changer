@@ -38,12 +38,13 @@ const HTML = `<!doctype html>
     gap: 40px;
     color: #fff;
   }
-  .left  { background: linear-gradient(135deg, #1e293b 0%, #334155 100%); }
-  .right { background: linear-gradient(135deg, #334155 0%, #475569 100%); }
+  .left   { background: linear-gradient(135deg, #1e293b 0%, #334155 100%); }
+  .middle { background: linear-gradient(135deg, #334155 0%, #475569 100%); }
+  .right  { background: linear-gradient(135deg, #475569 0%, #64748b 100%); }
   .divider { width: 4px; background: rgba(255,255,255,0.15); }
-  .icon { font-size: 190px; line-height: 1; }
-  .label { font-size: 96px; font-weight: 700; letter-spacing: 0.05em; }
-  .sub { font-size: 46px; opacity: 0.75; }
+  .icon { font-size: 160px; line-height: 1; }
+  .label { font-size: 78px; font-weight: 700; letter-spacing: 0.04em; }
+  .sub { font-size: 38px; opacity: 0.75; }
 </style>
 </head>
 <body>
@@ -51,6 +52,12 @@ const HTML = `<!doctype html>
     <div class="icon">✍️</div>
     <div class="label">投稿したよ</div>
     <div class="sub">ブログを更新したらタップ</div>
+  </div>
+  <div class="divider"></div>
+  <div class="cell middle">
+    <div class="icon">💡</div>
+    <div class="label">文面をつくる</div>
+    <div class="sub">下書きのヒントをもらう</div>
   </div>
   <div class="divider"></div>
   <div class="cell right">

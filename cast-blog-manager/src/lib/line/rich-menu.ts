@@ -14,9 +14,16 @@ import { logger } from "@/lib/logger";
 const LINE_API_BASE = process.env.LINE_API_BASE ?? "https://api.line.me/v2/bot";
 const LINE_DATA_API_BASE = process.env.LINE_DATA_API_BASE ?? "https://api-data.line.me/v2/bot";
 
-/** リッチメニューの領域定義（2分割・幅2500 × 高さ843 = LINE の compact サイズ） */
+/** リッチメニューの領域定義（3分割・幅2500 × 高さ843 = LINE の compact サイズ） */
 export const RICH_MENU_WIDTH = 2500;
 export const RICH_MENU_HEIGHT = 843;
+
+/**
+ * 3分割の境界。
+ * 2500 は3で割り切れないため、端数を最後の領域に寄せて
+ * 「隙間なく・重ならず・右端まで覆う」状態を保つ（テストで検証している）。
+ */
+const THIRD = Math.floor(RICH_MENU_WIDTH / 3);
 
 export const RICH_MENU_DEFINITION = {
   size: { width: RICH_MENU_WIDTH, height: RICH_MENU_HEIGHT },
@@ -25,7 +32,7 @@ export const RICH_MENU_DEFINITION = {
   chatBarText: "メニュー",
   areas: [
     {
-      bounds: { x: 0, y: 0, width: RICH_MENU_WIDTH / 2, height: RICH_MENU_HEIGHT },
+      bounds: { x: 0, y: 0, width: THIRD, height: RICH_MENU_HEIGHT },
       action: {
         type: "postback",
         label: "投稿したよ",
@@ -34,10 +41,19 @@ export const RICH_MENU_DEFINITION = {
       },
     },
     {
+      bounds: { x: THIRD, y: 0, width: THIRD, height: RICH_MENU_HEIGHT },
+      action: {
+        type: "postback",
+        label: "文面をつくる",
+        data: "menu=draft",
+        displayText: "文面をつくる",
+      },
+    },
+    {
       bounds: {
-        x: RICH_MENU_WIDTH / 2,
+        x: THIRD * 2,
         y: 0,
-        width: RICH_MENU_WIDTH / 2,
+        width: RICH_MENU_WIDTH - THIRD * 2,
         height: RICH_MENU_HEIGHT,
       },
       action: {

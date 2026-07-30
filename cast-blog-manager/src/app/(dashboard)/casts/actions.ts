@@ -5,9 +5,20 @@ import { revalidatePath } from "next/cache";
 import { writeAudit } from "@/lib/audit";
 import { defineAction, ValidationError } from "@/lib/auth/authorize";
 import { generateLinkCode } from "@/lib/auth/tokens";
-import { createCast, getCast, setCastTarget, updateCast } from "@/lib/dal/casts";
+import {
+  createCast,
+  getCast,
+  setCastTarget,
+  updateCast,
+  upsertWritingProfile,
+} from "@/lib/dal/casts";
 import { prisma } from "@/lib/prisma";
-import { castCreateSchema, castTargetSchema, castUpdateSchema } from "@/lib/validations";
+import {
+  castCreateSchema,
+  castTargetSchema,
+  castUpdateSchema,
+  writingProfileSchema,
+} from "@/lib/validations";
 
 /**
  * キャスト関連の Server Action。
@@ -75,6 +86,27 @@ export const setCastTargetAction = defineAction("MANAGER", async (ctx, formData:
   revalidatePath(`/casts/${parsed.data.castId}`);
   revalidatePath("/dashboard");
   return { effectiveFrom: target.effectiveFrom };
+});
+
+/**
+ * 文面プロフィール（話し方の設定）の保存。
+ *
+ * 記録の入力と違い、これはキャストの見え方を左右する設定なので MANAGER 以上に限定する。
+ */
+export const saveWritingProfileAction = defineAction("MANAGER", async (ctx, formData: FormData) => {
+  const parsed = writingProfileSchema.safeParse(Object.fromEntries(formData));
+  if (!parsed.success) {
+    throw new ValidationError(parsed.error.issues[0]?.message ?? "入力内容を確認してください");
+  }
+  await upsertWritingProfile(ctx.user, parsed.data);
+  await writeAudit({
+    actorUserId: ctx.user.id,
+    action: "CAST_WRITING_PROFILE_UPDATED",
+    targetType: "Cast",
+    targetId: parsed.data.castId,
+  });
+  revalidatePath(`/casts/${parsed.data.castId}`);
+  return { ok: true };
 });
 
 /**

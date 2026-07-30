@@ -6,6 +6,8 @@ import { prisma } from "@/lib/prisma";
  */
 export async function resetDatabase(): Promise<void> {
   await prisma.lineMessageLog.deleteMany();
+  await prisma.draftGeneration.deleteMany();
+  await prisma.castWritingProfile.deleteMany();
   await prisma.blogPost.deleteMany();
   await prisma.castTarget.deleteMany();
   await prisma.cast.deleteMany();

@@ -190,16 +190,29 @@ describe("リッチメニュー登録", () => {
     expect(create.size).toEqual({ width: 2500, height: 843 });
     expect(create.selected).toBe(true);
     expect(create.chatBarText.length).toBeLessThanOrEqual(14); // LINE の制約
-    expect(create.areas).toHaveLength(2);
+    expect(create.areas).toHaveLength(3);
     for (const area of create.areas) {
       expect(area.bounds.width).toBeGreaterThan(0);
       expect(area.action.type).toBe("postback");
       expect(area.action.label.length).toBeLessThanOrEqual(20);
     }
-    // 2領域が重ならず、幅いっぱいを覆っているか
-    const [left, right] = create.areas;
-    expect(left.bounds.x + left.bounds.width).toBe(right.bounds.x);
-    expect(right.bounds.x + right.bounds.width).toBe(2500);
+
+    // 各領域が隙間なく・重ならず並び、右端まで覆っているか。
+    // 2500 は3で割り切れないため、端数の扱いを誤ると
+    // 「押しても無反応の帯」がメニューに残る。
+    let cursor = 0;
+    for (const area of create.areas) {
+      expect(area.bounds.x).toBe(cursor);
+      cursor += area.bounds.width;
+    }
+    expect(cursor).toBe(2500);
+
+    // 3つのボタンが別々の操作に割り当てられているか
+    expect(create.areas.map((a: { action: { data: string } }) => a.action.data)).toEqual([
+      "menu=report",
+      "menu=draft",
+      "menu=status",
+    ]);
 
     // 画像アップロードは Content-Type が image/png
     expect(captured[2].headers["content-type"]).toBe("image/png");

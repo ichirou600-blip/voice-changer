@@ -10,6 +10,7 @@ import {
 } from "@/lib/auth/rate-limit";
 import { normalizeLinkCode } from "@/lib/auth/tokens";
 import { createPostFromLine } from "@/lib/dal/posts";
+import { castDraftUrl, isDraftFeatureConfigured } from "@/lib/draft/cast-link";
 import { replyMessage, selfReportConfirmMessage, textMessage } from "@/lib/line/client";
 import { verifyLineSignature } from "@/lib/line/signature";
 import { logger, maskId } from "@/lib/logger";
@@ -129,6 +130,13 @@ async function handleTextMessage(event: LineEvent, lineUserId: string, text: str
 
   // 連携済みの場合、「投稿」系の文言は自己申告の確認フローに入る
   if (linked) {
+    // 文面づくりの案内を先に判定する。
+    // 「ブログの文面を考えて」のように両方の語を含む入力を
+    // 自己申告の確認に流してしまうと、意図と逆の操作になるため。
+    if (/文面|下書き|ネタ|書けない|なに書/.test(text)) {
+      await reply(event, buildDraftInviteText(linked.id, linked.store.draftEnabled));
+      return;
+    }
     if (/投稿|更新|ブログ/.test(text)) {
       await replyRaw(event, [selfReportConfirmMessage()]);
       return;
@@ -212,6 +220,10 @@ async function handlePostback(event: LineEvent, lineUserId: string, data: string
     await replyRaw(event, [selfReportConfirmMessage()]);
     return;
   }
+  if (menu === "draft") {
+    await reply(event, buildDraftInviteText(cast.id, cast.store.draftEnabled));
+    return;
+  }
   if (menu === "status") {
     await reply(event, await buildStatusText(cast.id, cast.store.businessDayStart));
     return;
@@ -251,6 +263,32 @@ async function handlePostback(event: LineEvent, lineUserId: string, data: string
       ? `記録しました！（${businessDate}）ありがとうございます！`
       : `記録しました！（${businessDate}）\n今週は ${progress.postCount}/${progress.target} 回目です。`,
   );
+}
+
+/**
+ * 「文面をつくる」の案内文を組み立てる。
+ *
+ * URL は**その場で発行する短命の署名付きリンク**（60分）。
+ * トーク履歴に残っても翌日以降は使えない。
+ *
+ * 環境変数が未設定の場合はリンクを出さずに案内だけ返す。
+ * ここで例外にすると、LINE 側から見て「メニューを押すと無反応」になり、
+ * 原因が分かりづらい形で顧客に露見する。
+ */
+function buildDraftInviteText(castId: string, storeEnabled: boolean): string {
+  if (!storeEnabled) {
+    return "文面づくりは現在お店の設定でオフになっています。";
+  }
+  if (!isDraftFeatureConfigured()) {
+    logger.warn("line.draft.not_configured", { castId: maskId(castId) });
+    return "文面づくりはまだ準備中です。お店にご確認ください。";
+  }
+  return [
+    "文面の下書きをつくれます。こちらから開いてください（60分間有効）。",
+    castDraftUrl(castId),
+    "",
+    "※つくった文面は自分でコピーしてブログに貼り付けてください。",
+  ].join("\n");
 }
 
 /** 「今週の状況」の文面を組み立てる */

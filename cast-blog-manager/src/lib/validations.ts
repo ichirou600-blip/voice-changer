@@ -118,6 +118,46 @@ export const postCreateSchema = z.object({
     .or(z.literal("")),
 });
 
+/** 文面作成（キャスト用画面）の入力 */
+export const draftGenerateSchema = z.object({
+  theme: z.string().trim().min(1).max(20),
+  /**
+   * 本人が入れるキーワード。
+   * 長文を貼られると入力トークンがそのまま費用になるため 200 文字で切る。
+   */
+  keywords: z.string().trim().max(200).optional(),
+  length: z.coerce.number().int().min(80).max(400).optional(),
+});
+
+/** 店舗の文面作成設定 */
+export const draftSettingsSchema = z.object({
+  storeId: z.string().min(1),
+  draftEnabled: z
+    .union([z.literal("on"), z.literal("")])
+    .optional()
+    .transform((v) => v === "on"),
+  /**
+   * 月間上限。空文字は「無制限」を意味する（既定）。
+   * 0 も無制限ではなく「1件も作れない」ため、空文字と 0 は区別する。
+   */
+  draftMonthlyLimit: z
+    .union([z.string().regex(/^\d{1,6}$/, "0以上の整数で指定してください"), z.literal("")])
+    .optional()
+    .transform((v) => (v ? Number.parseInt(v, 10) : null)),
+  draftGuideline: z.string().trim().max(1000),
+  draftNgWords: z.string().trim().max(2000),
+});
+
+/** キャストの文面プロフィール */
+export const writingProfileSchema = z.object({
+  castId: z.string().min(1),
+  firstPerson: z.string().trim().max(10),
+  toneNote: z.string().trim().max(200),
+  topics: z.string().trim().max(200),
+  emojiLevel: z.coerce.number().int().min(0).max(2),
+  ngWords: z.string().trim().max(1000),
+});
+
 export const postVoidSchema = z.object({
   postId: z.string().min(1),
   reason: z.string().trim().min(1, "無効化の理由を入力してください").max(200),

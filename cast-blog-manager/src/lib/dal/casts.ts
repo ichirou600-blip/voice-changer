@@ -53,9 +53,47 @@ export async function getCast(user: SessionUser, castId: string) {
     include: {
       store: true,
       targets: { orderBy: { effectiveFrom: "desc" } },
+      writingProfile: true,
     },
   });
   return cast;
+}
+
+/**
+ * 文面プロフィールを保存する。
+ *
+ * これが空のままだと店舗内の全員が似た文面になり、
+ * 外部サイトで横並びに表示されたときに逆効果になる。
+ * 店舗導入時に必ず埋めてもらう項目として運用手順にも入れている。
+ */
+export async function upsertWritingProfile(
+  user: SessionUser,
+  input: {
+    castId: string;
+    firstPerson: string;
+    toneNote: string;
+    topics: string;
+    emojiLevel: number;
+    ngWords: string;
+  },
+) {
+  // 他店舗のキャストを書き換えられないよう、必ず storeScope 込みで取り直す
+  const cast = await getCast(user, input.castId);
+  if (!cast) throw new ValidationError("キャストが見つかりません");
+
+  const data = {
+    firstPerson: input.firstPerson,
+    toneNote: input.toneNote,
+    topics: input.topics,
+    emojiLevel: input.emojiLevel,
+    ngWords: input.ngWords,
+  };
+
+  return prisma.castWritingProfile.upsert({
+    where: { castId: cast.id },
+    create: { castId: cast.id, ...data },
+    update: data,
+  });
 }
 
 export async function createCast(

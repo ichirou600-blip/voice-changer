@@ -4,7 +4,21 @@ import { useState, useTransition } from "react";
 
 import { Alert, Button, Card, Input, Label, Select } from "@/components/ui";
 
-import { issueLinkCodeAction, setCastTargetAction, unlinkLineAction, updateCastAction } from "../actions";
+import {
+  issueLinkCodeAction,
+  saveWritingProfileAction,
+  setCastTargetAction,
+  unlinkLineAction,
+  updateCastAction,
+} from "../actions";
+
+export type WritingProfileValues = {
+  firstPerson: string;
+  toneNote: string;
+  topics: string;
+  emojiLevel: number;
+  ngWords: string;
+};
 
 export function CastDetailForms({
   castId,
@@ -13,6 +27,8 @@ export function CastDetailForms({
   lineStatus,
   canManage,
   pendingLinkCode,
+  writingProfile,
+  draftEnabled,
 }: {
   castId: string;
   castName: string;
@@ -20,6 +36,8 @@ export function CastDetailForms({
   lineStatus: "NOT_LINKED" | "LINKED" | "BLOCKED";
   canManage: boolean;
   pendingLinkCode: string | null;
+  writingProfile: WritingProfileValues | null;
+  draftEnabled: boolean;
 }) {
   const [message, setMessage] = useState<{ kind: "error" | "success"; text: string } | null>(null);
   const [linkCode, setLinkCode] = useState<string | null>(pendingLinkCode);
@@ -109,6 +127,88 @@ export function CastDetailForms({
             <Button type="submit" disabled={pending}>
               目標を変更
             </Button>
+          </form>
+        </Card>
+      ) : null}
+
+      {canManage && draftEnabled ? (
+        <Card className="lg:col-span-2">
+          <h2 className="mb-1 text-sm font-semibold">話し方の設定（文面作成用）</h2>
+          <p className="mb-3 text-xs leading-relaxed text-slate-500">
+            キャストが文面をつくるときに使います。
+            <span className="font-medium text-slate-700">
+              空のままだと店舗内で似た文面が並びやすくなる
+            </span>
+            ため、一人称と話し方だけでも入れてください。
+          </p>
+          <form
+            action={(formData) =>
+              run(
+                () => saveWritingProfileAction(formData),
+                () => setMessage({ kind: "success", text: "話し方の設定を保存しました" }),
+              )
+            }
+            className="grid gap-3 sm:grid-cols-2"
+          >
+            <input type="hidden" name="castId" value={castId} />
+            <div>
+              <Label htmlFor="firstPerson">一人称</Label>
+              <Input
+                id="firstPerson"
+                name="firstPerson"
+                maxLength={10}
+                placeholder="例: わたし"
+                defaultValue={writingProfile?.firstPerson ?? ""}
+              />
+            </div>
+            <div>
+              <Label htmlFor="emojiLevel">絵文字の量</Label>
+              <Select
+                id="emojiLevel"
+                name="emojiLevel"
+                defaultValue={String(writingProfile?.emojiLevel ?? 1)}
+              >
+                <option value="0">少なめ（使わない）</option>
+                <option value="1">ふつう</option>
+                <option value="2">多め</option>
+              </Select>
+            </div>
+            <div className="sm:col-span-2">
+              <Label htmlFor="toneNote">話し方の特徴</Label>
+              <Input
+                id="toneNote"
+                name="toneNote"
+                maxLength={200}
+                placeholder="例: 「〜だよ」「〜なの」をよく使う。テンション高め。"
+                defaultValue={writingProfile?.toneNote ?? ""}
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <Label htmlFor="topics">よく書く話題</Label>
+              <Input
+                id="topics"
+                name="topics"
+                maxLength={200}
+                placeholder="例: カフェ巡り、猫、K-POP、ネイル"
+                defaultValue={writingProfile?.topics ?? ""}
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <Label htmlFor="castNgWords">この人に書かせたくない表現（1行に1つ）</Label>
+              <textarea
+                id="castNgWords"
+                name="ngWords"
+                rows={2}
+                maxLength={1000}
+                defaultValue={writingProfile?.ngWords ?? ""}
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-slate-500 focus:ring-1 focus:ring-slate-500"
+              />
+            </div>
+            <div className="sm:col-span-2">
+              <Button type="submit" disabled={pending}>
+                保存
+              </Button>
+            </div>
           </form>
         </Card>
       ) : null}

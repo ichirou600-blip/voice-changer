@@ -2,6 +2,7 @@ import "server-only";
 
 import { businessWeekStart, currentBusinessDate, recentBusinessDates } from "@/lib/business-day";
 import { notVoided } from "@/lib/dal/posts";
+import { castDraftUrl, isDraftFeatureConfigured } from "@/lib/draft/cast-link";
 import { pushMessage, textMessage } from "@/lib/line/client";
 import { prisma } from "@/lib/prisma";
 import { countMonthlySent, getMonthlyLimit } from "@/lib/quota";
@@ -129,13 +130,7 @@ export async function runReminders(
       const monthlySent = await countMonthlySent(now);
 
       // --- 行を用意する（存在しなければ作る） ---
-      const log = await prisma.lineMessageLog.upsert({
-        where: {
-          castId_kind_businessDate: { castId: cast.id, kind: "REMINDER", businessDate: today },
-        },
-        create: { castId: cast.id, kind: "REMINDER", businessDate: today, result: "PENDING" },
-        update: {},
-      });
+      const log = await ensureMessageLog(cast.id, today);
 
       const decision = decideSend({
         existingResult: log.result,
@@ -178,7 +173,16 @@ export async function runReminders(
           weekStart,
           weeklyCountMap.get(cast.id) ?? 0,
         );
-        await pushMessage(cast.lineUserId!, [textMessage(buildReminderText(cast.name, progress))]);
+        await pushMessage(cast.lineUserId!, [
+          textMessage(
+            buildReminderText(cast.name, progress, {
+              // 「書けないから更新しない」を減らすため、リマインドと同じ1通に
+              // 文面づくりのリンクを同梱する。別送信にすると送信数が2倍になる。
+              draftUrl:
+                store.draftEnabled && isDraftFeatureConfigured() ? castDraftUrl(cast.id, now) : null,
+            }),
+          ),
+        ]);
         await prisma.lineMessageLog.update({
           where: { id: log.id },
           data: { result: "SENT", sentAt: new Date(), errorDetail: null },
@@ -215,13 +219,60 @@ export async function runReminders(
   return result;
 }
 
-/** 進捗を添えたリマインド文面を組み立てる（DB アクセスなし） */
-function buildReminderText(
+/**
+ * 送信ログの行を用意する（無ければ作る）。
+ *
+ * `upsert` をそのまま使うと、**同時に走った2つのインスタンスが
+ * 両方とも「行が無い」と判断して両方 INSERT し、
+ * 後から到達した方がユニーク制約違反で落ちる**。
+ * 実際に並行実行のテストが数回に1回この例外で失敗していた。
+ *
+ * 送信そのものは後段の CAS で1回に絞られているため二重送信は起きないが、
+ * ここで例外が出ると cron の実行そのものが落ち、
+ * **その回の残りのキャストにリマインドが届かなくなる**。
+ * 衝突は「他方が先に作った」という正常な結果なので、読み直して続行する。
+ */
+async function ensureMessageLog(castId: string, businessDate: string) {
+  const key = { castId_kind_businessDate: { castId, kind: "REMINDER" as const, businessDate } };
+  try {
+    return await prisma.lineMessageLog.upsert({
+      where: key,
+      create: { castId, kind: "REMINDER", businessDate, result: "PENDING" },
+      update: {},
+    });
+  } catch {
+    const existing = await prisma.lineMessageLog.findUnique({ where: key });
+    if (existing) return existing;
+    // 衝突ではない障害。呼び出し元の catch に委ねる
+    throw new Error("送信ログの行を用意できませんでした");
+  }
+}
+
+/**
+ * 進捗を添えたリマインド文面を組み立てる（DB アクセスなし）。
+ *
+ * `draftUrl` があれば同じ1通に載せる。
+ * リマインドを見た直後が最も動いてもらいやすく、
+ * かつ Push を増やさずに済む（送信数は課金に直結する）。
+ */
+export function buildReminderText(
   castName: string,
   progress: ReturnType<typeof buildWeeklyProgress>,
+  options: { draftUrl?: string | null } = {},
 ): string {
-  if (progress.target === null) {
-    return `${castName}さん、ブログの更新をお願いします！`;
+  const lines =
+    progress.target === null
+      ? [`${castName}さん、ブログの更新をお願いします！`]
+      : [
+          `${castName}さん、ブログの更新をお願いします！`,
+          `今週は ${progress.postCount}/${progress.target} 回（あと ${progress.remaining} 回）です。`,
+        ];
+
+  if (options.draftUrl) {
+    lines.push("");
+    lines.push("何を書くか迷ったら、こちらで下書きをつくれます。");
+    lines.push(options.draftUrl);
   }
-  return `${castName}さん、ブログの更新をお願いします！\n今週は ${progress.postCount}/${progress.target} 回（あと ${progress.remaining} 回）です。`;
+
+  return lines.join("\n");
 }

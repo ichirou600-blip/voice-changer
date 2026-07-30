@@ -68,6 +68,14 @@ enum MessageKind {
   SYSTEM // その他システム通知
 }
 
+/// 文面（下書き）生成の結果
+enum DraftResult {
+  OK // 生成成功
+  BLOCKED_NG // 生成はできたが NG 表現を含んでいたため差し戻した
+  FAILED // API 呼び出しに失敗
+  SKIPPED_LIMIT // 月間上限・連続実行制限で実行しなかった
+}
+
 /// LINE 送信結果（PENDING で claim し、送信後に更新する）
 enum MessageResult {
   PENDING // 行だけ作成された状態（未 claim）
@@ -99,8 +107,27 @@ model Store {
   /// 直近この営業日数の間に更新が無いキャストをリマインド対象とする
   daysStaleThreshold Int @default(2)
 
-  users User[]
-  casts Cast[]
+  // --- 文面作成（下書き生成）機能 ---
+  // 本機能は「下書きを作る」だけで、外部サイトへの投稿は一切行わない。
+  // 投稿はキャスト本人が内容を確認したうえで手作業で行う。
+
+  /// 文面作成をこの店舗で使えるようにするか
+  draftEnabled Boolean @default(true)
+
+  /// 月間の生成回数上限。**null = 無制限**（既定）。
+  /// API 利用料に直結するため、必要に応じて設定画面から上限を入れる運用とする。
+  draftMonthlyLimit Int?
+
+  /// 店舗としての文面方針（例:「敬語は使わず親しみやすく」）。生成時の指示に含める
+  draftGuideline String @default("")
+
+  /// 店舗として書かせたくない表現（改行区切り）。
+  /// 生成指示に含めたうえで、生成後の文面も機械的に検査する
+  draftNgWords String @default("")
+
+  users            User[]
+  casts            Cast[]
+  draftGenerations DraftGeneration[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -217,14 +244,83 @@ model Cast {
   lineLinkCode          String?    @unique // ワンタイム連携コード（紐付け完了で null）
   lineLinkCodeExpiresAt DateTime?
 
-  targets     CastTarget[]
-  blogPosts   BlogPost[]
-  messageLogs LineMessageLog[]
+  targets          CastTarget[]
+  blogPosts        BlogPost[]
+  messageLogs      LineMessageLog[]
+  writingProfile   CastWritingProfile?
+  draftGenerations DraftGeneration[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@unique([storeId, name]) // 同一店舗内の源氏名重複を防止
+}
+
+/// キャストごとの文章の個性。
+///
+/// これが無いと店舗内の全員が似た文面になり、
+/// 外部サイト上で横並びに表示されたときにかえって逆効果になる。
+/// 生成のたびに指示へ含め、同じ店舗でも文体が散るようにする。
+model CastWritingProfile {
+  castId String @id
+  cast   Cast   @relation(fields: [castId], references: [id], onDelete: Cascade)
+
+  /// 一人称（例: わたし / 私 / うち）
+  firstPerson String @default("")
+
+  /// 語尾・キャラクターの補足（例: 「〜だよ」「〜なの」をよく使う）
+  toneNote String @default("")
+
+  /// よく書く話題（例: カフェ巡り、猫、K-POP）
+  topics String @default("")
+
+  /// 絵文字の量: 0=少なめ / 1=ふつう / 2=多め
+  emojiLevel Int @default(1)
+
+  /// このキャストが書きたくない表現（改行区切り）
+  ngWords String @default("")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// 文面生成の実行ログ。
+///
+/// 役割は3つ:
+/// - 利用状況と API 利用料の把握（トークン数を保存する）
+/// - 直近の生成文を次回の指示に含め、**同じような文面の反復を避ける**
+/// - 失敗・NG 検出の追跡
+///
+/// 生成しただけでは更新実績にはならない（実績の水増しになるため）。
+/// 実績は従来どおりキャスト本人の申告かスタッフ入力でのみ作られる。
+model DraftGeneration {
+  id String @id @default(cuid())
+
+  castId String
+  cast   Cast   @relation(fields: [castId], references: [id], onDelete: Cascade)
+
+  /// 月間集計を JOIN 無しで行うために非正規化して保持する
+  storeId String
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  /// 生成の起点（テーマとキャストが入れたキーワード）
+  theme    String
+  keywords String
+
+  /// 生成された候補（文字列の配列）
+  drafts Json
+
+  model        String
+  inputTokens  Int @default(0)
+  outputTokens Int @default(0)
+
+  result      DraftResult
+  errorDetail String?
+
+  createdAt DateTime @default(now())
+
+  @@index([storeId, createdAt])
+  @@index([castId, createdAt])
 }
 
 /// 週次目標の履歴。

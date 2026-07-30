@@ -94,6 +94,18 @@ export default async function CastDetailPage({
             ? cast.lineLinkCode
             : null
         }
+        draftEnabled={cast.store.draftEnabled}
+        writingProfile={
+          cast.writingProfile
+            ? {
+                firstPerson: cast.writingProfile.firstPerson,
+                toneNote: cast.writingProfile.toneNote,
+                topics: cast.writingProfile.topics,
+                emojiLevel: cast.writingProfile.emojiLevel,
+                ngWords: cast.writingProfile.ngWords,
+              }
+            : null
+        }
       />
 
       <Card className="mt-6">
