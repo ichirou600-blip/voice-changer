@@ -23,7 +23,11 @@
     "e2e:all": "npm run e2e && npm run e2e:permissions && npm run e2e:draft",
     "docs:overview": "tsx scripts/build-overview-pdf.mts",
     "e2e:draft": "tsx e2e/draft.mts",
-    "mock:anthropic": "tsx scripts/mock-anthropic.mts"
+    "mock:anthropic": "tsx scripts/mock-anthropic.mts",
+    "docs:shots": "tsx scripts/capture-doc-shots.mts",
+    "docs:spec": "tsx scripts/build-spec-pdf.mts",
+    "db:seed:demo": "tsx prisma/seed-demo.ts",
+    "docs:simulate": "tsx scripts/simulate-reminder-volume.mts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",

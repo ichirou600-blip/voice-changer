@@ -1,0 +1,667 @@
+<meta charset="utf-8" />
+<title>キャストブログ更新管理ツール 仕様説明</title>
+<style>
+  @page { size: A4 portrait; margin: 0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Noto Sans CJK JP", "Noto Sans JP", sans-serif;
+    color: #1e293b; font-size: 9.4pt; line-height: 1.55;
+  }
+  .page {
+    width: 210mm; height: 297mm;
+    padding: 13mm 14mm 9mm;
+    display: flex; flex-direction: column;
+    page-break-after: always; position: relative;
+  }
+  .page:last-child { page-break-after: auto; }
+
+  /* --- ヘッダ --- */
+  header { border-bottom: 2.5px solid #1e293b; padding-bottom: 7px; margin-bottom: 12px; }
+  .title-row { display: flex; align-items: baseline; justify-content: space-between; }
+  h1 { font-size: 17pt; font-weight: 700; letter-spacing: -0.01em; }
+  .subtitle { font-size: 8.4pt; color: #64748b; }
+  .lead { margin-top: 5px; font-size: 9.8pt; color: #334155; }
+  .page-tag {
+    font-size: 8pt; font-weight: 700; color: #fff; background: #1e293b;
+    border-radius: 3px; padding: 2px 8px; letter-spacing: .04em;
+  }
+
+  h2 {
+    font-size: 10.5pt; font-weight: 700; color: #0f172a;
+    border-left: 4px solid #334155; padding-left: 8px;
+    margin: 13px 0 7px;
+  }
+  .page > section:first-of-type h2 { margin-top: 2px; }
+  h3 { font-size: 9.4pt; font-weight: 700; color: #0f172a; margin: 9px 0 4px; }
+
+  /* --- 運用フロー --- */
+  .flow { display: flex; align-items: stretch; gap: 4px; }
+  .step { flex: 1; border: 1.2px solid #cbd5e1; border-radius: 5px; padding: 7px 6px; background: #f8fafc; }
+  .step.accent { background: #1e293b; border-color: #1e293b; color: #fff; }
+  .step .no { font-size: 6.8pt; font-weight: 700; color: #64748b; letter-spacing: .08em; }
+  .step.accent .no { color: #94a3b8; }
+  .step .label { font-size: 8.8pt; font-weight: 700; margin: 2px 0; }
+  .step .desc { font-size: 7.4pt; line-height: 1.4; color: #475569; }
+  .step.accent .desc { color: #cbd5e1; }
+  .arrow { align-self: center; color: #94a3b8; font-size: 11pt; }
+  .note-bar {
+    margin-top: 6px; font-size: 8.2pt; color: #475569;
+    background: #f1f5f9; border-radius: 4px; padding: 6px 9px;
+  }
+  .note-bar b { color: #0f172a; }
+
+  /* --- 表 --- */
+  table { width: 100%; border-collapse: collapse; font-size: 8.4pt; }
+  th, td { text-align: left; padding: 3.4px 6px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  th { color: #475569; font-weight: 700; font-size: 7.8pt; border-bottom: 1.5px solid #cbd5e1; }
+  td.k { white-space: nowrap; font-weight: 700; color: #0f172a; }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  td.num { font-weight: 700; }
+  tr.total td { border-top: 1.5px solid #94a3b8; border-bottom: none; background: #f8fafc; }
+  .ok { color: #15803d; }
+  .warn { color: #b45309; }
+  .bad { color: #b91c1c; }
+  table.compact td, table.compact th { padding: 2.6px 6px; font-size: 8.1pt; }
+
+  /* --- 箱 --- */
+  .notice { border: 1.6px solid #b91c1c; border-radius: 5px; background: #fef2f2; padding: 8px 11px; }
+  .notice .h { font-size: 9.4pt; font-weight: 700; color: #991b1b; margin-bottom: 3px; }
+  .notice .d { font-size: 8.4pt; color: #7f1d1d; line-height: 1.5; }
+  .callout { border: 1.2px solid #f59e0b; background: #fffbeb; border-radius: 5px; padding: 8px 10px; }
+  .callout .h { font-size: 8.8pt; font-weight: 700; color: #92400e; margin-bottom: 3px; }
+  .callout .d { font-size: 8.1pt; color: #78350f; line-height: 1.5; }
+  .info { border: 1.2px solid #7dd3fc; background: #f0f9ff; border-radius: 5px; padding: 8px 10px; }
+  .info .h { font-size: 8.8pt; font-weight: 700; color: #075985; margin-bottom: 3px; }
+  .info .d { font-size: 8.1pt; color: #0c4a6e; line-height: 1.5; }
+
+  /* --- 機能グリッド --- */
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .feat { border: 1.2px solid #e2e8f0; border-radius: 5px; padding: 6px 8px; }
+  .feat .h { font-size: 8.8pt; font-weight: 700; margin-bottom: 1px; }
+  .feat .d { font-size: 7.6pt; color: #475569; line-height: 1.38; }
+
+  /* --- 画面図 --- */
+  .shot { border: 1.2px solid #cbd5e1; border-radius: 5px; overflow: hidden; box-shadow: 0 1px 3px rgba(15,23,42,.10); }
+  .shot img { width: 100%; display: block; }
+  .shot.crop img { height: 62mm; object-fit: cover; object-position: top center; }
+  /* スマートフォンの画面は2枚を同じ高さに揃える（入力画面の実寸に合わせている） */
+  .shot.phone img { height: 86mm; object-fit: cover; object-position: top center; }
+  .cap { margin-top: 4px; font-size: 7.8pt; color: #64748b; line-height: 1.42; }
+  .cap b { color: #334155; }
+
+  .cols2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; align-items: start; }
+  .cols2u { display: grid; grid-template-columns: 1.3fr 1fr; gap: 10px; align-items: start; }
+  .cols3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 9px; align-items: start; }
+
+  /* --- 手順リスト --- */
+  ol.steps { list-style: none; counter-reset: s; }
+  ol.steps li {
+    counter-increment: s; position: relative; padding: 3px 0 3px 22px;
+    font-size: 8.4pt; line-height: 1.5;
+  }
+  ol.steps li::before {
+    content: counter(s); position: absolute; left: 0; top: 4px;
+    width: 15px; height: 15px; border-radius: 50%;
+    background: #1e293b; color: #fff; font-size: 7pt; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+  }
+  ol.steps li b { color: #0f172a; }
+
+  ul.plain { list-style: none; font-size: 8.4pt; }
+  ul.plain li { padding: 2.6px 0 2.6px 13px; position: relative; line-height: 1.45; }
+  ul.plain li::before { content: "▪"; position: absolute; left: 2px; color: #94a3b8; }
+
+  footer {
+    margin-top: auto; padding-top: 8px; border-top: 1px solid #cbd5e1;
+    display: flex; justify-content: space-between; align-items: flex-end;
+    font-size: 7.2pt; color: #64748b;
+  }
+  .conf { font-weight: 700; color: #991b1b; }
+</style>
+
+<!-- ==================================================================== -->
+<!-- 1ページ目: 概要と運用の流れ                                          -->
+<!-- ==================================================================== -->
+<div class="page">
+  <header>
+    <div class="title-row">
+      <h1>キャストブログ更新管理ツール</h1>
+      <div class="subtitle">cast-blog-manager　仕様説明</div>
+    </div>
+    <p class="lead">
+      キャストのブログ更新状況を一元管理し、<b>未更新の方へ自動でLINEリマインドを送る</b>Webシステムです。
+      あわせて、<b>更新が止まる原因である「何を書けばいいか分からない」を解消する文面作成機能</b>を備えています。
+    </p>
+  </header>
+
+  <section>
+    <h2>1. 運用の流れ（日常的に管理者が操作する必要はありません）</h2>
+    <div class="flow">
+      <div class="step accent">
+        <div class="no">STEP 1</div>
+        <div class="label">文面をつくる</div>
+        <div class="desc">LINEのメニューから、下書きを3案つくれます。書けずに止まるのを防ぎます。</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="no">STEP 2</div>
+        <div class="label">本人が投稿</div>
+        <div class="desc">気に入った案をコピーし、手直しして自分でブログに貼り付けます。</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step accent">
+        <div class="no">STEP 3</div>
+        <div class="label">1タップで報告</div>
+        <div class="desc">「投稿しました」を押すだけ。自動で更新実績が記録されます。</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step">
+        <div class="no">STEP 4</div>
+        <div class="label">進捗が自動集計</div>
+        <div class="desc">週の目標に対する達成状況が管理画面に反映されます。</div>
+      </div>
+      <div class="arrow">▶</div>
+      <div class="step accent">
+        <div class="no">STEP 5</div>
+        <div class="label">未更新者へ自動通知</div>
+        <div class="desc">既定17時に、直近2営業日更新のない方だけへ自動送信します。</div>
+      </div>
+    </div>
+    <p class="note-bar">
+      <b>管理者・スタッフの操作は不要です。</b>
+      送信先の選定から送信までを自動で行います。リマインドのメッセージには文面作成へのリンクを同梱するため、
+      <b>「更新して」と言われた直後にその場で書き始められます</b>（別送信ではないためLINEの送信数は増えません）。
+    </p>
+  </section>
+
+  <section>
+    <h2>2. 重要な前提</h2>
+    <div class="notice">
+      <div class="h">外部サイト（ポケパラ等）への自動投稿・自動ログイン・情報の自動取得は一切行いません。</div>
+      <div class="d">
+        各サイトの利用規約違反やアカウント停止のリスクを避けるための方針です。
+        文面作成機能も<b>下書きをつくるだけ</b>で、投稿はキャスト本人が内容を確認したうえで手作業で行います。
+        本システムが扱う更新実績は、<b>キャスト本人によるLINEでの申告</b>または<b>スタッフによる入力</b>に基づく自己申告値であり、
+        外部サイト上の実際の投稿との一致は保証しません。
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. 主な機能</h2>
+    <div class="features">
+      <div class="feat">
+        <div class="h">文面作成</div>
+        <div class="d">テーマとキーワードから下書きを3案生成。キャストごとの口調を反映</div>
+      </div>
+      <div class="feat">
+        <div class="h">自動リマインド</div>
+        <div class="d">1人1営業日1通まで。失敗時3回再送。月180通で自動停止</div>
+      </div>
+      <div class="feat">
+        <div class="h">ダッシュボード</div>
+        <div class="d">在籍者数・要リマインド人数・週次目標の達成状況を一目で把握</div>
+      </div>
+      <div class="feat">
+        <div class="h">キャスト管理</div>
+        <div class="d">在籍／休止／退店の3状態。週の目標は0〜50回（既定3回）</div>
+      </div>
+      <div class="feat">
+        <div class="h">更新記録</div>
+        <div class="d">LINE自己申告とスタッフ入力に対応。削除ではなく無効化で履歴を保持</div>
+      </div>
+      <div class="feat">
+        <div class="h">CSV出力</div>
+        <div class="d">更新実績をExcelで開ける形式で書き出し。給与計算や実績確認に</div>
+      </div>
+      <div class="feat">
+        <div class="h">権限管理</div>
+        <div class="d">管理者／店長／スタッフの3段階。退職者は無効化で即ログアウト</div>
+      </div>
+      <div class="feat">
+        <div class="h">操作履歴の記録</div>
+        <div class="d">誰がいつ何を変更したかを記録し、後から確認できる状態を維持</div>
+      </div>
+      <div class="feat">
+        <div class="h">複数店舗対応</div>
+        <div class="d">店舗ごとに設定を分離。店長は自店舗のみ、管理者は全店舗</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>4. この資料の構成</h2>
+    <table class="compact">
+      <tr><td class="k" style="width:5.5em">2ページ</td><td>キャストの使い方（実際の画面）</td></tr>
+      <tr><td class="k">3ページ</td><td>管理者の使い方（実際の画面）</td></tr>
+      <tr><td class="k">4ページ</td><td>ランニングコスト（規模・利用頻度別の詳細）</td></tr>
+      <tr><td class="k">5ページ</td><td>導入に必要なもの・動作仕様の数値・注意事項</td></tr>
+    </table>
+  </section>
+
+  <footer>
+    <div>本資料の画面はすべて実際に動作しているシステムから取得したものです。</div>
+    <div style="text-align:right"><span class="conf">社外秘</span>　1 / 5</div>
+  </footer>
+</div>
+
+<!-- ==================================================================== -->
+<!-- 2ページ目: キャストの使い方                                          -->
+<!-- ==================================================================== -->
+<div class="page">
+  <header>
+    <div class="title-row">
+      <h1>キャストの使い方</h1>
+      <div class="page-tag">スマートフォン</div>
+    </div>
+    <p class="lead">
+      キャストはアカウント登録もパスワードも不要です。<b>LINEのメニューをタップするだけ</b>で使えます。
+    </p>
+  </header>
+
+  <section>
+    <h2>操作の手順</h2>
+    <ol class="steps">
+      <li>LINE公式アカウントのメニューから <b>「文面をつくる」</b> をタップする</li>
+      <li>その場で<b>60分間有効の専用リンク</b>が返ってくるので開く（下の画面①）</li>
+      <li>テーマを選び、思いついた単語を入れて <b>「文面をつくる」</b> を押す</li>
+      <li>3案が出るので、気に入ったものを <b>「コピー」</b>（下の画面②）</li>
+      <li>ブログに貼り付け、<b>自分の言葉に直してから投稿する</b></li>
+      <li>同じ画面の <b>「投稿しました」</b> で更新実績を報告する</li>
+    </ol>
+  </section>
+
+  <section>
+    <div class="cols2">
+      <div>
+        <h3>画面① 入力（3項目だけ）</h3>
+        <div class="shot phone"><img src="./shots/cast-input.png" alt="キャストの入力画面" /></div>
+        <p class="cap">
+          入力は<b>テーマ・キーワード・長さ</b>の3つだけで、キーワードは省略できます。
+          営業前後の短い時間に片手で終わる操作量に絞っています。
+        </p>
+      </div>
+      <div>
+        <h3>画面② 生成結果（ワンタップでコピー）</h3>
+        <div class="shot phone"><img src="./shots/cast-result.png" alt="キャストの生成結果画面" /></div>
+        <p class="cap">
+          案ごとに<b>コピーボタン</b>があり、長押しでの範囲選択は不要です。
+          この下に残り2案が続き、最後に<b>「投稿しました」</b>があります（画面は上部のみ）。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="cols2u">
+      <div class="callout">
+        <div class="h">同じ文面が並ばないための仕組み</div>
+        <div class="d">
+          全員が似た文面を投稿すると、外部サイト上で横並びに表示されたときにかえって逆効果になります。
+          そのため2段構えで対策しています。<br />
+          ① キャストごとに<b>一人称・話し方・よく書く話題・絵文字の量</b>を登録し、生成のたびに反映する<br />
+          ② <b>同じ店舗の直近6件の文面</b>も参照し、同じ書き出し・言い回しを避けさせる
+        </div>
+      </div>
+      <div class="info">
+        <div class="h">LINEの送信数は増えません</div>
+        <div class="d">
+          「文面をつくる」への応答は<b>返信扱い</b>のため、LINEの月間送信数を消費しません。
+          何度タップしても無料枠には影響しません。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>更新実績の記録方法（3通り）</h2>
+    <table class="compact">
+      <tr><th>方法</th><th>操作する人</th><th>記録の扱い</th></tr>
+      <tr><td class="k">文面作成画面の「投稿しました」</td><td>キャスト本人</td><td>本人の申告</td></tr>
+      <tr><td class="k">LINEメニューの「投稿したよ」</td><td>キャスト本人</td><td>本人の申告（今日／昨日を選択）</td></tr>
+      <tr><td class="k">管理画面からの手入力</td><td>スタッフ・店長</td><td>スタッフ入力（60営業日前まで遡及可）</td></tr>
+    </table>
+    <p class="cap">
+      いずれも<b>自己申告</b>です。文面を生成しただけでは実績になりません（実績の水増しを防ぐため）。
+    </p>
+  </section>
+
+  <footer>
+    <div>キャスト側にアプリのインストールは不要です（LINEとブラウザのみ）。</div>
+    <div style="text-align:right"><span class="conf">社外秘</span>　2 / 5</div>
+  </footer>
+</div>
+
+<!-- ==================================================================== -->
+<!-- 3ページ目: 管理者の使い方                                            -->
+<!-- ==================================================================== -->
+<div class="page">
+  <header>
+    <div class="title-row">
+      <h1>管理者の使い方</h1>
+      <div class="page-tag">PC・スマートフォン</div>
+    </div>
+    <p class="lead">
+      日々の操作は不要です。管理者が触るのは<b>導入時の設定</b>と<b>週1回の状況確認</b>が中心になります。
+    </p>
+  </header>
+
+  <section>
+    <h2>ダッシュボード（ログイン後の最初の画面）</h2>
+    <div class="shot" style="max-height:66mm;overflow:hidden">
+      <img src="./shots/admin-dashboard.png" alt="ダッシュボード" style="height:66mm;object-fit:cover;object-position:top center" />
+    </div>
+    <p class="cap">
+      在籍者数・<b>要リマインド人数</b>・今週の目標達成状況を上部に集約。
+      下段で各キャストの今週の更新回数、最終更新日、LINE連携の有無を一覧で確認できます。
+      <b>ここを週1回見るだけ</b>で、更新が止まっている人が分かります。
+    </p>
+  </section>
+
+  <section>
+    <h2>導入時に設定するもの（この2つだけです）</h2>
+    <div class="cols2">
+      <div>
+        <h3>① キャストごとの「話し方の設定」</h3>
+        <div class="shot"><img src="./shots/admin-cast-profile.png" alt="話し方の設定" /></div>
+        <p class="cap">
+          キャスト詳細画面にあります。1人あたり1〜2分。
+          <b>ここを空のまま運用しないでください。</b>
+          全員が同じ設定だと似た文面が生成されます。導入時に本人へ聞き取って埋めてください。
+        </p>
+      </div>
+      <div>
+        <h3>② 店舗ごとの文面作成の設定</h3>
+        <div class="shot"><img src="./shots/admin-settings-draft.png" alt="文面作成の設定" /></div>
+        <p class="cap">
+          設定画面にあります。<b>今月の作成回数と使用トークン数がここに表示される</b>ため、
+          費用の状況をこの1画面で把握できます。上限は<b>既定で無制限</b>です（空欄＝無制限、0＝作成不可）。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>更新記録の画面（キャストが報告を忘れたときの補助）</h2>
+    <div class="cols2u">
+      <div>
+        <div class="shot" style="max-height:44mm;overflow:hidden">
+          <img src="./shots/admin-posts.png" alt="更新記録の画面" style="height:44mm;object-fit:cover;object-position:top center" />
+        </div>
+      </div>
+      <p class="cap" style="margin-top:0">
+        キャストが報告を忘れた場合に、スタッフが代わりに記録できます（<b>60営業日前まで遡及可</b>）。
+        記録は<b>物理削除せず「無効化」</b>として履歴を残すため、実績の改ざんができません。
+        画面右上からCSVを書き出せます。
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>権限（3段階）</h2>
+    <table class="compact">
+      <tr><th>権限</th><th>できること</th><th>できないこと</th></tr>
+      <tr><td class="k">管理者</td><td>全店舗の管理、スタッフの追加・停止、文面作成の設定</td><td>—</td></tr>
+      <tr><td class="k">店長</td><td>自店舗のキャスト・目標・記録・文面設定の管理</td><td>他店舗の閲覧、管理者の停止</td></tr>
+      <tr><td class="k">スタッフ</td><td>更新記録の入力と閲覧</td><td>記録の無効化、LINE連携コードの発行、同僚の情報の閲覧</td></tr>
+    </table>
+    <p class="cap">
+      退職者は<b>「無効化」した時点で全端末が即ログアウト</b>されます（パスワード変更を待つ必要はありません）。
+    </p>
+  </section>
+
+  <footer>
+    <div>すべての操作は履歴として記録され、誰がいつ何を変更したかを後から確認できます。</div>
+    <div style="text-align:right"><span class="conf">社外秘</span>　3 / 5</div>
+  </footer>
+</div>
+
+<!-- ==================================================================== -->
+<!-- 4ページ目: ランニングコスト                                          -->
+<!-- ==================================================================== -->
+<div class="page">
+  <header>
+    <div class="title-row">
+      <h1>ランニングコスト</h1>
+      <div class="page-tag">2026年7月時点</div>
+    </div>
+    <p class="lead">
+      費用は<b>4種類</b>に分かれます。このうち固定費はサーバー代のみで、残りは使った分だけです。
+    </p>
+  </header>
+
+  <section>
+    <h2>1. 何にいくらかかるか</h2>
+    <table class="compact">
+      <tr><th>項目</th><th>課金の形</th><th class="num">単価</th><th>備考</th></tr>
+      <tr><td class="k">サーバー（Vercel）</td><td>固定</td><td class="num">月 約3,100円</td><td>商用提供にはProプランが必要（無料のHobbyは非商用限定）</td></tr>
+      <tr><td class="k">データベース（Neon）</td><td>従量（無料枠内）</td><td class="num ok">0円</td><td>無料枠0.5GB。キャスト30名を3年運用して約10MB（無料枠の2%）</td></tr>
+      <tr><td class="k">LINE通知</td><td>従量</td><td class="num">0円〜</td><td>無料枠は月200通。超える場合は有料プラン（月5,000円〜）</td></tr>
+      <tr><td class="k">文面作成</td><td>従量</td><td class="num">1回 約0.5円</td><td>1回の生成で3案。入力約600・出力約500トークン</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>2. LINE通知：更新の「回数」ではなく「間隔」で決まります</h2>
+    <div class="cols2u">
+      <table class="compact">
+        <tr><th>キャストの更新パターン</th><th class="num">1人あたり月間</th><th class="num">無料枠180通で何人まで</th></tr>
+        <tr><td>週5回（月〜金）</td><td class="num">4.3通</td><td class="num ok">41人</td></tr>
+        <tr><td>週3回・曜日を分散（月水金）</td><td class="num">4.3通</td><td class="num ok">41人</td></tr>
+        <tr><td>週3回・週末に集中（金土日）</td><td class="num">13.1通</td><td class="num">13人</td></tr>
+        <tr><td>週2回（金土）</td><td class="num">17.3通</td><td class="num warn">10人</td></tr>
+        <tr><td>週1回（土のみ）</td><td class="num">21.7通</td><td class="num warn">8人</td></tr>
+        <tr><td>まったく更新しない（最大値）</td><td class="num">30.3通</td><td class="num bad">5人</td></tr>
+      </table>
+      <div class="info">
+        <div class="h">同じ週3回でも3倍の差が出ます</div>
+        <div class="d">
+          リマインドは<b>直近2営業日に更新が無い人</b>にだけ送ります。
+          そのため、同じ週3回でも<b>曜日を分散すれば4.3通、週末に固めると13.1通</b>と3倍の差が出ます。<br />
+          <b>「週に何回書くか」より「間隔を空けないこと」</b>が費用に直結します。
+        </div>
+      </div>
+    </div>
+    <p class="cap">
+      実装のリマインド判定ロジックをそのまま使い、364日分を試算した値です（1人1営業日1通）。
+      送信上限は既定180通（LINE無料枠200通に対する安全余裕20通）で、設定から変更できます。
+    </p>
+  </section>
+
+  <section>
+    <h2>3. 文面作成：人数 × 利用頻度で決まります</h2>
+    <table class="compact">
+      <tr>
+        <th>在籍キャスト</th>
+        <th class="num">週1回使う</th>
+        <th class="num">週3回使う（標準）</th>
+        <th class="num">毎日使う</th>
+      </tr>
+      <tr><td class="k">5名</td><td class="num">22回 / 約10円</td><td class="num">65回 / 約31円</td><td class="num">152回 / 約73円</td></tr>
+      <tr><td class="k">10名</td><td class="num">43回 / 約21円</td><td class="num">130回 / 約63円</td><td class="num">304回 / 約146円</td></tr>
+      <tr><td class="k">20名</td><td class="num">87回 / 約42円</td><td class="num">261回 / 約125円</td><td class="num">609回 / 約293円</td></tr>
+      <tr><td class="k">30名</td><td class="num">130回 / 約63円</td><td class="num">391回 / 約188円</td><td class="num">913回 / 約438円</td></tr>
+    </table>
+    <p class="cap">
+      「回数」は月間の生成回数（1回＝3案）。<b>作り直しをした場合はその分だけ回数が増えます</b>。
+      仮に全員が毎回2回作り直しても、30名・毎日利用で月約1,300円です。
+      より高品質なモデルに変更した場合の費用は<b>約3倍</b>（30名・週3回で月約560円）になります。
+    </p>
+  </section>
+
+  <section>
+    <h2>4. 月額の合計（代表的なパターン）</h2>
+    <table class="compact">
+      <tr>
+        <th>パターン</th>
+        <th class="num">サーバー</th>
+        <th class="num">LINE</th>
+        <th class="num">文面作成</th>
+        <th class="num">DB</th>
+        <th class="num">月額合計</th>
+      </tr>
+      <tr>
+        <td class="k">5名・週3回・曜日を分散</td>
+        <td class="num">3,100円</td><td class="num ok">0円</td><td class="num">31円</td><td class="num ok">0円</td>
+        <td class="num">約 3,100円</td>
+      </tr>
+      <tr>
+        <td class="k">15名・週3回・曜日を分散</td>
+        <td class="num">3,100円</td><td class="num ok">0円</td><td class="num">95円</td><td class="num ok">0円</td>
+        <td class="num">約 3,200円</td>
+      </tr>
+      <tr>
+        <td class="k">30名・週3回・曜日を分散</td>
+        <td class="num">3,100円</td><td class="num ok">0円</td><td class="num">188円</td><td class="num ok">0円</td>
+        <td class="num">約 3,300円</td>
+      </tr>
+      <tr class="total">
+        <td class="k">30名・更新が滞っている（週1回）</td>
+        <td class="num">3,100円</td><td class="num bad">5,000円</td><td class="num">63円</td><td class="num ok">0円</td>
+        <td class="num bad">約 8,200円</td>
+      </tr>
+    </table>
+    <p class="cap">
+      上3行は曜日を分散した場合（1人4.3通）。週末に集中した場合は30名で393通となり、
+      LINEの有料プランが必要になります。
+    </p>
+  </section>
+
+  <section>
+    <h2>5. 費用を抑える方法（効果の大きい順）</h2>
+    <div class="cols2u">
+      <table class="compact">
+        <tr><th>やること</th><th class="num">LINE通数への効果</th></tr>
+        <tr><td>更新の曜日を分散させる（週3回の場合）</td><td class="num ok">13.1通 → 4.3通（▲67%）</td></tr>
+        <tr><td>未更新と判定する日数を 2日 → 3日にする</td><td class="num ok">13.1通 → 8.8通（▲33%）</td></tr>
+        <tr><td>文面作成で更新そのものを定着させる</td><td class="num ok">21.7通 → 4.3通（▲80%）</td></tr>
+        <tr><td>文面作成の月間上限を設定する</td><td class="num">上限額を固定できる</td></tr>
+      </table>
+      <div class="callout">
+        <div class="h">費用が上がるのは「更新が滞っているとき」です</div>
+        <div class="d">
+          未更新者が多いほどリマインドの通数が増えるため、
+          <b>更新が止まっているときほどLINEの費用が上がります</b>。
+          文面作成を使って更新が定着すると通数が減り、有料プラン（月5,000円）が不要になる場合があります。
+          文面作成の費用（月63〜438円）は、この差額に対して十分に小さい水準です。
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div>1ドル155円で換算。外部サービスの料金・無料枠は2026年7月時点。契約時に最新条件をご確認ください。</div>
+    <div style="text-align:right"><span class="conf">社外秘</span>　4 / 5</div>
+  </footer>
+</div>
+
+<!-- ==================================================================== -->
+<!-- 5ページ目: 導入・仕様・注意事項                                      -->
+<!-- ==================================================================== -->
+<div class="page">
+  <header>
+    <div class="title-row">
+      <h1>導入・動作仕様・注意事項</h1>
+      <div class="page-tag">確認事項</div>
+    </div>
+  </header>
+
+  <section>
+    <h2>1. 導入に必要なもの</h2>
+    <table class="compact">
+      <tr><th>項目</th><th>内容</th><th class="num">所要</th></tr>
+      <tr><td class="k">LINE公式アカウント</td><td>Messaging API チャネル（無料枠：Push通知 月200通）</td><td class="num">20分</td></tr>
+      <tr><td class="k">サーバー・DB</td><td>Vercel（Proプラン）と Neon のアカウント</td><td class="num">25分</td></tr>
+      <tr><td class="k">文面作成のAPIキー</td><td>Anthropic Console で発行（使わない場合は不要）</td><td class="num">5分</td></tr>
+      <tr><td class="k">管理者アカウント</td><td>メールアドレス1件（<b>2名以上の登録を推奨</b>）</td><td class="num">5分</td></tr>
+      <tr><td class="k">キャストの初期設定</td><td>LINE連携コードの配布と「話し方の設定」の入力</td><td class="num">1人2分</td></tr>
+      <tr class="total"><td class="k">合計（キャスト15名の場合）</td><td>手順書に沿って作業した場合</td><td class="num">約90分</td></tr>
+    </table>
+  </section>
+
+  <section>
+    <h2>2. 動作仕様の数値</h2>
+    <div class="cols3">
+      <table class="compact">
+        <tr><th colspan="2">リマインド</th></tr>
+        <tr><td class="k">送信時刻</td><td>既定17時（0〜23時で設定可）</td></tr>
+        <tr><td class="k">未更新判定</td><td>直近2営業日（1〜30日で設定可）</td></tr>
+        <tr><td class="k">送信頻度</td><td>1人1営業日につき1通まで</td></tr>
+        <tr><td class="k">再送</td><td>失敗時は最大3回</td></tr>
+        <tr><td class="k">月間上限</td><td>既定180通で自動停止</td></tr>
+        <tr><td class="k">営業日</td><td>朝6時区切り（0〜23時で設定可）</td></tr>
+      </table>
+      <table class="compact">
+        <tr><th colspan="2">文面作成</th></tr>
+        <tr><td class="k">生成数</td><td>1回につき3案</td></tr>
+        <tr><td class="k">長さ</td><td>120／200／300文字から選択</td></tr>
+        <tr><td class="k">キーワード</td><td>200文字まで</td></tr>
+        <tr><td class="k">月間上限</td><td>既定なし（設定で指定可）</td></tr>
+        <tr><td class="k">連続実行</td><td>1人60秒に3回まで</td></tr>
+        <tr><td class="k">リンク有効期限</td><td>60分</td></tr>
+      </table>
+      <table class="compact">
+        <tr><th colspan="2">記録・アカウント</th></tr>
+        <tr><td class="k">遡及入力</td><td>60営業日前まで</td></tr>
+        <tr><td class="k">1日の記録</td><td>1人10件まで</td></tr>
+        <tr><td class="k">週の目標</td><td>0〜50回（既定3回）</td></tr>
+        <tr><td class="k">パスワード</td><td>12文字以上</td></tr>
+        <tr><td class="k">ログイン</td><td>15分に5回失敗で一時停止</td></tr>
+        <tr><td class="k">自動ログアウト</td><td>未操作7日／発行30日</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. 安全側の作り</h2>
+    <div class="cols2">
+      <ul class="plain">
+        <li><b>生成文の機械検査</b>：出来上がった文面をNG表現で必ず検査します（指示だけでは混ざることがあるため）</li>
+        <li><b>常に禁止する表現</b>：連絡先・料金・他店比較・年齢に関する表現は、店舗設定に関わらず禁止します</li>
+        <li><b>表記ゆれに対応</b>：全角/半角、カタカナ/ひらがな、記号の挿入を正規化してから照合します</li>
+      </ul>
+      <ul class="plain">
+        <li><b>実績の水増し防止</b>：文面を生成しただけでは更新実績になりません</li>
+        <li><b>リンクの偽造防止</b>：キャスト用リンクは署名付きで、IDや期限を書き換えると開けません</li>
+        <li><b>記録の改ざん防止</b>：更新記録は物理削除せず無効化として履歴を残します</li>
+        <li><b>パスワード保護</b>：復元不可能な形式（argon2id）で保存し、通信はTLSで暗号化します</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <h2>4. 導入前にご確認いただきたいこと</h2>
+    <div class="notice">
+      <div class="h">運用にあたっての前提</div>
+      <div class="d">
+        ① <b>生成された文面は必ず本人が読んでから投稿してください。</b>
+        事実と異なる内容が含まれていないかの最終確認は本人が行う前提の設計です。<br />
+        ② <b>「話し方の設定」を全員分入力してください。</b>
+        空のままだと店舗内で似た文面が並び、かえって逆効果になります。<br />
+        ③ <b>管理者は2名以上登録してください。</b>1名だとログインできなくなった際に復旧できません。<br />
+        ④ <b>更新実績は自己申告値です。</b>外部サイト上の実際の投稿との一致は保証しません。
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>5. 運用中のサポート範囲</h2>
+    <table class="compact">
+      <tr><th>頻度</th><th>作業内容</th><th>担当</th></tr>
+      <tr><td class="k">日次</td><td>データベースのバックアップ（自動）</td><td>システム</td></tr>
+      <tr><td class="k">週次</td><td>ダッシュボードの確認、脆弱性の有無の確認</td><td>店舗 / 提供者</td></tr>
+      <tr><td class="k">月次</td><td>LINE送信数・文面作成回数の確認、各種更新の適用</td><td>提供者</td></tr>
+      <tr><td class="k">年次</td><td>バックアップからの復元リハーサル、管理者アカウントの棚卸し</td><td>提供者</td></tr>
+    </table>
+  </section>
+
+  <footer>
+    <div>
+      外部サービスの料金・無料枠は2026年7月時点の内容です。契約時に最新条件をご確認ください。
+    </div>
+    <div style="text-align:right">
+      <span class="conf">社外秘</span>　5 / 5<br />
+      本資料および本システムの無断複製・再配布を禁じます
+    </div>
+  </footer>
+</div>
