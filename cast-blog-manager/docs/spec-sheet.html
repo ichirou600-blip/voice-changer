@@ -196,7 +196,7 @@
       </div>
       <div class="feat">
         <div class="h">自動リマインド</div>
-        <div class="d">1人1営業日1通まで。失敗時3回再送。月180通で自動停止</div>
+        <div class="d">1人1営業日1通まで。失敗時3回再送。月間上限に達すると自動停止</div>
       </div>
       <div class="feat">
         <div class="h">ダッシュボード</div>
@@ -234,7 +234,7 @@
     <table class="compact">
       <tr><td class="k" style="width:5.5em">2ページ</td><td>キャストの使い方（実際の画面）</td></tr>
       <tr><td class="k">3ページ</td><td>管理者の使い方（実際の画面）</td></tr>
-      <tr><td class="k">4ページ</td><td>ランニングコスト（規模・利用頻度別の詳細）</td></tr>
+      <tr><td class="k">4ページ</td><td>ランニングコスト（キャスト100名・複数店舗の前提）</td></tr>
       <tr><td class="k">5ページ</td><td>導入に必要なもの・動作仕様の数値・注意事項</td></tr>
     </table>
   </section>
@@ -426,50 +426,72 @@
       <div class="page-tag">2026年7月時点</div>
     </div>
     <p class="lead">
-      費用は<b>4種類</b>に分かれます。このうち固定費はサーバー代のみで、残りは使った分だけです。
+      <b>キャスト100名・複数店舗</b>を前提に算出しています。この規模では
+      <b>月額はほぼ一定（約1.1万円 ＝ 1人あたり約116円）</b>になり、更新状況では大きく変わりません。
     </p>
   </header>
 
   <section>
-    <h2>1. 何にいくらかかるか</h2>
+    <h2>1. 何にいくらかかるか（キャスト100名の前提）</h2>
     <table class="compact">
-      <tr><th>項目</th><th>課金の形</th><th class="num">単価</th><th>備考</th></tr>
-      <tr><td class="k">サーバー（Vercel）</td><td>固定</td><td class="num">月 約3,100円</td><td>商用提供にはProプランが必要（無料のHobbyは非商用限定）</td></tr>
-      <tr><td class="k">データベース（Neon）</td><td>従量（無料枠内）</td><td class="num ok">0円</td><td>無料枠0.5GB。キャスト30名を3年運用して約10MB（無料枠の2%）</td></tr>
-      <tr><td class="k">LINE通知</td><td>従量</td><td class="num">0円〜</td><td>無料枠は月200通。超える場合は有料プラン（月5,000円〜）</td></tr>
-      <tr><td class="k">文面作成</td><td>従量</td><td class="num">1回 約0.5円</td><td>1回の生成で3案。入力約600・出力約500トークン</td></tr>
+      <tr><th>項目</th><th>課金の形</th><th class="num">月額</th><th>備考</th></tr>
+      <tr>
+        <td class="k">サーバー（Vercel）</td><td>固定</td><td class="num">約 3,100円</td>
+        <td>商用提供にはProプランが必要（無料のHobbyは非商用限定）</td>
+      </tr>
+      <tr>
+        <td class="k">データベース（Neon）</td><td>固定</td><td class="num">約 2,900円</td>
+        <td>100名・複数店舗の商用運用では有料プランを推奨（無料枠でも開始は可能）</td>
+      </tr>
+      <tr>
+        <td class="k">LINE通知</td><td>固定</td><td class="num">5,000円</td>
+        <td><b>100名では無料枠200通を必ず超える</b>ため、ライトプラン（5,000通）が必須</td>
+      </tr>
+      <tr>
+        <td class="k">文面作成</td><td>従量</td><td class="num">約 630円</td>
+        <td>1回0.5円 × 100名が週3回使った場合（月1,304回）</td>
+      </tr>
+      <tr class="total">
+        <td class="k">合計</td><td>—</td><td class="num">約 11,600円</td>
+        <td><b>1人あたり月116円。</b>店舗数が増えても金額は変わりません</td>
+      </tr>
     </table>
   </section>
 
   <section>
-    <h2>2. LINE通知：更新の「回数」ではなく「間隔」で決まります</h2>
+    <h2>2. LINE通知：100名では更新状況にかかわらず定額になります</h2>
     <div class="cols2u">
       <table class="compact">
-        <tr><th>キャストの更新パターン</th><th class="num">1人あたり月間</th><th class="num">無料枠180通で何人まで</th></tr>
-        <tr><td>週5回（月〜金）</td><td class="num">4.3通</td><td class="num ok">41人</td></tr>
-        <tr><td>週3回・曜日を分散（月水金）</td><td class="num">4.3通</td><td class="num ok">41人</td></tr>
-        <tr><td>週3回・週末に集中（金土日）</td><td class="num">13.1通</td><td class="num">13人</td></tr>
-        <tr><td>週2回（金土）</td><td class="num">17.3通</td><td class="num warn">10人</td></tr>
-        <tr><td>週1回（土のみ）</td><td class="num">21.7通</td><td class="num warn">8人</td></tr>
-        <tr><td>まったく更新しない（最大値）</td><td class="num">30.3通</td><td class="num bad">5人</td></tr>
+        <tr><th>キャストの更新パターン</th><th class="num">1人あたり</th><th class="num">100名合計</th><th class="num">必要なプラン</th></tr>
+        <tr><td>週3回・曜日を分散（月水金）</td><td class="num">4.3通</td><td class="num">430通</td><td class="num ok">ライト</td></tr>
+        <tr><td>週3回・週末に集中（金土日）</td><td class="num">13.1通</td><td class="num">1,310通</td><td class="num ok">ライト</td></tr>
+        <tr><td>週2回（金土）</td><td class="num">17.3通</td><td class="num">1,730通</td><td class="num ok">ライト</td></tr>
+        <tr><td>週1回（土のみ）</td><td class="num">21.7通</td><td class="num">2,170通</td><td class="num ok">ライト</td></tr>
+        <tr><td>まったく更新しない（最大値）</td><td class="num">30.3通</td><td class="num">3,030通</td><td class="num ok">ライト</td></tr>
       </table>
       <div class="info">
-        <div class="h">同じ週3回でも3倍の差が出ます</div>
+        <div class="h">最悪のケースでも同じプランで収まります</div>
         <div class="d">
-          リマインドは<b>直近2営業日に更新が無い人</b>にだけ送ります。
-          そのため、同じ週3回でも<b>曜日を分散すれば4.3通、週末に固めると13.1通</b>と3倍の差が出ます。<br />
-          <b>「週に何回書くか」より「間隔を空けないこと」</b>が費用に直結します。
+          100名が1か月まったく更新しなくても3,030通で、
+          <b>ライトプランの5,000通に収まります</b>。
+          そのため<b>LINEの費用は月5,000円で固定</b>です。<br />
+          この枠は<b>165名まで</b>同じ費用で使えます。これを超えるとスタンダードプラン（月15,000円）が必要です。
         </div>
       </div>
     </div>
-    <p class="cap">
-      実装のリマインド判定ロジックをそのまま使い、364日分を試算した値です（1人1営業日1通）。
-      送信上限は既定180通（LINE無料枠200通に対する安全余裕20通）で、設定から変更できます。
-    </p>
+    <div class="callout" style="margin-top:7px">
+      <div class="h">導入時に必ず変更する設定が1つあります</div>
+      <div class="d">
+        アプリ側の送信上限は<b>初期値が月180通</b>（1店舗・少人数を想定した安全弁）です。
+        100名では<b>4,800通に変更してください</b>（ライトプラン5,000通に対する安全余裕200通）。
+        変更しないと、月の途中で送信が自動停止します。
+        なお<b>この上限は全店舗の合計</b>で管理されます。
+      </div>
+    </div>
   </section>
 
   <section>
-    <h2>3. 文面作成：人数 × 利用頻度で決まります</h2>
+    <h2>3. 文面作成：唯一の変動費（人数 × 利用頻度）</h2>
     <table class="compact">
       <tr>
         <th>在籍キャスト</th>
@@ -477,73 +499,73 @@
         <th class="num">週3回使う（標準）</th>
         <th class="num">毎日使う</th>
       </tr>
-      <tr><td class="k">5名</td><td class="num">22回 / 約10円</td><td class="num">65回 / 約31円</td><td class="num">152回 / 約73円</td></tr>
-      <tr><td class="k">10名</td><td class="num">43回 / 約21円</td><td class="num">130回 / 約63円</td><td class="num">304回 / 約146円</td></tr>
-      <tr><td class="k">20名</td><td class="num">87回 / 約42円</td><td class="num">261回 / 約125円</td><td class="num">609回 / 約293円</td></tr>
-      <tr><td class="k">30名</td><td class="num">130回 / 約63円</td><td class="num">391回 / 約188円</td><td class="num">913回 / 約438円</td></tr>
+      <tr><td class="k">50名</td><td class="num">217回 / 約104円</td><td class="num">652回 / 約313円</td><td class="num">1,521回 / 約730円</td></tr>
+      <tr><td class="k">100名（今回の想定）</td><td class="num">435回 / 約209円</td><td class="num">1,304回 / 約626円</td><td class="num">3,042回 / 約1,460円</td></tr>
+      <tr><td class="k">150名</td><td class="num">652回 / 約313円</td><td class="num">1,955回 / 約939円</td><td class="num">4,563回 / 約2,190円</td></tr>
     </table>
     <p class="cap">
       「回数」は月間の生成回数（1回＝3案）。<b>作り直しをした場合はその分だけ回数が増えます</b>。
-      仮に全員が毎回2回作り直しても、30名・毎日利用で月約1,300円です。
-      より高品質なモデルに変更した場合の費用は<b>約3倍</b>（30名・週3回で月約560円）になります。
+      仮に100名全員が毎日使い、毎回2回作り直しても<b>月約4,400円</b>です。
+      より高品質なモデルに変更した場合は<b>約3倍</b>（100名・週3回で月約1,880円）になります。
+      月間の作成回数の上限は<b>店舗ごとに</b>設定できます。
     </p>
   </section>
 
   <section>
-    <h2>4. 月額の合計（代表的なパターン）</h2>
+    <h2>4. 月額の合計（キャスト100名）</h2>
     <table class="compact">
       <tr>
         <th>パターン</th>
         <th class="num">サーバー</th>
+        <th class="num">DB</th>
         <th class="num">LINE</th>
         <th class="num">文面作成</th>
-        <th class="num">DB</th>
         <th class="num">月額合計</th>
       </tr>
       <tr>
-        <td class="k">5名・週3回・曜日を分散</td>
-        <td class="num">3,100円</td><td class="num ok">0円</td><td class="num">31円</td><td class="num ok">0円</td>
-        <td class="num">約 3,100円</td>
+        <td class="k">全員が週3回使う（標準）</td>
+        <td class="num">3,100円</td><td class="num">2,900円</td><td class="num">5,000円</td><td class="num">626円</td>
+        <td class="num">約 11,600円</td>
       </tr>
       <tr>
-        <td class="k">15名・週3回・曜日を分散</td>
-        <td class="num">3,100円</td><td class="num ok">0円</td><td class="num">95円</td><td class="num ok">0円</td>
-        <td class="num">約 3,200円</td>
+        <td class="k">全員が毎日使う（最も多い）</td>
+        <td class="num">3,100円</td><td class="num">2,900円</td><td class="num">5,000円</td><td class="num">1,460円</td>
+        <td class="num">約 12,500円</td>
       </tr>
       <tr>
-        <td class="k">30名・週3回・曜日を分散</td>
-        <td class="num">3,100円</td><td class="num ok">0円</td><td class="num">188円</td><td class="num ok">0円</td>
-        <td class="num">約 3,300円</td>
+        <td class="k">文面作成を使わない</td>
+        <td class="num">3,100円</td><td class="num">2,900円</td><td class="num">5,000円</td><td class="num ok">0円</td>
+        <td class="num">約 11,000円</td>
       </tr>
       <tr class="total">
-        <td class="k">30名・更新が滞っている（週1回）</td>
-        <td class="num">3,100円</td><td class="num bad">5,000円</td><td class="num">63円</td><td class="num ok">0円</td>
-        <td class="num bad">約 8,200円</td>
+        <td class="k">（参考）DBを無料枠のまま運用</td>
+        <td class="num">3,100円</td><td class="num ok">0円</td><td class="num">5,000円</td><td class="num">626円</td>
+        <td class="num ok">約 8,700円</td>
       </tr>
     </table>
     <p class="cap">
-      上3行は曜日を分散した場合（1人4.3通）。週末に集中した場合は30名で393通となり、
-      LINEの有料プランが必要になります。
+      <b>更新が定着していても滞っていても、月額はほぼ変わりません。</b>
+      30名規模ではLINEの通数が費用を左右しましたが、100名では最初から定額プランに入るため、
+      変動するのは文面作成の数百円だけです。
     </p>
   </section>
 
   <section>
-    <h2>5. 費用を抑える方法（効果の大きい順）</h2>
+    <h2>5. ご確認いただきたい費用の分岐点</h2>
     <div class="cols2u">
       <table class="compact">
-        <tr><th>やること</th><th class="num">LINE通数への効果</th></tr>
-        <tr><td>更新の曜日を分散させる（週3回の場合）</td><td class="num ok">13.1通 → 4.3通（▲67%）</td></tr>
-        <tr><td>未更新と判定する日数を 2日 → 3日にする</td><td class="num ok">13.1通 → 8.8通（▲33%）</td></tr>
-        <tr><td>文面作成で更新そのものを定着させる</td><td class="num ok">21.7通 → 4.3通（▲80%）</td></tr>
-        <tr><td>文面作成の月間上限を設定する</td><td class="num">上限額を固定できる</td></tr>
+        <tr><th>条件</th><th class="num">追加費用</th></tr>
+        <tr><td><b>店舗ごとにLINE公式アカウントを分ける</b>場合</td><td class="num bad">1店舗あたり +5,000円/月</td></tr>
+        <tr><td>在籍が165名を超えた場合（LINEのプラン変更）</td><td class="num warn">+10,000円/月</td></tr>
+        <tr><td>在籍が150名を超えた場合（文面作成の増加分）</td><td class="num">+約300円/月</td></tr>
+        <tr><td>店舗数が増えた場合（サーバー・DB）</td><td class="num ok">0円</td></tr>
       </table>
-      <div class="callout">
-        <div class="h">費用が上がるのは「更新が滞っているとき」です</div>
+      <div class="notice">
+        <div class="h">LINE公式アカウントの数をご決定ください</div>
         <div class="d">
-          未更新者が多いほどリマインドの通数が増えるため、
-          <b>更新が止まっているときほどLINEの費用が上がります</b>。
-          文面作成を使って更新が定着すると通数が減り、有料プラン（月5,000円）が不要になる場合があります。
-          文面作成の費用（月63〜438円）は、この差額に対して十分に小さい水準です。
+          現在の構成は<b>全店舗で1つのLINE公式アカウントを共用</b>する前提です（上記の月5,000円）。
+          店舗ごとにアカウントを分ける場合は、<b>店舗数 × 月5,000円</b>に加えて
+          <b>システム側の追加開発が必要</b>です。ご希望をお知らせください。
         </div>
       </div>
     </div>
@@ -570,12 +592,13 @@
     <h2>1. 導入に必要なもの</h2>
     <table class="compact">
       <tr><th>項目</th><th>内容</th><th class="num">所要</th></tr>
-      <tr><td class="k">LINE公式アカウント</td><td>Messaging API チャネル（無料枠：Push通知 月200通）</td><td class="num">20分</td></tr>
-      <tr><td class="k">サーバー・DB</td><td>Vercel（Proプラン）と Neon のアカウント</td><td class="num">25分</td></tr>
+      <tr><td class="k">LINE公式アカウント</td><td>Messaging API チャネル。100名では<b>ライトプラン（月5,000円）が必須</b>（全店舗で1つを共用）</td><td class="num">20分</td></tr>
+      <tr><td class="k">サーバー・DB</td><td>Vercel（Proプラン）と Neon（有料プラン推奨）のアカウント</td><td class="num">25分</td></tr>
       <tr><td class="k">文面作成のAPIキー</td><td>Anthropic Console で発行（使わない場合は不要）</td><td class="num">5分</td></tr>
-      <tr><td class="k">管理者アカウント</td><td>メールアドレス1件（<b>2名以上の登録を推奨</b>）</td><td class="num">5分</td></tr>
+      <tr><td class="k">管理者・店長アカウント</td><td>メールアドレス（<b>管理者は2名以上を推奨</b>）＋ 店舗ごとの店長</td><td class="num">15分</td></tr>
+      <tr><td class="k">店舗の登録</td><td>店舗ごとに営業日の区切り・リマインド時刻を設定</td><td class="num">1店舗5分</td></tr>
       <tr><td class="k">キャストの初期設定</td><td>LINE連携コードの配布と「話し方の設定」の入力</td><td class="num">1人2分</td></tr>
-      <tr class="total"><td class="k">合計（キャスト15名の場合）</td><td>手順書に沿って作業した場合</td><td class="num">約90分</td></tr>
+      <tr class="total"><td class="k">合計（4店舗・キャスト100名の場合）</td><td>手順書に沿って作業した場合</td><td class="num">約5時間</td></tr>
     </table>
   </section>
 
@@ -588,7 +611,7 @@
         <tr><td class="k">未更新判定</td><td>直近2営業日（1〜30日で設定可）</td></tr>
         <tr><td class="k">送信頻度</td><td>1人1営業日につき1通まで</td></tr>
         <tr><td class="k">再送</td><td>失敗時は最大3回</td></tr>
-        <tr><td class="k">月間上限</td><td>既定180通で自動停止</td></tr>
+        <tr><td class="k">月間上限</td><td>初期値180通（100名では4,800通へ変更）</td></tr>
         <tr><td class="k">営業日</td><td>朝6時区切り（0〜23時で設定可）</td></tr>
       </table>
       <table class="compact">
@@ -637,7 +660,8 @@
         ① <b>生成された文面は必ず本人が読んでから投稿してください。</b>
         事実と異なる内容が含まれていないかの最終確認は本人が行う前提の設計です。<br />
         ② <b>「話し方の設定」を全員分入力してください。</b>
-        空のままだと店舗内で似た文面が並び、かえって逆効果になります。<br />
+        空のままだと店舗内で似た文面が並び、かえって逆効果になります。
+        100名分で約3時間かかりますが、<b>店長が自店舗分を並行して入力できます</b>（店長権限で入力可）。<br />
         ③ <b>管理者は2名以上登録してください。</b>1名だとログインできなくなった際に復旧できません。<br />
         ④ <b>更新実績は自己申告値です。</b>外部サイト上の実際の投稿との一致は保証しません。
       </div>

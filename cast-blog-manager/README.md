@@ -11,7 +11,7 @@
 | 文書 | 内容 |
 | --- | --- |
 | [docs/QUICKSTART.md](./docs/QUICKSTART.md) | **ローカル起動手順**（まずはこれ。10分で動きます） |
-| [docs/SETUP_GUIDE.md](./docs/SETUP_GUIDE.md) | **導入手順書**（お客様の環境への導入。60〜90分） |
+| [docs/SETUP_GUIDE.md](./docs/SETUP_GUIDE.md) | **導入手順書**（お客様の環境への導入。構築90分 + キャスト1人2分） |
 | [docs/OPERATIONS.md](./docs/OPERATIONS.md) | **運用ガイド**（日常確認・ログ・バックアップ・障害対応） |
 | [docs/DESIGN.md](./docs/DESIGN.md) | 設計書（決定内容と、そこに至った理由） |
 | [docs/TERMS_TEMPLATE.md](./docs/TERMS_TEMPLATE.md) | 利用規約の雛形（要・専門家確認） |
@@ -222,6 +222,26 @@ curl -X POST "$APP_URL/api/cron/tick" -H "Authorization: Bearer $CRON_SECRET"
 > **開発時の注意:** LINE Webhook には **公開 HTTPS URL が必須** です（localhost は不可）。
 > `ngrok http 3000` などでトンネルを作り、その URL を Webhook に設定してください。
 
+### 複数店舗と送信数について
+
+**LINE 公式アカウントは全店舗で1つを共用する構成です**
+（`LINE_CHANNEL_ACCESS_TOKEN` / `LINE_CHANNEL_SECRET` は環境変数のため、デプロイ単位で1つ）。
+`LINE_MONTHLY_PUSH_LIMIT` による送信上限も **全店舗の合計** で管理されます。
+
+そのため規模に応じて上限値の見直しが必要です。
+
+| 在籍キャスト | 最大送信数（全員が1か月更新しない場合） | 必要な LINE プラン | 推奨する `LINE_MONTHLY_PUSH_LIMIT` |
+| ---: | ---: | --- | ---: |
+| 5名 | 152通 | フリー（200通） | 180 |
+| 30名 | 909通 | ライト（5,000通） | 4,800 |
+| 100名 | 3,030通 | ライト（5,000通） | 4,800 |
+| 165名超 | 5,000通超 | スタンダード（30,000通） | 契約通数に応じて設定 |
+
+通数の根拠は `npm run docs:simulate` で再算出できます（実装の `isStale` をそのまま使用）。
+
+店舗ごとに LINE 公式アカウントを分けたい場合は、チャネル情報を店舗単位で保持する
+実装の追加が必要です（現状は未対応）。
+
 ---
 
 ## 文面作成（キャストの下書き支援）
@@ -256,6 +276,7 @@ curl -X POST "$APP_URL/api/cron/tick" -H "Authorization: Bearer $CRON_SECRET"
 ### 費用と制限
 
 - 1回の生成は概ね **0.5円前後**（既定モデル。入力約600 / 出力約500トークン）
+- 目安: キャスト100名が週3回使って **月約630円**（月1,304回）。毎日使っても月約1,460円
 - **月間の回数上限は既定で「無制限」**。必要な店舗だけ設定画面から上限を入れてください
   （空欄＝無制限、0＝1件も作成不可）
 - 上限とは別に、**1キャストにつき60秒に3回**の連続実行制限が常に効きます
