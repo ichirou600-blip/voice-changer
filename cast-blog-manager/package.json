@@ -27,7 +27,8 @@
     "docs:shots": "tsx scripts/capture-doc-shots.mts",
     "docs:spec": "tsx scripts/build-spec-pdf.mts",
     "db:seed:demo": "tsx prisma/seed-demo.ts",
-    "docs:simulate": "tsx scripts/simulate-reminder-volume.mts"
+    "docs:simulate": "tsx scripts/simulate-reminder-volume.mts",
+    "draft:probe": "tsx scripts/probe-draft-quality.mts"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.0.2",
