@@ -4,14 +4,16 @@ import type { NextRequest } from "next/server";
 import { isAllowedMutation } from "@/lib/http/csrf";
 
 /**
- * middleware の役割は次の2つだけに限定する。
+ * リクエストの前段処理（Next.js 16 で `middleware` から `proxy` に名称変更された）。
+ *
+ * 役割は次の2つだけに限定する。
  *
  * 1. CSRF の一次防御（変更系リクエストの Origin 照合）
  * 2. セキュリティヘッダの付与
  *
- * **認可は middleware に置かない。**
- * middleware は Edge Runtime で DB を参照できず、
- * 過去にヘッダ細工による middleware バイパスの CVE も存在するため、
+ * **認可はここに置かない。**
+ * この層は Edge Runtime で DB を参照できず、
+ * 過去にヘッダ細工によるバイパスの CVE も存在するため、
  * 認可は必ず Server Component / Server Action / Route Handler 側
  * （`requireUser` / `defineAction`）で行う。後任者もここに寄せないこと。
  */
@@ -40,7 +42,7 @@ function withSecurityHeaders(res: NextResponse): NextResponse {
   return res;
 }
 
-export function middleware(request: NextRequest) {
+export default function proxy(request: NextRequest) {
   // --- CSRF 一次防御 ---
   // LINE Webhook は外部（LINE プラットフォーム）からの POST なので Origin 照合の対象外。
   // 代わりに署名検証（X-Line-Signature）で真正性を担保する。
