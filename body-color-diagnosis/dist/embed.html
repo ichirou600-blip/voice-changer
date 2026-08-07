@@ -1,0 +1,2485 @@
+<title>骨格診断 × パーソナルカラー診断</title>
+<style>
+/* ==================================================================
+   骨格診断 × パーソナルカラー診断
+   トークン定義 → レイアウト → コンポーネント の順。
+   色は必ず :root のトークン経由で参照する（テーマ切替のため）。
+   ================================================================== */
+
+:root {
+  /* --- 色（ライト） --- */
+  --ink: #241f26;          /* 墨に紫を含ませた文字色 */
+  --ink-soft: #6e6572;     /* 藤鼠。補足テキスト */
+  --ink-faint: #9a919d;
+  --paper: #f7f4f5;        /* 薄紅鼠の地 */
+  --surface: #ffffff;
+  --surface-sunk: #f1ecee;
+  --line: #e4dce0;
+  --line-strong: #cfc2c8;
+  --accent: #7a3b52;       /* 葡萄酒 */
+  --accent-soft: #f3e6ea;
+  --accent-ink: #ffffff;
+  --focus: #7a3b52;
+  --shadow: 0 1px 2px rgba(36, 31, 38, 0.05), 0 8px 24px -12px rgba(36, 31, 38, 0.18);
+
+  /* --- 書体 --- */
+  --font-display: "Hiragino Mincho ProN", "HiraMinProN-W3", "Yu Mincho", "YuMincho",
+    "Noto Serif JP", "Songti SC", serif;
+  --font-body: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "YuGothic",
+    "Noto Sans JP", "Helvetica Neue", Arial, sans-serif;
+
+  /* --- 寸法 --- */
+  --measure: 34rem;
+  --radius: 3px;
+  --step: 0.75rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink: #ede8ec;
+    --ink-soft: #a89fac;
+    --ink-faint: #7d7382;
+    --paper: #1a171c;
+    --surface: #232028;
+    --surface-sunk: #2b2731;
+    --line: #3a343f;
+    --line-strong: #4e4655;
+    --accent: #d98ba3;
+    --accent-soft: #35262d;
+    --accent-ink: #241f26;
+    --focus: #d98ba3;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.6);
+  }
+}
+
+:root[data-theme="dark"] {
+  --ink: #ede8ec;
+  --ink-soft: #a89fac;
+  --ink-faint: #7d7382;
+  --paper: #1a171c;
+  --surface: #232028;
+  --surface-sunk: #2b2731;
+  --line: #3a343f;
+  --line-strong: #4e4655;
+  --accent: #d98ba3;
+  --accent-soft: #35262d;
+  --accent-ink: #241f26;
+  --focus: #d98ba3;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.6);
+}
+
+/* ------------------------------------------------------------------ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.85;
+  -webkit-font-smoothing: antialiased;
+  text-size-adjust: 100%;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  line-height: 1.45;
+  text-wrap: balance;
+  margin: 0;
+}
+
+p {
+  margin: 0;
+}
+
+ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+:where(a) {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}
+
+/* ------------------------------------------------------------------
+   レイアウト
+   ------------------------------------------------------------------ */
+
+.shell {
+  width: 100%;
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 0 1.25rem;
+}
+
+.masthead {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.masthead .shell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 3.5rem;
+}
+
+.wordmark {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  letter-spacing: 0.14em;
+  margin: 0;
+}
+
+.wordmark .sep {
+  color: var(--accent);
+  padding: 0 0.15em;
+}
+
+main {
+  padding: 2.5rem 0 4rem;
+}
+
+.view[hidden] {
+  display: none;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.stack-tight {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+/* ------------------------------------------------------------------
+   共通パーツ
+   ------------------------------------------------------------------ */
+
+.eyebrow {
+  font-size: 0.7rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  font-feature-settings: "palt";
+}
+
+.eyebrow::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  box-shadow: var(--shadow);
+}
+
+.btn {
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  line-height: 1.4;
+  padding: 0.8rem 1.6rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.btn:hover {
+  opacity: 0.88;
+}
+
+.btn-quiet {
+  background: transparent;
+  color: var(--ink-soft);
+  border-color: var(--line-strong);
+}
+
+.btn-quiet:hover {
+  color: var(--ink);
+  border-color: var(--ink-soft);
+  opacity: 1;
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.note {
+  font-size: 0.8rem;
+  line-height: 1.7;
+  color: var(--ink-faint);
+}
+
+/* ------------------------------------------------------------------
+   イントロ
+   ------------------------------------------------------------------ */
+
+.intro-title {
+  font-size: clamp(1.7rem, 6vw, 2.3rem);
+  letter-spacing: 0.04em;
+}
+
+.intro-title .line {
+  display: block;
+}
+
+.intro-title .amp {
+  color: var(--accent);
+  font-size: 0.7em;
+  padding: 0 0.35em;
+}
+
+.intro-lede {
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+}
+
+/* ドレープ（布あて）に見立てた色見本の帯 */
+.drape {
+  display: flex;
+  height: 4.5rem;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+.drape span {
+  flex: 1;
+}
+
+.what-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.what-item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.9rem;
+  align-items: start;
+}
+
+.what-item .marker {
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 0.15rem 0.7rem;
+  margin-top: 0.35rem;
+  white-space: nowrap;
+}
+
+.what-item h3 {
+  font-size: 1rem;
+}
+
+.what-item p {
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+}
+
+/* ------------------------------------------------------------------
+   設問
+   ------------------------------------------------------------------ */
+
+.quiz-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 1.75rem;
+}
+
+.quiz-meta {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.quiz-section-name {
+  color: var(--accent);
+}
+
+/* 回答が進むごとにチップが埋まる進捗レール */
+.rail {
+  display: flex;
+  gap: 3px;
+}
+
+.rail i {
+  flex: 1;
+  height: 6px;
+  border-radius: 1px;
+  background: var(--surface-sunk);
+  border: 1px solid var(--line);
+  transition: background-color 0.25s ease, border-color 0.25s ease;
+}
+
+.rail i.done {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.rail i.here {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.question {
+  font-size: 1.25rem;
+  letter-spacing: 0.02em;
+  margin-bottom: 0.4rem;
+}
+
+.question-hint {
+  font-size: 0.82rem;
+  color: var(--ink-soft);
+  margin-bottom: 1.25rem;
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.85rem;
+  width: 100%;
+  text-align: left;
+  font-family: var(--font-body);
+  font-size: 0.95rem;
+  line-height: 1.7;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 0.9rem 1.1rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.option:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.option .key {
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  color: var(--ink-faint);
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  display: grid;
+  place-items: center;
+  margin-top: 0.15rem;
+  flex: none;
+}
+
+.option[aria-checked="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.option[aria-checked="true"] .key {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.quiz-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 1.5rem;
+}
+
+.fade-in {
+  animation: fade-in 0.28s ease both;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+/* ------------------------------------------------------------------
+   結果
+   ------------------------------------------------------------------ */
+
+.result-banner {
+  display: flex;
+  height: 8rem;
+  border-radius: var(--radius);
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+
+.result-banner span {
+  flex: 1;
+  animation: drape 0.5s ease both;
+}
+
+@keyframes drape {
+  from {
+    transform: scaleY(0);
+    transform-origin: top;
+  }
+}
+
+.verdict {
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem 0 0;
+}
+
+.verdict .kicker {
+  font-size: 0.72rem;
+  letter-spacing: 0.24em;
+  color: var(--ink-soft);
+}
+
+.verdict .name {
+  font-family: var(--font-display);
+  font-size: clamp(1.9rem, 8vw, 2.6rem);
+  letter-spacing: 0.06em;
+  line-height: 1.3;
+}
+
+.verdict .reading {
+  font-size: 0.75rem;
+  letter-spacing: 0.3em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
+.verdict .tagline {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  color: var(--ink-soft);
+  margin-top: 0.4rem;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: center;
+}
+
+.chip {
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  color: var(--ink-soft);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  padding: 0.15rem 0.75rem;
+}
+
+/* スコアの棒グラフ */
+.bars {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.bar-row {
+  display: grid;
+  grid-template-columns: 5.5rem 1fr 2.8rem;
+  align-items: center;
+  gap: 0.7rem;
+  font-size: 0.8rem;
+}
+
+.bar-row .label {
+  color: var(--ink-soft);
+}
+
+.bar-row .value {
+  text-align: right;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.bar-track {
+  height: 8px;
+  background: var(--surface-sunk);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.bar-fill {
+  height: 100%;
+  background: var(--line-strong);
+  border-radius: 999px;
+  transition: width 0.5s ease;
+}
+
+.bar-row.top .label,
+.bar-row.top .value {
+  color: var(--ink);
+}
+
+.bar-row.top .bar-fill {
+  background: var(--accent);
+}
+
+/* 3軸（ベース／明度／清濁） */
+.axis {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.65rem 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.axis:last-child {
+  border-bottom: 0;
+}
+
+.axis-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.75rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.axis-head .axis-name {
+  color: var(--ink);
+  letter-spacing: 0.1em;
+}
+
+.axis-track {
+  position: relative;
+  height: 6px;
+  background: var(--surface-sunk);
+  border-radius: 999px;
+}
+
+.axis-mark {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--surface);
+  transform: translate(-50%, -50%);
+  transition: left 0.5s ease;
+}
+
+.axis-ends {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: var(--ink-faint);
+}
+
+/* 色見本 */
+.swatches {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr));
+  gap: 0.5rem;
+}
+
+.swatch {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.swatch .chipcolor {
+  height: 3.25rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+}
+
+.swatch .cname {
+  font-size: 0.7rem;
+  line-height: 1.4;
+  color: var(--ink-soft);
+}
+
+.swatch .chex {
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.swatches.small .chipcolor {
+  height: 2.25rem;
+}
+
+/* 定義リスト状の詳細 */
+.detail {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.detail-row {
+  display: grid;
+  grid-template-columns: 5rem 1fr;
+  gap: 0.9rem;
+  align-items: baseline;
+  font-size: 0.9rem;
+}
+
+.detail-row dt {
+  font-family: var(--font-display);
+  font-size: 0.82rem;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+}
+
+.detail-row dd {
+  margin: 0;
+  color: var(--ink);
+}
+
+.tick {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+  align-items: baseline;
+}
+
+.tick::before {
+  content: "—";
+  color: var(--accent);
+}
+
+.tick.cross::before {
+  content: "×";
+  color: var(--ink-faint);
+}
+
+.type-name {
+  font-size: 1.4rem;
+  letter-spacing: 0.06em;
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
+.type-name .en {
+  font-family: var(--font-body);
+  font-size: 0.66rem;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+.type-tagline {
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  color: var(--accent);
+}
+
+.subhead {
+  font-size: 0.72rem;
+  letter-spacing: 0.18em;
+  color: var(--ink-soft);
+  margin-bottom: 0.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.theme-toggle {
+  padding: 0.3rem 0.85rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+}
+
+.combo {
+  background: var(--accent-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1.4rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.combo .combo-catch {
+  font-family: var(--font-display);
+  font-size: 1.15rem;
+  letter-spacing: 0.04em;
+}
+
+.combo p {
+  font-size: 0.9rem;
+}
+
+.result-section {
+  display: grid;
+  gap: 1rem;
+}
+
+.mix-note {
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+  border-left: 2px solid var(--accent);
+  padding-left: 0.9rem;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 1.5rem;
+  transform: translateX(-50%);
+  background: var(--ink);
+  color: var(--paper);
+  font-size: 0.82rem;
+  padding: 0.6rem 1.2rem;
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+  z-index: 20;
+}
+
+.toast[hidden] {
+  display: none;
+}
+
+.site-foot {
+  border-top: 1px solid var(--line);
+  padding: 1.5rem 0 2.5rem;
+  color: var(--ink-faint);
+  font-size: 0.75rem;
+  line-height: 1.8;
+}
+
+/* ------------------------------------------------------------------ */
+
+@media (max-width: 26rem) {
+  .detail-row {
+    grid-template-columns: 1fr;
+    gap: 0.15rem;
+  }
+
+  .bar-row {
+    grid-template-columns: 4.5rem 1fr 2.6rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+@media print {
+  .masthead,
+  .quiz-nav,
+  .btn-row,
+  .site-foot {
+    display: none !important;
+  }
+
+  body {
+    background: #fff;
+  }
+
+  .card {
+    box-shadow: none;
+    break-inside: avoid;
+  }
+}
+</style>
+<header class="masthead">
+      <div class="shell">
+        <p class="wordmark">骨格<span class="sep">×</span>パーソナルカラー</p>
+        <button type="button" class="btn btn-quiet theme-toggle" id="theme-toggle">ダーク表示</button>
+      </div>
+    </header>
+
+    <main>
+      <!-- ============================ イントロ ============================ -->
+      <section class="view shell stack" id="view-intro" aria-labelledby="intro-title">
+        <div class="stack-tight">
+          <p class="eyebrow">Self diagnosis</p>
+          <h1 class="intro-title" id="intro-title">
+            <span class="line">生まれつきの<ruby>骨格<rt>こっかく</rt></ruby>と、</span>
+            <span class="line">生まれつきの色。</span>
+          </h1>
+          <p class="intro-lede">
+            似合う服が分からないのは、センスの問題ではありません。体の厚みや骨の出方、肌と瞳が持つ色みという、生まれつきの条件が人それぞれ違うからです。25の質問に答えると、あなたの骨格タイプとパーソナルカラーを同時に診断します。
+          </p>
+        </div>
+
+        <div class="drape" id="intro-drape" aria-hidden="true"></div>
+
+        <div class="card what-list">
+          <div class="what-item">
+            <span class="marker">骨格</span>
+            <div>
+              <h3>体の質感と重心から、似合う「形」を決める</h3>
+              <p>
+                ストレート・ウェーブ・ナチュラルの3タイプ。太っている・痩せているとは関係なく、素材とシルエットの相性が変わります。
+              </p>
+            </div>
+          </div>
+          <div class="what-item">
+            <span class="marker">色</span>
+            <div>
+              <h3>肌・瞳・髪の色みから、似合う「色」を決める</h3>
+              <p>
+                イエベ春・ブルベ夏・イエベ秋・ブルベ冬の4シーズン。ベース／明度／清濁の3つの軸で、どちら寄りかも表示します。
+              </p>
+            </div>
+          </div>
+          <div class="what-item">
+            <span class="marker">掛算</span>
+            <div>
+              <h3>2つを掛け合わせた、具体的な着こなし</h3>
+              <p>
+                「形」と「色」は別々に診断しても、着るのは1着です。12通りの組み合わせごとに、明日から使える指針を出します。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button type="button" class="btn" id="start-btn">診断をはじめる</button>
+          <button type="button" class="btn btn-quiet" id="resume-btn" hidden>前回の続きから</button>
+        </div>
+
+        <p class="note">
+          所要時間は約5分。明るい場所で、すっぴんに近い状態で答えると精度が上がります。回答はこの端末のブラウザ内にのみ保存され、どこにも送信されません。
+        </p>
+      </section>
+
+      <!-- ============================ 設問 ============================ -->
+      <section class="view shell" id="view-quiz" hidden aria-labelledby="question-text">
+        <div class="quiz-head">
+          <div class="quiz-meta">
+            <span class="quiz-section-name" id="quiz-section-name">骨格診断</span>
+            <span id="quiz-counter">1 / 25</span>
+          </div>
+          <div class="rail" id="quiz-rail" role="progressbar" aria-label="診断の進捗" aria-valuemin="0" aria-valuemax="25" aria-valuenow="0"></div>
+        </div>
+
+        <div id="quiz-body">
+          <h2 class="question" id="question-text"></h2>
+          <p class="question-hint" id="question-hint" hidden></p>
+          <div class="options" id="options" role="radiogroup" aria-labelledby="question-text"></div>
+        </div>
+
+        <div class="quiz-nav">
+          <button type="button" class="btn btn-quiet" id="prev-btn">戻る</button>
+          <span class="note" id="quiz-tip">数字キー（1〜4）でも選べます</span>
+        </div>
+      </section>
+
+      <!-- ============================ 結果 ============================ -->
+      <section class="view shell stack" id="view-result" hidden aria-labelledby="result-title">
+        <h1 class="eyebrow" id="result-title">Your result</h1>
+        <div id="result-body" class="stack"></div>
+
+        <div class="btn-row">
+          <button type="button" class="btn" id="copy-btn">結果をコピー</button>
+          <button type="button" class="btn btn-quiet" id="print-btn">印刷 / PDF保存</button>
+          <button type="button" class="btn btn-quiet" id="retry-btn">もう一度診断する</button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-foot">
+      <div class="shell">
+        この診断は自己申告のアンケートに基づく簡易版です。骨格もパーソナルカラーも、実際にはプロが自然光の下でドレープを当てて判定します。結果が納得できないときは、上位2位のタイプを両方試してみてください。
+      </div>
+    </footer>
+
+    <div class="toast" id="toast" role="status" hidden></div>
+
+<script>
+/*
+ * 骨格診断 × パーソナルカラー診断 — 診断データ
+ *
+ * ブラウザでは classic script として読み込まれ、グローバルの DATA を app.js が参照する。
+ * Node からは require("./data.js") で同じオブジェクトを取得できる（test.js / build.js 用）。
+ */
+
+/* ------------------------------------------------------------------ *
+ * 骨格診断（ストレート / ウェーブ / ナチュラル）
+ * ------------------------------------------------------------------ */
+
+const SKELETON_TYPES = {
+  straight: {
+    name: "ストレート",
+    reading: "Straight",
+    tagline: "厚みとハリ、上重心のメリハリボディ",
+    summary:
+      "体の前後に厚みがあり、肌にハリと弾力があるタイプ。バストとウエストの位置が高く、立体的でグラマラスな印象を持ちます。シンプルで上質なものを、ジャストサイズで着るときにいちばん映えます。",
+    keywords: ["上重心", "立体的", "ハリのある肌", "メリハリ", "Iライン"],
+    material: {
+      good: [
+        "ハリとコシのある上質素材（コットンブロード、ウール、ハイゲージニット）",
+        "とろみのあるシルク、なめらかな上質レザー",
+        "薄すぎず厚すぎない中肉の生地",
+      ],
+      bad: [
+        "ローゲージのざっくりニット",
+        "シフォンやレースなど頼りない薄手",
+        "くしゃっとしたリネン、起毛の強い素材",
+      ],
+    },
+    items: {
+      tops: ["Vネック・スキッパーシャツ", "ジャストサイズの無地カットソー", "ハイゲージのタートルネック"],
+      bottoms: ["センタープレスのストレートパンツ", "タイトスカート", "ハリのあるストレートデニム"],
+      outer: ["テーラードジャケット", "トレンチコート", "膝下丈のチェスターコート"],
+    },
+    avoid: [
+      "全身オーバーサイズ",
+      "フリル・ギャザー・リボンの重ね盛り",
+      "長すぎるロングカーディガンの羽織りっぱなし",
+      "首まわりの重ね着、大きすぎる柄",
+    ],
+    accessory: [
+      "一粒ダイヤのような、シンプルで存在感のあるジュエリー",
+      "直線的で構築的なフォルムのバッグ",
+      "装飾の少ないポインテッドトゥのパンプス",
+    ],
+    tips: [
+      "首元をVに開けて、縦のラインをつくる",
+      "分量は「引き算」でシンプルにまとめる",
+      "ウエスト位置は高めをキープする",
+      "デザインより素材の質で勝負する",
+    ],
+  },
+
+  wave: {
+    name: "ウェーブ",
+    reading: "Wave",
+    tagline: "やわらかく薄い上半身、下重心の曲線ボディ",
+    summary:
+      "上半身が薄く、肌はふんわりとやわらかい質感。ウエストは細く、腰から下に丸みが出やすい下重心タイプ。やわらかい素材を上半身に集めて重心を上げると、一気に洗練されます。",
+    keywords: ["下重心", "曲線的", "やわらかい肌", "華奢な上半身", "ハイウエスト"],
+    material: {
+      good: [
+        "やわらかく軽い素材（シフォン、レース、アンゴラ、モヘア）",
+        "ツイード、ベロア、とろみのあるブラウス地",
+        "ほどよい光沢のある素材",
+      ],
+      bad: [
+        "厚手でハリの強い生地",
+        "硬いリネン、ごわつく厚手デニム",
+        "重いローゲージニット",
+      ],
+    },
+    items: {
+      tops: ["丸首・ボートネックのトップス", "コンパクトで短め丈のニット", "フリルやギャザーのあるブラウス"],
+      bottoms: ["ハイウエストの膝下フレアスカート", "プリーツスカート", "細身のテーパードパンツ"],
+      outer: ["ショート丈ジャケット", "ノーカラーコート", "ツイードジャケット"],
+    },
+    avoid: [
+      "だぼっとしたオーバーサイズ",
+      "深すぎるVネック、ローウエスト",
+      "重心が下がる長すぎる丈",
+      "ハリの強い素材を上半身に持ってくること",
+    ],
+    accessory: [
+      "華奢なネックレスの重ねづけ、短めのチョーカー",
+      "小ぶりで揺れるピアス",
+      "小さめのバッグ、ヒールのある靴",
+    ],
+    tips: [
+      "ウエスト位置を高くして重心を上げる",
+      "装飾は上半身に集める",
+      "「足し算」で華やかさを補う",
+      "手首・足首・首元の“三首”を見せる",
+    ],
+  },
+
+  natural: {
+    name: "ナチュラル",
+    reading: "Natural",
+    tagline: "骨と関節が生きる、フレーム感のあるボディ",
+    summary:
+      "肩や鎖骨、手足の関節など骨のフレームがしっかりしていて、肉感より骨感が目立つタイプ。肌はややドライな質感。ざっくりした素材とゆるいシルエットを、そのまま着こなせる希少なタイプです。",
+    keywords: ["フレーム感", "骨感", "ドライな肌", "ラフ", "ボリューム"],
+    material: {
+      good: [
+        "厚手でざっくりした天然素材（リネン、コーデュロイ、厚手デニム）",
+        "ローゲージニット、ウールツイード、スウェード",
+        "くったりと風合いのある生地",
+      ],
+      bad: [
+        "体に沿う薄手のジャージー",
+        "光沢の強いサテン",
+        "きちんとしすぎたハリ素材、繊細すぎるレース",
+      ],
+    },
+    items: {
+      tops: ["オーバーサイズシャツ", "ドロップショルダーのニット", "ロング丈のカットソー"],
+      bottoms: ["ワイドパンツ", "マキシ丈スカート", "ロングギャザースカート"],
+      outer: ["大きめのコート", "ミリタリージャケット", "ムートン、ロングガウン"],
+    },
+    avoid: [
+      "ぴったりジャストサイズ",
+      "短すぎる丈、体のラインを拾う薄手",
+      "小さすぎる華奢なアクセサリー",
+      "きちんとしすぎたセットアップ",
+    ],
+    accessory: [
+      "ウッド・レザー・べっ甲など天然素材の大ぶりアクセサリー",
+      "大きめのトートバッグ",
+      "ボリュームのあるスニーカーやブーツ",
+    ],
+    tips: [
+      "ボリュームを恐れず味方にする",
+      "肩のフレームはドロップショルダーで活かす",
+      "縦の“長さ”を強調する",
+      "着崩したラフさ・こなれ感を残す",
+    ],
+  },
+};
+
+/* 各設問は3択。weight: 2 の設問は骨格の判別力が高い「キー設問」。 */
+const SKELETON_QUESTIONS = [
+  {
+    id: "s1",
+    weight: 2,
+    q: "首の長さと太さは？",
+    hint: "鏡を正面から見て、あごの下から鎖骨までを確認してください。",
+    options: [
+      { label: "やや短めで、太さは普通〜しっかりしている", type: "straight" },
+      { label: "細くて長め。華奢に見える", type: "wave" },
+      { label: "長めで、首筋の筋（すじ）が目立つ", type: "natural" },
+    ],
+  },
+  {
+    id: "s2",
+    weight: 2,
+    q: "鎖骨はどう見えますか？",
+    hint: "力を抜いた状態で、鎖骨のあたりを触ってみてください。",
+    options: [
+      { label: "あまり目立たず、埋もれ気味", type: "straight" },
+      { label: "細く華奢に、うっすら浮き出る", type: "wave" },
+      { label: "太くて大きな骨が、はっきり出る", type: "natural" },
+    ],
+  },
+  {
+    id: "s3",
+    weight: 1,
+    q: "肩まわりの印象は？",
+    options: [
+      { label: "厚みがあり、丸みのある肩", type: "straight" },
+      { label: "なで肩で、薄い", type: "wave" },
+      { label: "肩幅があり、肩先の骨が角ばって見える", type: "natural" },
+    ],
+  },
+  {
+    id: "s4",
+    weight: 1,
+    q: "バストの位置と厚みは？",
+    options: [
+      { label: "位置が高く、体の前後に厚みがある", type: "straight" },
+      { label: "位置が低めで、厚みは控えめ", type: "wave" },
+      { label: "厚みが少なく、鎖骨の下がへこんで見える", type: "natural" },
+    ],
+  },
+  {
+    id: "s5",
+    weight: 2,
+    q: "手のひらと指の印象は？",
+    hint: "手を広げて、手のひらの厚みと指の長さを見てください。",
+    options: [
+      { label: "手のひらに厚みがあり、指はやや短め", type: "straight" },
+      { label: "手が小さく、指は細くてやわらかい", type: "wave" },
+      { label: "手が大きく、指の関節や筋が目立つ", type: "natural" },
+    ],
+  },
+  {
+    id: "s6",
+    weight: 2,
+    q: "手首の骨を、反対の手の親指と人差し指で軽くつまむと？",
+    hint: "骨の断面の形を確かめる、いちばん分かりやすいチェックです。",
+    options: [
+      { label: "丸に近い。前後に厚みを感じる", type: "straight" },
+      { label: "楕円で薄い。平べったい", type: "wave" },
+      { label: "骨が大きく、ゴツッとした感触がある", type: "natural" },
+    ],
+  },
+  {
+    id: "s7",
+    weight: 2,
+    q: "肌の質感は？",
+    hint: "二の腕の内側を触って確かめてみてください。",
+    options: [
+      { label: "ハリと弾力があり、みっちりしている", type: "straight" },
+      { label: "ふわっとやわらかく、しっとりしている", type: "wave" },
+      { label: "乾燥しやすく、筋や血管が見えやすい", type: "natural" },
+    ],
+  },
+  {
+    id: "s8",
+    weight: 1,
+    q: "ウエストから腰まわりは？",
+    options: [
+      { label: "ウエスト位置が高く、腰まわりはコンパクト", type: "straight" },
+      { label: "ウエストは細く、腰やお尻に丸みが出やすい", type: "wave" },
+      { label: "腰の位置が低めで、骨盤の横幅が目立つ", type: "natural" },
+    ],
+  },
+  {
+    id: "s9",
+    weight: 1,
+    q: "太ももとひざ下の関係は？",
+    options: [
+      { label: "太ももに肉感があり、ひざ下はすっきり", type: "straight" },
+      { label: "太ももは細めで、ひざ下に肉がつきやすい", type: "wave" },
+      { label: "全体に肉感が少なく、ひざのお皿が大きい", type: "natural" },
+    ],
+  },
+  {
+    id: "s10",
+    weight: 1,
+    q: "太ると、どこから変わりますか？",
+    options: [
+      { label: "上半身やお腹まわりから、全体的にサイズアップする", type: "straight" },
+      { label: "腰・お尻・太ももなど、下半身から", type: "wave" },
+      { label: "全体的に大きくなる。あまりやわらかくならない", type: "natural" },
+    ],
+  },
+  {
+    id: "s11",
+    weight: 1,
+    q: "ジャストサイズのTシャツ1枚を着たときの印象は？",
+    options: [
+      { label: "きちんと感が出て、ハリのある印象になる", type: "straight" },
+      { label: "少し寂しい、物足りない印象になりがち", type: "wave" },
+      { label: "ラフでこなれた印象になる", type: "natural" },
+    ],
+  },
+  {
+    id: "s12",
+    weight: 1,
+    q: "身長や体重の割に、どう見られますか？",
+    options: [
+      { label: "実際より重く、がっしり見られやすい", type: "straight" },
+      { label: "実際より華奢で、小柄に見られやすい", type: "wave" },
+      { label: "実際よりスタイルよく、大きく見られやすい", type: "natural" },
+    ],
+  },
+];
+
+/* ------------------------------------------------------------------ *
+ * パーソナルカラー診断（スプリング / サマー / オータム / ウィンター）
+ * ------------------------------------------------------------------ */
+
+const COLOR_SEASONS = {
+  spring: {
+    name: "イエベ春",
+    reading: "Spring",
+    tagline: "明るく澄んだ、ビタミンのような発色",
+    summary:
+      "黄みを含んだ、明るく澄んだ色が得意。肌は明るくツヤがあり、瞳はキラキラとした明るいブラウン。フレッシュで若々しい印象を最大限に引き出す、軽やかで鮮やかな色が味方です。",
+    keywords: ["イエローベース", "高明度", "高彩度", "クリア"],
+    palette: [
+      { name: "コーラルピンク", hex: "#FF8E7F" },
+      { name: "アプリコット", hex: "#FFA45C" },
+      { name: "クリームイエロー", hex: "#FFD96B" },
+      { name: "フレッシュグリーン", hex: "#8FCB4A" },
+      { name: "ライトターコイズ", hex: "#45C9C4" },
+      { name: "ピーチ", hex: "#FFC2A8" },
+      { name: "ライトキャメル", hex: "#DCA35E" },
+      { name: "アイボリー", hex: "#FFF4DF" },
+    ],
+    avoid: [
+      { name: "くすんだモーブ", hex: "#9B8794" },
+      { name: "チャコール", hex: "#4B4B52" },
+      { name: "ダークネイビー", hex: "#1F2A44" },
+      { name: "バーガンディ", hex: "#5C1F2B" },
+    ],
+    avoidReason: "暗く濁った色は顔に影を落とし、せっかくの明るさとツヤを消してしまいます。",
+    makeup: {
+      base: "黄みのある明るいオークル。厚塗りせず、薄膜でツヤを出す",
+      cheek: "コーラル、アプリコット、明るいピーチ",
+      lip: "コーラルピンク、オレンジベージュ、クリアな朱赤（ツヤ系）",
+      eye: "ゴールドブラウン、アプリコット、明るいオリーブ。ラメは金〜シャンパン",
+    },
+    hair: "明るいオレンジブラウン、キャラメル、ライトベージュ。真っ黒は重くなりやすい",
+    metal: "明るく輝きのあるゴールド、ピンクゴールド",
+    white: "アイボリー、クリームホワイト。純白は少し浮きやすい",
+    styling: [
+      "濁りのない、澄んだ色を選ぶ",
+      "全身を暗く重くまとめない",
+      "差し色は明るい黄緑やターコイズ",
+      "小物で光とツヤを足す",
+    ],
+  },
+
+  summer: {
+    name: "ブルベ夏",
+    reading: "Summer",
+    tagline: "淡くやわらかい、霞のようなニュアンス",
+    summary:
+      "青みを含んだ、明るく穏やかな色が得意。肌はきめ細かくマットで、瞳と髪はソフトなダークブラウン。パステルやスモーキーな色をまとうと、上品でエレガントな透明感が生まれます。",
+    keywords: ["ブルーベース", "高明度", "低彩度", "ソフト"],
+    palette: [
+      { name: "ラベンダー", hex: "#B2A1D8" },
+      { name: "ローズピンク", hex: "#E79FB6" },
+      { name: "パウダーブルー", hex: "#A6C7E8" },
+      { name: "ミントグリーン", hex: "#A5DCC7" },
+      { name: "ソフトグレー", hex: "#B5B8C0" },
+      { name: "モーブ", hex: "#B085A5" },
+      { name: "スカイブルー", hex: "#8FBFE0" },
+      { name: "オフホワイト", hex: "#F5F1EE" },
+    ],
+    avoid: [
+      { name: "ビビッドオレンジ", hex: "#E8703A" },
+      { name: "マスタード", hex: "#C99A22" },
+      { name: "キャメル", hex: "#B07C3F" },
+      { name: "漆黒", hex: "#111111" },
+    ],
+    avoidReason: "黄みの強い色や真っ黒は、やわらかい肌の質感に対して強すぎて浮いてしまいます。",
+    makeup: {
+      base: "ピンクみのある明るいベージュ。ツヤは控えめにソフトマットで",
+      cheek: "ローズピンク、ラベンダーピンク、ソフトプラム",
+      lip: "ローズピンク、モーブピンク、ソフトなラズベリー",
+      eye: "ラベンダー、ローズブラウン、グレイッシュブルー。ラメは白〜シルバー",
+    },
+    hair: "アッシュブラウン、ラベンダーアッシュ、ソフトなダークブラウン",
+    metal: "シルバー、ホワイトゴールド、プラチナ",
+    white: "ソフトなオフホワイト、ペールグレーがかった白",
+    styling: [
+      "コントラストを弱め、同系色でまとめる",
+      "濃淡の差はゆるやかに",
+      "黒よりネイビーやグレーを選ぶ",
+      "素材はマット〜ほんのりツヤ程度に",
+    ],
+  },
+
+  autumn: {
+    name: "イエベ秋",
+    reading: "Autumn",
+    tagline: "深く落ち着いた、こっくりしたアース",
+    summary:
+      "黄みを含んだ、深くて濁りのある色が得意。肌はマットで厚みがあり、瞳は深いダークブラウン。ゴージャスで大人っぽいリッチな色をまとうと、肌がなめらかに見えます。",
+    keywords: ["イエローベース", "低明度", "低彩度", "ディープ"],
+    palette: [
+      { name: "テラコッタ", hex: "#BE6039" },
+      { name: "マスタード", hex: "#C99B22" },
+      { name: "オリーブグリーン", hex: "#77763C" },
+      { name: "キャメル", hex: "#B4813C" },
+      { name: "ブリックレッド", hex: "#9F3E2E" },
+      { name: "ダークブラウン", hex: "#63452C" },
+      { name: "カーキ", hex: "#857A4E" },
+      { name: "サーモン", hex: "#D4886A" },
+    ],
+    avoid: [
+      { name: "ベビーピンク", hex: "#F6C4D8" },
+      { name: "アイシーブルー", hex: "#BFE0F2" },
+      { name: "ピュアホワイト", hex: "#FFFFFF" },
+      { name: "ショッキングピンク", hex: "#E6187E" },
+    ],
+    avoidReason: "淡く青みの強い色は、肌の厚みと黄みに対して軽すぎ、顔色がぼやけて見えます。",
+    makeup: {
+      base: "黄みのしっかりしたオークル。セミマットで密着感を出す",
+      cheek: "テラコッタ、ブリックオレンジ、サーモン",
+      lip: "ブリックレッド、テラコッタ、ブラウンベージュ（マット寄り）",
+      eye: "ブラウン、カーキ、ゴールド、レンガ。ラメはアンティークゴールド",
+    },
+    hair: "ダークブラウン、マロン、オリーブアッシュ、こっくりしたカッパー",
+    metal: "マットなアンティークゴールド、真鍮、べっ甲",
+    white: "生成り、エクリュ、アイボリー",
+    styling: [
+      "濁り（グレイッシュ）を味方にする",
+      "起毛・スエード・ツイードなどマットな素材を選ぶ",
+      "全体を中〜低明度でまとめる",
+      "小物はゴールドと自然素材で",
+    ],
+  },
+
+  winter: {
+    name: "ブルベ冬",
+    reading: "Winter",
+    tagline: "はっきり澄んだ、コントラストの強い色",
+    summary:
+      "青みを含んだ、鮮やかな色または非常に暗い色が得意。白目と黒目のコントラストが強く、はっきりとした印象。中途半端な色より、思いきりビビッドかダークに振ると映えます。",
+    keywords: ["ブルーベース", "低明度", "高彩度", "クリア"],
+    palette: [
+      { name: "ロイヤルブルー", hex: "#2A4FA8" },
+      { name: "トゥルーレッド", hex: "#C8102E" },
+      { name: "マゼンタ", hex: "#C22C76" },
+      { name: "エメラルド", hex: "#00795C" },
+      { name: "ピュアホワイト", hex: "#FFFFFF" },
+      { name: "ブラック", hex: "#17171A" },
+      { name: "レモンイエロー", hex: "#EFE23F" },
+      { name: "アイシーピンク", hex: "#F0C7D8" },
+    ],
+    avoid: [
+      { name: "マスタード", hex: "#C99A22" },
+      { name: "キャメル", hex: "#B07C3F" },
+      { name: "オレンジベージュ", hex: "#D9A273" },
+      { name: "モスグリーン", hex: "#6E7340" },
+    ],
+    avoidReason: "黄みを含んだ中間色は、はっきりした顔立ちに対してぼんやりとくすんで見えます。",
+    makeup: {
+      base: "青みのある明るいベージュ〜ピンクオークル。均一でなめらかに",
+      cheek: "青みピンク、ローズ、プラム。入れすぎないのがコツ",
+      lip: "真紅、ワインレッド、フューシャピンク、青みローズ",
+      eye: "モノトーン、ロイヤルブルー、パープル。ラメはシルバー",
+    },
+    hair: "ブルーブラック、ダークアッシュ。地毛の黒をそのまま活かすのも正解",
+    metal: "光沢の強いシルバー、プラチナ",
+    white: "ピュアホワイト。真っ白がいちばん得意",
+    styling: [
+      "白×黒のようなコントラストを効かせる",
+      "中間色より、原色かダークカラーに振る",
+      "素材はツヤ・エナメル・光沢のあるものを",
+      "差し色は一点豪華主義で",
+    ],
+  },
+};
+
+/* 各選択肢は4シーズンへの配点ベクトルを持つ。 */
+const COLOR_QUESTIONS = [
+  {
+    id: "c1",
+    q: "手首の内側の血管は、何色に見えますか？",
+    hint: "自然光の下で見るのがおすすめです。",
+    options: [
+      { label: "緑・オリーブ寄りに見える", scores: { spring: 2, autumn: 2 } },
+      { label: "青・紫寄りに見える", scores: { summer: 2, winter: 2 } },
+      { label: "どちらもある／判断がつかない", scores: { spring: 1, summer: 1, autumn: 1, winter: 1 } },
+    ],
+  },
+  {
+    id: "c2",
+    q: "日焼けをすると、どうなりますか？",
+    options: [
+      { label: "赤くなるが、あまり黒くならずすぐ戻る", scores: { summer: 2, winter: 1 } },
+      { label: "赤くならずに、小麦色に黒くなる", scores: { autumn: 2, spring: 1 } },
+      { label: "赤くなってから、じわじわ黒くなる", scores: { autumn: 1, winter: 1, spring: 1 } },
+      { label: "そもそも日焼けしにくく、すぐ元に戻る", scores: { spring: 2, summer: 1 } },
+    ],
+  },
+  {
+    id: "c3",
+    q: "顔の下にあてたとき、しっくりくる金属は？",
+    hint: "アクセサリーや、金・銀の紙などで試してみてください。",
+    options: [
+      { label: "明るく輝きのあるゴールド", scores: { spring: 3, autumn: 1 } },
+      { label: "繊細で明るいシルバー", scores: { summer: 3, winter: 1 } },
+      { label: "マットなアンティークゴールド", scores: { autumn: 3 } },
+      { label: "光沢の強いシルバー・プラチナ", scores: { winter: 3 } },
+    ],
+  },
+  {
+    id: "c4",
+    q: "瞳（黒目）の色と印象は？",
+    hint: "明るい場所で、白目とのコントラストも見てください。",
+    options: [
+      { label: "明るいブラウンでキラキラし、瞳孔との境界が曖昧", scores: { spring: 3 } },
+      { label: "ソフトな黒〜こげ茶で、白目との差がやわらかい", scores: { summer: 3 } },
+      { label: "深いダークブラウンで、落ち着いた印象", scores: { autumn: 3 } },
+      { label: "黒に近く、白目とのコントラストがはっきり", scores: { winter: 3 } },
+    ],
+  },
+  {
+    id: "c5",
+    q: "地毛の色と髪質は？",
+    options: [
+      { label: "明るめのブラウン。細くてやわらかい", scores: { spring: 2, summer: 1 } },
+      { label: "ソフトな黒〜こげ茶。細くて猫っ毛", scores: { summer: 2 } },
+      { label: "赤み・黄みのあるブラウン。太くてしっかり", scores: { autumn: 2 } },
+      { label: "真っ黒でツヤがあり、硬めでしっかり", scores: { winter: 2 } },
+    ],
+  },
+  {
+    id: "c6",
+    q: "肌の質感は？",
+    options: [
+      { label: "明るくツヤがあり、透明感がある", scores: { spring: 2 } },
+      { label: "きめ細かくマットで、ふんわりやわらかい", scores: { summer: 2 } },
+      { label: "マットで厚みがあり、黄みが強い", scores: { autumn: 2 } },
+      { label: "黄みが少なく、陶器のようになめらか", scores: { winter: 2 } },
+    ],
+  },
+  {
+    id: "c7",
+    q: "自然な頬の血色は？",
+    options: [
+      { label: "コーラル〜オレンジ寄りの血色", scores: { spring: 2, autumn: 1 } },
+      { label: "やわらかいピンクの血色", scores: { summer: 2 } },
+      { label: "あまり赤みが出ず、黄みがかる", scores: { autumn: 2 } },
+      { label: "青みピンクの赤みが、はっきり出る", scores: { winter: 2 } },
+    ],
+  },
+  {
+    id: "c8",
+    q: "白いトップスを買うなら、どの白？",
+    options: [
+      { label: "生成り・アイボリー", scores: { autumn: 2, spring: 1 } },
+      { label: "ソフトなオフホワイト", scores: { summer: 2 } },
+      { label: "明るいクリーム色", scores: { spring: 2 } },
+      { label: "混じりけのない真っ白", scores: { winter: 3 } },
+    ],
+  },
+  {
+    id: "c9",
+    q: "顔映りがいちばん良い赤は？",
+    options: [
+      { label: "朱赤・オレンジレッド", scores: { spring: 2 } },
+      { label: "ローズレッド・ラズベリー", scores: { summer: 2 } },
+      { label: "トマトレッド・ブリックレッド", scores: { autumn: 2 } },
+      { label: "真紅・ワインレッド", scores: { winter: 2 } },
+    ],
+  },
+  {
+    id: "c10",
+    q: "ベーシックカラーとして着やすいのは？",
+    options: [
+      { label: "明るく黄みのあるベージュ", scores: { spring: 2 } },
+      { label: "グレージュ、ソフトなグレー", scores: { summer: 2 } },
+      { label: "こっくりしたキャメル、ブラウン", scores: { autumn: 2 } },
+      { label: "黒、チャコール、ネイビー", scores: { winter: 2 } },
+    ],
+  },
+  {
+    id: "c11",
+    q: "得意な色の「鮮やかさ」は？",
+    options: [
+      { label: "ビタミンカラーのように、明るく鮮やか", scores: { spring: 2 } },
+      { label: "淡く、少しくすんだパステル", scores: { summer: 2 } },
+      { label: "深く、くすみのある濃い色", scores: { autumn: 2 } },
+      { label: "原色に近い、はっきりした色", scores: { winter: 2 } },
+    ],
+  },
+  {
+    id: "c12",
+    q: "黒いTシャツを顔の下にあてると？",
+    options: [
+      { label: "顔が引き締まり、はっきり見える", scores: { winter: 3 } },
+      { label: "重すぎて、疲れて見える", scores: { spring: 2, summer: 1 } },
+      { label: "少し老けた印象になる", scores: { summer: 2 } },
+      { label: "悪くないが、ブラウンの方がしっくりくる", scores: { autumn: 2 } },
+    ],
+  },
+  {
+    id: "c13",
+    q: "人からよく言われる印象は？",
+    options: [
+      { label: "元気・かわいい・若々しい", scores: { spring: 2 } },
+      { label: "やさしい・上品・穏やか", scores: { summer: 2 } },
+      { label: "落ち着いている・大人っぽい・こなれている", scores: { autumn: 2 } },
+      { label: "クール・華やか・存在感がある", scores: { winter: 2 } },
+    ],
+  },
+];
+
+/* パーソナルカラーの3軸。どちらの側に寄っているかを帯グラフで表示する。 */
+const COLOR_AXES = [
+  {
+    id: "base",
+    label: "ベース",
+    left: { name: "イエローベース", seasons: ["spring", "autumn"] },
+    right: { name: "ブルーベース", seasons: ["summer", "winter"] },
+  },
+  {
+    id: "value",
+    label: "明度",
+    left: { name: "ライト（明るい）", seasons: ["spring", "summer"] },
+    right: { name: "ディープ（深い）", seasons: ["autumn", "winter"] },
+  },
+  {
+    id: "chroma",
+    label: "清濁",
+    left: { name: "クリア（澄んだ）", seasons: ["spring", "winter"] },
+    right: { name: "ソフト（濁った）", seasons: ["summer", "autumn"] },
+  },
+];
+
+/* ------------------------------------------------------------------ *
+ * 骨格 × パーソナルカラーの掛け合わせアドバイス
+ * ------------------------------------------------------------------ */
+
+const COMBOS = {
+  "straight-spring": {
+    catch: "上質シンプル × 明るい発色",
+    text:
+      "シンプルなVネックのハイゲージニットを、コーラルやライトターコイズなど明るい色で。ストレートは面積の大きい無地が得意なので、スプリングの澄んだ色をそのままトップスに使うと最短で映えます。全身を暗くまとめると重く見えるので、ボトムスもネイビーよりライトキャメルを。",
+  },
+  "straight-summer": {
+    catch: "上質シンプル × 淡いニュアンス",
+    text:
+      "ハリのあるとろみブラウスをローズピンクやパウダーブルーで。ストレートの得意な引き算コーデと、サマーの弱いコントラストは相性が良く、上下を同系色でまとめるだけで上品に決まります。黒よりネイビーやソフトグレーを軸にしてください。",
+  },
+  "straight-autumn": {
+    catch: "上質シンプル × こっくりアース",
+    text:
+      "きれいめのテーラードジャケットを、キャメルやダークブラウンで。オータムの得意な起毛・ツイード素材は本来ストレートには重いので、目の詰まった上質なウール地を選ぶのがポイントです。素材の質で高見えする、いちばん大人っぽい組み合わせ。",
+  },
+  "straight-winter": {
+    catch: "上質シンプル × 強コントラスト",
+    text:
+      "白シャツ×黒のセンタープレスパンツが、そのまま最強の制服になります。ストレートのIラインとウィンターのコントラストは足し算不要。真紅やロイヤルブルーの無地ニットを一枚投入するだけで完成します。",
+  },
+
+  "wave-spring": {
+    catch: "ふんわり曲線 × 明るい発色",
+    text:
+      "コンパクトなコーラルピンクのカーディガンに、膝下フレアスカート。ウェーブの得意なやわらかい素材と、スプリングの軽やかな色は非常に相性が良く、いちばん「かわいい」が似合う組み合わせです。ハイウエストで重心を上げるのを忘れずに。",
+  },
+  "wave-summer": {
+    catch: "ふんわり曲線 × 淡いニュアンス",
+    text:
+      "ラベンダーやミントのシフォンブラウスに、プリーツスカート。エレガント方向にどこまでも伸ばせる王道の組み合わせです。物足りなく感じたら、色を強くするのではなく、レースやフリルなど素材の情報量で足してください。",
+  },
+  "wave-autumn": {
+    catch: "ふんわり曲線 × こっくりアース",
+    text:
+      "ツイードのショートジャケットが主役。オータムの厚手素材はウェーブには重くなりがちなので、「厚みより風合い」で選ぶのがコツです。テラコッタやサーモンなど、深くても明るさのある色から取り入れると失敗しません。",
+  },
+  "wave-winter": {
+    catch: "ふんわり曲線 × 強コントラスト",
+    text:
+      "マゼンタやトゥルーレッドの短め丈ニットを、上半身の主役に。ウィンターの強い色は、ウェーブの華奢な上半身にちょうどよい存在感を足してくれます。ただし面積は控えめに、ボトムスは黒でまとめるとバランスが取れます。",
+  },
+
+  "natural-spring": {
+    catch: "ラフなフレーム × 明るい発色",
+    text:
+      "フレッシュグリーンやターコイズのオーバーサイズシャツを、さらっと羽織って。ナチュラルの大きな面積に、スプリングの澄んだ色を乗せると軽やかに見えます。色が強く出やすいので、リネンやコットンのマットな素材で少し落ち着かせるのが正解。",
+  },
+  "natural-summer": {
+    catch: "ラフなフレーム × 淡いニュアンス",
+    text:
+      "ソフトグレーやスモーキーブルーのワイドパンツに、ゆるいリネンシャツ。ナチュラルのラフさとサマーの淡い色が合わさると、力の抜けた洗練が生まれます。全体がぼやけないよう、シルエットのメリハリで輪郭をつけてください。",
+  },
+  "natural-autumn": {
+    catch: "ラフなフレーム × こっくりアース",
+    text:
+      "カーキやキャメルのローゲージニットに、マキシ丈スカート。素材も色も方向が完全に一致する、最も無理のない組み合わせです。ウッドやレザーの大ぶりアクセサリーまで含めて、世界観をそろえられます。",
+  },
+  "natural-winter": {
+    catch: "ラフなフレーム × 強コントラスト",
+    text:
+      "黒のロングコートに白のインナー。ナチュラルのボリュームとウィンターのモノトーンは、モードに振り切ると強い武器になります。エメラルドやロイヤルブルーを一点だけ入れると、重さが抜けて今っぽくなります。",
+  },
+};
+
+const DATA = {
+  skeleton: { types: SKELETON_TYPES, questions: SKELETON_QUESTIONS },
+  color: { seasons: COLOR_SEASONS, questions: COLOR_QUESTIONS, axes: COLOR_AXES },
+  combos: COMBOS,
+};
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = DATA;
+}
+</script>
+<script>
+/*
+ * 骨格診断 × パーソナルカラー診断 — 採点ロジック
+ *
+ * 画面から切り離してあるので、Node からも require("./scoring.js") で検証できる。
+ * ブラウザでは classic script として読み込まれ、グローバルの SCORING を app.js が使う。
+ */
+
+const SCORING = (function () {
+  "use strict";
+
+  const SKELETON_ORDER = ["straight", "wave", "natural"];
+  const SEASON_ORDER = ["spring", "summer", "autumn", "winter"];
+
+  function pct(part, whole) {
+    return whole > 0 ? Math.round((part / whole) * 100) : 0;
+  }
+
+  /**
+   * 骨格スコア。設問の weight を足し合わせ、同点は判別力の高いキー設問
+   * （weight >= 2）の小計、それでも同点なら固定順で解決する。
+   */
+  function scoreSkeleton(data, answers) {
+    const questions = data.skeleton.questions;
+    const totals = { straight: 0, wave: 0, natural: 0 };
+    const keyTotals = { straight: 0, wave: 0, natural: 0 };
+    let max = 0;
+
+    questions.forEach(function (question, i) {
+      const weight = question.weight || 1;
+      max += weight;
+      const picked = answers[i];
+      if (picked == null) return;
+      const type = question.options[picked].type;
+      totals[type] += weight;
+      if (weight >= 2) keyTotals[type] += weight;
+    });
+
+    const ranked = SKELETON_ORDER.slice().sort(function (a, b) {
+      return (
+        totals[b] - totals[a] ||
+        keyTotals[b] - keyTotals[a] ||
+        SKELETON_ORDER.indexOf(a) - SKELETON_ORDER.indexOf(b)
+      );
+    });
+
+    return { totals: totals, keyTotals: keyTotals, ranked: ranked, max: max };
+  }
+
+  /**
+   * パーソナルカラースコア。選択肢ごとの配点ベクトルを合算し、
+   * 4シーズンの順位と、ベース／明度／清濁の3軸の偏りを返す。
+   */
+  function scoreColor(data, answers) {
+    const questions = data.color.questions;
+    const totals = { spring: 0, summer: 0, autumn: 0, winter: 0 };
+
+    questions.forEach(function (question, i) {
+      const picked = answers[i];
+      if (picked == null) return;
+      const scores = question.options[picked].scores;
+      Object.keys(scores).forEach(function (season) {
+        totals[season] += scores[season];
+      });
+    });
+
+    const ranked = SEASON_ORDER.slice().sort(function (a, b) {
+      return totals[b] - totals[a] || SEASON_ORDER.indexOf(a) - SEASON_ORDER.indexOf(b);
+    });
+
+    const sum = SEASON_ORDER.reduce(function (n, season) {
+      return n + totals[season];
+    }, 0);
+
+    const axes = data.color.axes.map(function (axis) {
+      const left = axis.left.seasons.reduce(function (n, s) {
+        return n + totals[s];
+      }, 0);
+      const right = axis.right.seasons.reduce(function (n, s) {
+        return n + totals[s];
+      }, 0);
+      const span = left + right;
+      const leftPct = pct(left, span);
+      return {
+        id: axis.id,
+        label: axis.label,
+        leftName: axis.left.name,
+        rightName: axis.right.name,
+        leftPct: leftPct,
+        rightPct: span > 0 ? 100 - leftPct : 0,
+      };
+    });
+
+    return { totals: totals, ranked: ranked, sum: sum, axes: axes };
+  }
+
+  return {
+    SKELETON_ORDER: SKELETON_ORDER,
+    SEASON_ORDER: SEASON_ORDER,
+    scoreSkeleton: scoreSkeleton,
+    scoreColor: scoreColor,
+  };
+})();
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = SCORING;
+}
+</script>
+<script>
+/*
+ * 骨格診断 × パーソナルカラー診断 — アプリ本体
+ * data.js の DATA と scoring.js の SCORING を参照する。
+ */
+(function () {
+  "use strict";
+
+  var STORAGE_KEY = "bcd.answers.v1";
+  var THEME_KEY = "bcd.theme.v1";
+  var SKELETON_ORDER = SCORING.SKELETON_ORDER;
+  var SEASON_ORDER = SCORING.SEASON_ORDER;
+
+  var sq = DATA.skeleton.questions;
+  var cq = DATA.color.questions;
+  var TOTAL = sq.length + cq.length;
+
+  var state = {
+    skeleton: new Array(sq.length).fill(null),
+    color: new Array(cq.length).fill(null),
+    index: 0,
+  };
+
+  var advanceTimer = null;
+
+  /* ---------------------------------------------------------------- *
+   * ユーティリティ
+   * ---------------------------------------------------------------- */
+
+  function $(id) {
+    return document.getElementById(id);
+  }
+
+  function esc(value) {
+    return String(value).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+
+  function showToast(message) {
+    var el = $("toast");
+    el.textContent = message;
+    el.hidden = false;
+    window.clearTimeout(showToast.timer);
+    showToast.timer = window.setTimeout(function () {
+      el.hidden = true;
+    }, 2200);
+  }
+
+  function scoreSkeleton(answers) {
+    return SCORING.scoreSkeleton(DATA, answers);
+  }
+
+  function scoreColor(answers) {
+    return SCORING.scoreColor(DATA, answers);
+  }
+
+  /* ---------------------------------------------------------------- *
+   * 保存と復元
+   * ---------------------------------------------------------------- */
+
+  function save() {
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({ skeleton: state.skeleton, color: state.color, index: state.index })
+      );
+    } catch (err) {
+      /* プライベートモードなどで保存できない場合は黙って続行する */
+    }
+  }
+
+  function loadSaved() {
+    try {
+      var raw = window.localStorage.getItem(STORAGE_KEY);
+      if (!raw) return null;
+      var parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed.skeleton) || !Array.isArray(parsed.color)) return null;
+      if (parsed.skeleton.length !== sq.length || parsed.color.length !== cq.length) return null;
+      return parsed;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  function clearSaved() {
+    try {
+      window.localStorage.removeItem(STORAGE_KEY);
+    } catch (err) {
+      /* noop */
+    }
+  }
+
+  function encodeAnswers() {
+    return (
+      "#s=" + state.skeleton.map(digit).join("") + "&c=" + state.color.map(digit).join("")
+    );
+    function digit(value) {
+      return value == null ? "-" : String(value);
+    }
+  }
+
+  function decodeAnswers(hash) {
+    var match = /^#s=([0-9-]+)&c=([0-9-]+)$/.exec(hash || "");
+    if (!match) return null;
+    var skeleton = parse(match[1], sq);
+    var color = parse(match[2], cq);
+    if (!skeleton || !color) return null;
+    return { skeleton: skeleton, color: color };
+
+    function parse(text, questions) {
+      if (text.length !== questions.length) return null;
+      var out = [];
+      for (var i = 0; i < text.length; i += 1) {
+        if (text[i] === "-") return null;
+        var value = Number(text[i]);
+        if (!(value >= 0 && value < questions[i].options.length)) return null;
+        out.push(value);
+      }
+      return out;
+    }
+  }
+
+  /* ---------------------------------------------------------------- *
+   * 画面遷移
+   * ---------------------------------------------------------------- */
+
+  function showView(name) {
+    ["intro", "quiz", "result"].forEach(function (key) {
+      $("view-" + key).hidden = key !== name;
+    });
+    window.scrollTo({ top: 0, behavior: "auto" });
+  }
+
+  function questionAt(index) {
+    return index < sq.length
+      ? { question: sq[index], group: "skeleton", localIndex: index }
+      : { question: cq[index - sq.length], group: "color", localIndex: index - sq.length };
+  }
+
+  function answerAt(index) {
+    var slot = questionAt(index);
+    return state[slot.group][slot.localIndex];
+  }
+
+  function firstUnanswered() {
+    for (var i = 0; i < TOTAL; i += 1) {
+      if (answerAt(i) == null) return i;
+    }
+    return TOTAL - 1;
+  }
+
+  function isComplete() {
+    return (
+      state.skeleton.every(function (v) {
+        return v != null;
+      }) &&
+      state.color.every(function (v) {
+        return v != null;
+      })
+    );
+  }
+
+  /* ---------------------------------------------------------------- *
+   * 設問の描画
+   * ---------------------------------------------------------------- */
+
+  function renderQuiz() {
+    var slot = questionAt(state.index);
+    var question = slot.question;
+    var picked = state[slot.group][slot.localIndex];
+
+    $("quiz-section-name").textContent = slot.group === "skeleton" ? "骨格診断" : "パーソナルカラー診断";
+    $("quiz-counter").textContent = state.index + 1 + " / " + TOTAL;
+
+    var rail = $("quiz-rail");
+    rail.setAttribute("aria-valuenow", String(countAnswered()));
+    rail.innerHTML = "";
+    for (var i = 0; i < TOTAL; i += 1) {
+      var tick = document.createElement("i");
+      if (answerAt(i) != null) tick.className = "done";
+      else if (i === state.index) tick.className = "here";
+      rail.appendChild(tick);
+    }
+
+    $("question-text").textContent = question.q;
+    var hint = $("question-hint");
+    hint.textContent = question.hint || "";
+    hint.hidden = !question.hint;
+
+    var box = $("options");
+    box.innerHTML = "";
+    question.options.forEach(function (option, optionIndex) {
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "option";
+      button.setAttribute("role", "radio");
+      button.setAttribute("aria-checked", String(picked === optionIndex));
+      button.tabIndex = picked === optionIndex || (picked == null && optionIndex === 0) ? 0 : -1;
+      button.innerHTML =
+        '<span class="key" aria-hidden="true">' +
+        (optionIndex + 1) +
+        "</span><span>" +
+        esc(option.label) +
+        "</span>";
+      button.addEventListener("click", function () {
+        choose(optionIndex);
+      });
+      box.appendChild(button);
+    });
+
+    $("prev-btn").disabled = state.index === 0;
+    $("quiz-tip").textContent = "数字キー（1〜" + question.options.length + "）でも選べます";
+
+    var body = $("quiz-body");
+    body.classList.remove("fade-in");
+    void body.offsetWidth; // アニメーションを再生させるためのリフロー
+    body.classList.add("fade-in");
+  }
+
+  function countAnswered() {
+    var count = 0;
+    for (var i = 0; i < TOTAL; i += 1) {
+      if (answerAt(i) != null) count += 1;
+    }
+    return count;
+  }
+
+  function choose(optionIndex) {
+    var slot = questionAt(state.index);
+    state[slot.group][slot.localIndex] = optionIndex;
+    save();
+
+    Array.prototype.forEach.call($("options").children, function (child, i) {
+      child.setAttribute("aria-checked", String(i === optionIndex));
+      child.tabIndex = i === optionIndex ? 0 : -1;
+    });
+
+    window.clearTimeout(advanceTimer);
+    advanceTimer = window.setTimeout(function () {
+      if (state.index < TOTAL - 1) {
+        state.index += 1;
+        save();
+        renderQuiz();
+      } else if (isComplete()) {
+        finish();
+      } else {
+        state.index = firstUnanswered();
+        save();
+        renderQuiz();
+      }
+    }, 230);
+  }
+
+  function goBack() {
+    window.clearTimeout(advanceTimer);
+    if (state.index === 0) return;
+    state.index -= 1;
+    save();
+    renderQuiz();
+  }
+
+  function moveFocus(delta) {
+    var options = Array.prototype.slice.call($("options").children);
+    if (!options.length) return;
+    var current = options.indexOf(document.activeElement);
+    var next = (current + delta + options.length) % options.length;
+    if (current === -1) next = 0;
+    options[next].focus();
+  }
+
+  /* ---------------------------------------------------------------- *
+   * 結果の描画
+   * ---------------------------------------------------------------- */
+
+  function bars(rows) {
+    var top = Math.max.apply(
+      null,
+      rows.map(function (row) {
+        return row.value;
+      })
+    );
+    return (
+      '<div class="bars">' +
+      rows
+        .map(function (row) {
+          var width = top > 0 ? Math.round((row.value / top) * 100) : 0;
+          return (
+            '<div class="bar-row' +
+            (row.value === top && top > 0 ? " top" : "") +
+            '"><span class="label">' +
+            esc(row.label) +
+            '</span><span class="bar-track"><span class="bar-fill" style="width:' +
+            width +
+            '%"></span></span><span class="value">' +
+            row.value +
+            "</span></div>"
+          );
+        })
+        .join("") +
+      "</div>"
+    );
+  }
+
+  function swatches(colors, small) {
+    return (
+      '<div class="swatches' +
+      (small ? " small" : "") +
+      '">' +
+      colors
+        .map(function (color) {
+          return (
+            '<div class="swatch"><span class="chipcolor" style="background:' +
+            esc(color.hex) +
+            '"></span><span class="cname">' +
+            esc(color.name) +
+            '</span><span class="chex">' +
+            esc(color.hex) +
+            "</span></div>"
+          );
+        })
+        .join("") +
+      "</div>"
+    );
+  }
+
+  function list(items, cross) {
+    return (
+      "<ul>" +
+      items
+        .map(function (item) {
+          return '<li class="tick' + (cross ? " cross" : "") + '"><span>' + esc(item) + "</span></li>";
+        })
+        .join("") +
+      "</ul>"
+    );
+  }
+
+  function detail(rows) {
+    return (
+      '<dl class="detail">' +
+      rows
+        .map(function (row) {
+          return (
+            '<div class="detail-row"><dt>' +
+            esc(row[0]) +
+            "</dt><dd>" +
+            esc(row[1]) +
+            "</dd></div>"
+          );
+        })
+        .join("") +
+      "</dl>"
+    );
+  }
+
+  function renderResult() {
+    var skeleton = scoreSkeleton(state.skeleton);
+    var color = scoreColor(state.color);
+    var frame = DATA.skeleton.types[skeleton.ranked[0]];
+    var season = DATA.color.seasons[color.ranked[0]];
+    var second = DATA.color.seasons[color.ranked[1]];
+    var combo = DATA.combos[skeleton.ranked[0] + "-" + color.ranked[0]];
+
+    var html = "";
+
+    /* ベストカラーのドレープ */
+    html +=
+      '<div class="result-banner" aria-hidden="true">' +
+      season.palette
+        .map(function (c, i) {
+          return '<span style="background:' + esc(c.hex) + ";animation-delay:" + i * 45 + 'ms"></span>';
+        })
+        .join("") +
+      "</div>";
+
+    /* 総合 */
+    html +=
+      '<div class="verdict"><span class="kicker">あなたのタイプ</span>' +
+      '<span class="name">' +
+      esc(frame.name) +
+      '<span style="color:var(--accent)"> × </span>' +
+      esc(season.name) +
+      "</span>" +
+      '<span class="reading">' +
+      esc(frame.reading) +
+      " / " +
+      esc(season.reading) +
+      "</span></div>";
+
+    /* 掛け合わせ */
+    html +=
+      '<div class="combo"><span class="combo-catch">' +
+      esc(combo.catch) +
+      "</span><p>" +
+      esc(combo.text) +
+      "</p></div>";
+
+    /* --- 骨格 --- */
+    var skeletonRows = SKELETON_ORDER.map(function (key) {
+      return { label: DATA.skeleton.types[key].name, value: skeleton.totals[key] };
+    });
+    var skeletonGap = skeleton.totals[skeleton.ranked[0]] - skeleton.totals[skeleton.ranked[1]];
+
+    html += '<section class="result-section">';
+    html += '<p class="eyebrow">骨格診断</p>';
+    html +=
+      '<div class="stack-tight"><h2 class="type-name">' +
+      esc(frame.name) +
+      '<span class="en">' +
+      esc(frame.reading) +
+      '</span></h2><p class="type-tagline">' +
+      esc(frame.tagline) +
+      "</p></div>";
+    html += "<p>" + esc(frame.summary) + "</p>";
+    html +=
+      '<div class="chips">' +
+      frame.keywords
+        .map(function (word) {
+          return '<span class="chip">' + esc(word) + "</span>";
+        })
+        .join("") +
+      "</div>";
+    html += bars(skeletonRows);
+    if (skeletonGap <= 2) {
+      html +=
+        '<p class="mix-note">1位と2位の差がわずかです。' +
+        esc(DATA.skeleton.types[skeleton.ranked[1]].name) +
+        "の要素も持つミックスタイプの可能性があります。両方のアドバイスを試して、しっくりくる方を採用してください。</p>";
+    }
+    html += '<div class="card stack">';
+    html += '<div><p class="subhead">得意な素材</p>' + list(frame.material.good) + "</div>";
+    html += '<div><p class="subhead">苦手な素材</p>' + list(frame.material.bad, true) + "</div>";
+    html +=
+      '<div><p class="subhead">似合うアイテム</p>' +
+      detail([
+        ["トップス", frame.items.tops.join("／")],
+        ["ボトムス", frame.items.bottoms.join("／")],
+        ["アウター", frame.items.outer.join("／")],
+        ["小物", frame.accessory.join("／")],
+      ]) +
+      "</div>";
+    html += '<div><p class="subhead">避けたいもの</p>' + list(frame.avoid, true) + "</div>";
+    html += '<div><p class="subhead">着こなしの指針</p>' + list(frame.tips) + "</div>";
+    html += "</div></section>";
+
+    /* --- パーソナルカラー --- */
+    var seasonRows = SEASON_ORDER.map(function (key) {
+      return { label: DATA.color.seasons[key].name, value: color.totals[key] };
+    });
+    var seasonGap = color.totals[color.ranked[0]] - color.totals[color.ranked[1]];
+
+    html += '<section class="result-section">';
+    html += '<p class="eyebrow">パーソナルカラー診断</p>';
+    html +=
+      '<div class="stack-tight"><h2 class="type-name">' +
+      esc(season.name) +
+      '<span class="en">' +
+      esc(season.reading) +
+      '</span></h2><p class="type-tagline">' +
+      esc(season.tagline) +
+      "</p></div>";
+    html += "<p>" + esc(season.summary) + "</p>";
+    html +=
+      '<div class="chips">' +
+      season.keywords
+        .map(function (word) {
+          return '<span class="chip">' + esc(word) + "</span>";
+        })
+        .join("") +
+      "</div>";
+    html += bars(seasonRows);
+    html +=
+      '<p class="mix-note">セカンドシーズンは<strong>' +
+      esc(second.name) +
+      "</strong>。1位の色でしっくりこないときは、こちらの色を試すと合うことがあります。" +
+      (seasonGap <= 2 ? "今回は1位との差が小さいので、実質どちらも得意な可能性が高いタイプです。" : "") +
+      "</p>";
+
+    html += '<div class="card stack">';
+    html += '<div><p class="subhead">3つの軸</p>';
+    html += color.axes
+      .map(function (axis) {
+        return (
+          '<div class="axis"><div class="axis-head"><span class="axis-name">' +
+          esc(axis.label) +
+          "</span><span>" +
+          axis.leftPct +
+          "％ / " +
+          axis.rightPct +
+          '％</span></div><div class="axis-track"><span class="axis-mark" style="left:' +
+          axis.rightPct +
+          '%"></span></div><div class="axis-ends"><span>' +
+          esc(axis.leftName) +
+          "</span><span>" +
+          esc(axis.rightName) +
+          "</span></div></div>"
+        );
+      })
+      .join("");
+    html += "</div>";
+    html += '<div><p class="subhead">ベストカラー</p>' + swatches(season.palette) + "</div>";
+    html +=
+      '<div><p class="subhead">苦手な色</p>' +
+      swatches(season.avoid, true) +
+      '<p class="note" style="margin-top:.6rem">' +
+      esc(season.avoidReason) +
+      "</p></div>";
+    html +=
+      '<div><p class="subhead">メイク</p>' +
+      detail([
+        ["ベース", season.makeup.base],
+        ["チーク", season.makeup.cheek],
+        ["リップ", season.makeup.lip],
+        ["アイ", season.makeup.eye],
+      ]) +
+      "</div>";
+    html +=
+      '<div><p class="subhead">その他</p>' +
+      detail([
+        ["ヘア", season.hair],
+        ["金属", season.metal],
+        ["白の選び方", season.white],
+      ]) +
+      "</div>";
+    html += '<div><p class="subhead">色選びの指針</p>' + list(season.styling) + "</div>";
+    html += "</div></section>";
+
+    $("result-body").innerHTML = html;
+  }
+
+  function resultText() {
+    var skeleton = scoreSkeleton(state.skeleton);
+    var color = scoreColor(state.color);
+    var frame = DATA.skeleton.types[skeleton.ranked[0]];
+    var season = DATA.color.seasons[color.ranked[0]];
+    var second = DATA.color.seasons[color.ranked[1]];
+    var combo = DATA.combos[skeleton.ranked[0] + "-" + color.ranked[0]];
+
+    var lines = [];
+    lines.push("【骨格診断 × パーソナルカラー診断】");
+    lines.push("骨格タイプ：" + frame.name + "（" + frame.reading + "）");
+    lines.push("パーソナルカラー：" + season.name + "（" + season.reading + "）");
+    lines.push("セカンドシーズン：" + second.name);
+    lines.push("");
+    lines.push("■ " + combo.catch);
+    lines.push(combo.text);
+    lines.push("");
+    lines.push("■ 骨格スコア");
+    lines.push(
+      SKELETON_ORDER.map(function (key) {
+        return DATA.skeleton.types[key].name + " " + skeleton.totals[key];
+      }).join(" / ")
+    );
+    lines.push("■ カラースコア");
+    lines.push(
+      SEASON_ORDER.map(function (key) {
+        return DATA.color.seasons[key].name + " " + color.totals[key];
+      }).join(" / ")
+    );
+    lines.push(
+      color.axes
+        .map(function (axis) {
+          return axis.label + "：" + (axis.leftPct >= axis.rightPct ? axis.leftName : axis.rightName);
+        })
+        .join(" / ")
+    );
+    lines.push("");
+    lines.push("■ ベストカラー");
+    lines.push(
+      season.palette
+        .map(function (c) {
+          return c.name + " " + c.hex;
+        })
+        .join(" / ")
+    );
+    lines.push("");
+    lines.push(window.location.href);
+    return lines.join("\n");
+  }
+
+  function finish() {
+    if (window.history && window.history.replaceState) {
+      window.history.replaceState(null, "", encodeAnswers());
+    } else {
+      window.location.hash = encodeAnswers();
+    }
+    renderResult();
+    showView("result");
+  }
+
+  /* ---------------------------------------------------------------- *
+   * テーマ
+   * ---------------------------------------------------------------- */
+
+  function currentTheme() {
+    var stamped = document.documentElement.getAttribute("data-theme");
+    if (stamped) return stamped;
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light";
+  }
+
+  function applyTheme(theme) {
+    document.documentElement.setAttribute("data-theme", theme);
+    $("theme-toggle").textContent = theme === "dark" ? "ライト表示" : "ダーク表示";
+    try {
+      window.localStorage.setItem(THEME_KEY, theme);
+    } catch (err) {
+      /* noop */
+    }
+  }
+
+  /* ---------------------------------------------------------------- *
+   * 起動
+   * ---------------------------------------------------------------- */
+
+  function init() {
+    /* イントロのドレープ：4シーズンから2色ずつ */
+    $("intro-drape").innerHTML = SEASON_ORDER.map(function (key) {
+      var palette = DATA.color.seasons[key].palette;
+      return [palette[0], palette[1]]
+        .map(function (c) {
+          return '<span style="background:' + c.hex + '"></span>';
+        })
+        .join("");
+    }).join("");
+
+    var savedTheme = null;
+    try {
+      savedTheme = window.localStorage.getItem(THEME_KEY);
+    } catch (err) {
+      /* noop */
+    }
+    $("theme-toggle").textContent = (savedTheme || currentTheme()) === "dark" ? "ライト表示" : "ダーク表示";
+    if (savedTheme === "dark" || savedTheme === "light") applyTheme(savedTheme);
+
+    $("theme-toggle").addEventListener("click", function () {
+      applyTheme(currentTheme() === "dark" ? "light" : "dark");
+    });
+
+    $("start-btn").addEventListener("click", function () {
+      state.skeleton = new Array(sq.length).fill(null);
+      state.color = new Array(cq.length).fill(null);
+      state.index = 0;
+      save();
+      renderQuiz();
+      showView("quiz");
+    });
+
+    var saved = loadSaved();
+    var resume = $("resume-btn");
+    if (saved && (saved.index > 0 || saved.skeleton.some(function (v) { return v != null; }))) {
+      resume.hidden = false;
+      resume.addEventListener("click", function () {
+        state.skeleton = saved.skeleton;
+        state.color = saved.color;
+        state.index = Math.min(Math.max(saved.index || 0, 0), TOTAL - 1);
+        if (isComplete()) {
+          finish();
+        } else {
+          renderQuiz();
+          showView("quiz");
+        }
+      });
+    }
+
+    $("prev-btn").addEventListener("click", goBack);
+    $("retry-btn").addEventListener("click", function () {
+      clearSaved();
+      state.skeleton = new Array(sq.length).fill(null);
+      state.color = new Array(cq.length).fill(null);
+      state.index = 0;
+      if (window.history && window.history.replaceState) {
+        window.history.replaceState(null, "", window.location.pathname + window.location.search);
+      }
+      renderQuiz();
+      showView("quiz");
+    });
+
+    $("print-btn").addEventListener("click", function () {
+      window.print();
+    });
+
+    $("copy-btn").addEventListener("click", function () {
+      var text = resultText();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(
+          function () {
+            showToast("結果をコピーしました");
+          },
+          function () {
+            showToast("コピーできませんでした");
+          }
+        );
+      } else {
+        showToast("この環境ではコピーできません");
+      }
+    });
+
+    document.addEventListener("keydown", function (event) {
+      if ($("view-quiz").hidden) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+      var slot = questionAt(state.index);
+      var count = slot.question.options.length;
+
+      if (event.key >= "1" && event.key <= String(count)) {
+        event.preventDefault();
+        choose(Number(event.key) - 1);
+      } else if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+        event.preventDefault();
+        moveFocus(1);
+      } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+        event.preventDefault();
+        moveFocus(-1);
+      } else if (event.key === "Backspace") {
+        event.preventDefault();
+        goBack();
+      }
+    });
+
+    /* 共有リンクから開かれた場合は、そのまま結果を表示する */
+    applyHash();
+
+    /* 別の共有リンクに貼り替えられたときや、戻る/進む操作にも追従する */
+    window.addEventListener("hashchange", function () {
+      if (applyHash()) return;
+      if (!window.location.hash && !$("view-result").hidden) showView("intro");
+    });
+  }
+
+  /** URL のハッシュが有効な回答なら、その結果を表示して true を返す。 */
+  function applyHash() {
+    var shared = decodeAnswers(window.location.hash);
+    if (!shared) return false;
+    state.skeleton = shared.skeleton;
+    state.color = shared.color;
+    state.index = TOTAL - 1;
+    renderResult();
+    showView("result");
+    return true;
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
+})();
+</script>

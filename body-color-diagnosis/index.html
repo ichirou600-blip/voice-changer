@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>骨格診断 × パーソナルカラー診断</title>
+    <meta
+      name="description"
+      content="25の質問に答えるだけで、骨格タイプ（ストレート／ウェーブ／ナチュラル）とパーソナルカラー（イエベ春・ブルベ夏・イエベ秋・ブルベ冬）を同時に診断し、似合う素材・シルエット・色・メイクまで提案します。"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="masthead">
+      <div class="shell">
+        <p class="wordmark">骨格<span class="sep">×</span>パーソナルカラー</p>
+        <button type="button" class="btn btn-quiet theme-toggle" id="theme-toggle">ダーク表示</button>
+      </div>
+    </header>
+
+    <main>
+      <!-- ============================ イントロ ============================ -->
+      <section class="view shell stack" id="view-intro" aria-labelledby="intro-title">
+        <div class="stack-tight">
+          <p class="eyebrow">Self diagnosis</p>
+          <h1 class="intro-title" id="intro-title">
+            <span class="line">生まれつきの<ruby>骨格<rt>こっかく</rt></ruby>と、</span>
+            <span class="line">生まれつきの色。</span>
+          </h1>
+          <p class="intro-lede">
+            似合う服が分からないのは、センスの問題ではありません。体の厚みや骨の出方、肌と瞳が持つ色みという、生まれつきの条件が人それぞれ違うからです。25の質問に答えると、あなたの骨格タイプとパーソナルカラーを同時に診断します。
+          </p>
+        </div>
+
+        <div class="drape" id="intro-drape" aria-hidden="true"></div>
+
+        <div class="card what-list">
+          <div class="what-item">
+            <span class="marker">骨格</span>
+            <div>
+              <h3>体の質感と重心から、似合う「形」を決める</h3>
+              <p>
+                ストレート・ウェーブ・ナチュラルの3タイプ。太っている・痩せているとは関係なく、素材とシルエットの相性が変わります。
+              </p>
+            </div>
+          </div>
+          <div class="what-item">
+            <span class="marker">色</span>
+            <div>
+              <h3>肌・瞳・髪の色みから、似合う「色」を決める</h3>
+              <p>
+                イエベ春・ブルベ夏・イエベ秋・ブルベ冬の4シーズン。ベース／明度／清濁の3つの軸で、どちら寄りかも表示します。
+              </p>
+            </div>
+          </div>
+          <div class="what-item">
+            <span class="marker">掛算</span>
+            <div>
+              <h3>2つを掛け合わせた、具体的な着こなし</h3>
+              <p>
+                「形」と「色」は別々に診断しても、着るのは1着です。12通りの組み合わせごとに、明日から使える指針を出します。
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="btn-row">
+          <button type="button" class="btn" id="start-btn">診断をはじめる</button>
+          <button type="button" class="btn btn-quiet" id="resume-btn" hidden>前回の続きから</button>
+        </div>
+
+        <p class="note">
+          所要時間は約5分。明るい場所で、すっぴんに近い状態で答えると精度が上がります。回答はこの端末のブラウザ内にのみ保存され、どこにも送信されません。
+        </p>
+      </section>
+
+      <!-- ============================ 設問 ============================ -->
+      <section class="view shell" id="view-quiz" hidden aria-labelledby="question-text">
+        <div class="quiz-head">
+          <div class="quiz-meta">
+            <span class="quiz-section-name" id="quiz-section-name">骨格診断</span>
+            <span id="quiz-counter">1 / 25</span>
+          </div>
+          <div class="rail" id="quiz-rail" role="progressbar" aria-label="診断の進捗" aria-valuemin="0" aria-valuemax="25" aria-valuenow="0"></div>
+        </div>
+
+        <div id="quiz-body">
+          <h2 class="question" id="question-text"></h2>
+          <p class="question-hint" id="question-hint" hidden></p>
+          <div class="options" id="options" role="radiogroup" aria-labelledby="question-text"></div>
+        </div>
+
+        <div class="quiz-nav">
+          <button type="button" class="btn btn-quiet" id="prev-btn">戻る</button>
+          <span class="note" id="quiz-tip">数字キー（1〜4）でも選べます</span>
+        </div>
+      </section>
+
+      <!-- ============================ 結果 ============================ -->
+      <section class="view shell stack" id="view-result" hidden aria-labelledby="result-title">
+        <h1 class="eyebrow" id="result-title">Your result</h1>
+        <div id="result-body" class="stack"></div>
+
+        <div class="btn-row">
+          <button type="button" class="btn" id="copy-btn">結果をコピー</button>
+          <button type="button" class="btn btn-quiet" id="print-btn">印刷 / PDF保存</button>
+          <button type="button" class="btn btn-quiet" id="retry-btn">もう一度診断する</button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-foot">
+      <div class="shell">
+        この診断は自己申告のアンケートに基づく簡易版です。骨格もパーソナルカラーも、実際にはプロが自然光の下でドレープを当てて判定します。結果が納得できないときは、上位2位のタイプを両方試してみてください。
+      </div>
+    </footer>
+
+    <div class="toast" id="toast" role="status" hidden></div>
+
+    <script src="data.js"></script>
+    <script src="scoring.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
