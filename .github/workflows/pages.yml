@@ -1,0 +1,85 @@
+name: Deploy diagnosis app to Pages
+
+# 骨格診断 × パーソナルカラー診断（body-color-diagnosis/）を GitHub Pages に公開する。
+# 公開先: https://ichirou600-blip.github.io/voice-changer/
+#
+# 注: Pages への配信は既定で「デフォルトブランチからのみ」に制限されているため、
+# このワークフローは master 上にある必要がある。
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "body-color-diagnosis/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同時実行を1つに抑える。進行中のデプロイは中断せず待つ。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Validate data and scoring
+        run: node body-color-diagnosis/test.js
+
+      - name: Rebuild single-file bundle
+        run: node body-color-diagnosis/build.js
+
+      # data.js などを直したのに build.js を流し忘れると、
+      # dist/ だけ古いまま公開されてしまうので、ここで検出する。
+      - name: Fail if dist/ is out of date
+        run: |
+          if ! git diff --exit-code -- body-color-diagnosis/dist; then
+            echo "::error::dist/ がソースと一致しません。node body-color-diagnosis/build.js を実行してコミットしてください。"
+            exit 1
+          fi
+
+      - name: Assemble site
+        run: |
+          mkdir -p _site/standalone
+          cp body-color-diagnosis/index.html _site/
+          cp body-color-diagnosis/styles.css _site/
+          cp body-color-diagnosis/data.js _site/
+          cp body-color-diagnosis/scoring.js _site/
+          cp body-color-diagnosis/app.js _site/
+          cp body-color-diagnosis/dist/index.html _site/standalone/
+          touch _site/.nojekyll
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          # リポジトリ設定で Pages が未設定でも、ここで有効化を試みる
+          enablement: true
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
